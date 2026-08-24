@@ -1,0 +1,14 @@
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.DS_Store
+cocos-project/assets/
+cocos-project/ios-libs/
+
+# Keep only the small CDN bootstrap bundles in the repository.
+!cocos-project/assets/
+!cocos-project/assets/internal/
+!cocos-project/assets/internal/**
+!cocos-project/assets/main/
+!cocos-project/assets/main/**
