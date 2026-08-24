@@ -22,15 +22,32 @@
             this._ensureBinGroups();
             this.scripts = [];
             this._buildChrome();
+            this._buildAccountHome();
             this._loadScripts();
             this.showPage(0);
-            this._refreshBins();
             this._refreshScripts();
-            var self = this;
-            setTimeout(function () {
-                if (global.__ios2Manager === self) self._refreshBins();
-            }, 500);
             return true;
+        },
+
+        _buildAccountHome: function () {
+            if (!(global.IOS2AccountRepository && global.IOS2LoginService && global.IOS2AccountPresenter)) {
+                throw new Error('FairyGUI account modules are missing');
+            }
+            var self = this;
+            this.accountRepository = new global.IOS2AccountRepository(this.storage);
+            this.accountPresenter = new global.IOS2AccountPresenter({
+                repository: this.accountRepository,
+                loginService: new global.IOS2LoginService(),
+                onOpenPage: function (page) { self.showPage(page); }
+            });
+        },
+
+        _setLegacyChromeVisible: function (visible) {
+            var items = [this.background, this.content, this.navBackground, this.navIndicator,
+                this.navTouchSurface, this.nav];
+            for (var index = 0; index < items.length; index++) {
+                if (items[index]) items[index].active = visible;
+            }
         },
 
         _buildChrome: function () {
@@ -88,12 +105,16 @@
 
         showPage: function (page) {
             this.page = Math.max(0, Math.min(2, Number(page) || 0));
-            this.background.active = true;
-            this.content.active = true;
+            if (this.page === 0 && this.accountPresenter) {
+                this._setLegacyChromeVisible(false);
+                this.accountPresenter.show();
+                return;
+            }
+            if (this.accountPresenter) this.accountPresenter.hide();
+            this._setLegacyChromeVisible(true);
             this._clearContent();
             this.statusItem = null;
-            if (this.page === 0) this._showBins();
-            else if (this.page === 1) {
+            if (this.page === 1) {
                 if (this._scriptSubpage === 'settings') this._showSettingsConfig();
                 else this._showScripts();
             }
@@ -172,8 +193,10 @@
 
         onLoginReady: function () {
             if (this.gameStarted) return;
+            if (this.accountPresenter) this.accountPresenter.onLoginReady();
             this._setStatus('认证成功，正在进入游戏…', COLORS.success);
             this.gameStarted = true;
+            if (this.accountPresenter) this.accountPresenter.hide();
             if (this.logoutOverlay) this.logoutOverlay.active = true;
             if (this.background) this.background.active = false;
             if (this.content) this.content.active = false;
@@ -183,6 +206,7 @@
         },
 
         onLoginFailed: function (message) {
+            if (this.accountPresenter) this.accountPresenter.onLoginFailed(message);
             this._setStatus('登录失败：' + String(message || '未知错误'), COLORS.warning);
         }
     };
@@ -212,6 +236,15 @@
             return;
         }
         try {
+            if (global.fgui && global.fgui.GRoot && !global.__ios2FairyRoot) {
+                global.__ios2FairyRoot = global.fgui.GRoot.create();
+                if (global.__ios2FairyRoot.node.setLocalZOrder) {
+                    global.__ios2FairyRoot.node.setLocalZOrder(999998);
+                } else global.__ios2FairyRoot.node.zIndex = 999998;
+                if (cc.game && typeof cc.game.addPersistRootNode === 'function') {
+                    cc.game.addPersistRootNode(global.__ios2FairyRoot.node);
+                }
+            }
             global.__ios2Manager = new IOS2ManagerLayer(scene, launcher);
             scene.addChild(global.__ios2Manager, 999999);
             if (cc.game && typeof cc.game.addPersistRootNode === 'function') cc.game.addPersistRootNode(global.__ios2Manager);
@@ -223,13 +256,35 @@
     global.__ios2ManagerSetLauncher = function (launcher) {
         if (global.__ios2Manager) global.__ios2Manager.launcher = launcher;
     };
-    global.__ios2OnBinFiles = function (json) { if (global.__ios2Manager) global.__ios2Manager.onBinFiles(json); };
+    global.__ios2OnBinFiles = function (json) {
+        var manager = global.__ios2Manager;
+        if (!manager) return;
+        if (manager.accountPresenter) {
+            manager.accountPresenter.onAccounts(json);
+            manager.binFiles = manager.accountRepository.cached();
+        } else manager.onBinFiles(json);
+    };
     global.__ios2BinFilesReady = global.__ios2OnBinFiles;
-    global.__ios2OnBinImported = function (name) { if (global.__ios2Manager) global.__ios2Manager.onBinImported(name); };
+    global.__ios2OnBinImported = function (name) {
+        var manager = global.__ios2Manager;
+        if (!manager) return;
+        if (manager.accountPresenter) manager.accountPresenter.onImported(name);
+        else manager.onBinImported(name);
+    };
     global.__ios2BinImported = global.__ios2OnBinImported;
-    global.__ios2OnBinDeleted = function (name) { if (global.__ios2Manager) global.__ios2Manager.onBinDeleted(name); };
+    global.__ios2OnBinDeleted = function (name) {
+        var manager = global.__ios2Manager;
+        if (!manager) return;
+        if (manager.accountPresenter) manager.accountPresenter.onDeleted(name);
+        else manager.onBinDeleted(name);
+    };
     global.__ios2BinDeleted = global.__ios2OnBinDeleted;
-    global.__ios2OnBinDeleteFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onBinDeleteFailed(message); };
+    global.__ios2OnBinDeleteFailed = function (message) {
+        var manager = global.__ios2Manager;
+        if (!manager) return;
+        if (manager.accountPresenter) manager.accountPresenter.onDeleteFailed(message);
+        else manager.onBinDeleteFailed(message);
+    };
     global.__ios2BinDeleteFailed = global.__ios2OnBinDeleteFailed;
     global.__ios2OnScriptFiles = function (json) { if (global.__ios2Manager) global.__ios2Manager.onScriptFiles(json); };
     global.__ios2ScriptFilesReady = global.__ios2OnScriptFiles;

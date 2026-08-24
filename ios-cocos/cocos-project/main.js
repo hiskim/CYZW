@@ -96,6 +96,10 @@ function ios2LoadManagerShell() {
     if (window.__ios2ManagerMount) return;
     try {
         var managerFiles = [
+            'src/vendor/fairygui.js',
+            'src/ios2-account-services.js',
+            'src/ios2-account-view.js',
+            'src/ios2-account-presenter.js',
             'src/ios2-manager-common.js',
             'src/ios2-script-runtime.js',
             'src/ios2-bin-page.js',
@@ -212,6 +216,18 @@ window.__ios2ResetToLauncher = function () {
         }
         window.__ios2Manager = null;
     }
+    var oldFairyRoot = window.__ios2FairyRoot;
+    if (oldFairyRoot && oldFairyRoot.node) {
+        try {
+            if (cc.game && typeof cc.game.removePersistRootNode === 'function') {
+                cc.game.removePersistRootNode(oldFairyRoot.node);
+            }
+            oldFairyRoot.dispose();
+        } catch (error) {
+            ios2Trace('unable to remove old FairyGUI root: ' + (error.message || error));
+        }
+    }
+    window.__ios2FairyRoot = null;
     // Cocos' restart path resets the Director, event manager, scene graph and
     // all persist roots before running the normal launcher boot sequence.
     if (cc.game && typeof cc.game.restart === 'function') {

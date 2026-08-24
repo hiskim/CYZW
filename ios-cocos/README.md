@@ -67,6 +67,22 @@ the game's native JSB `XMLHttpRequest` without a WebView.
 The downloaded manifest and remote bundles are cached by Cocos under the app's
 local storage.
 
+## Account management UI
+
+The first screen is an account manager implemented with the open-source
+FairyGUI runtime for Cocos Creator 2.4. The runtime is pinned under
+`cocos-project/src/vendor`, together with its MIT license.
+
+The account flow is split by responsibility:
+
+- `ios2-account-view.js` renders FairyGUI objects and emits user actions only.
+- `ios2-account-presenter.js` coordinates view state and use cases.
+- `ios2-account-services.js` owns native account storage and login bridge calls.
+- `ios2-login.js` remains the transport adapter for the game's auth request.
+
+This boundary allows a FairyGUI Editor package to replace the programmatic view
+without changing account persistence or authentication behavior.
+
 The in-app `JS 脚本` page has a `资源 JS 配置` sub-menu. It uses the bundled
 `src/settings.*.js` by default. Importing a Creator settings script stores it
 as `Documents/ios2/settings.js`; the next app launch evaluates that file before
