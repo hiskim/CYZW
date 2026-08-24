@@ -6,10 +6,12 @@
         this.repository = options.repository;
         this.loginService = options.loginService;
         this.onOpenPage = options.onOpenPage;
+        this.getEnabledScripts = options.getEnabledScripts;
         var self = this;
         this.view = new global.IOS2AccountView({
             importAccounts: function () { self.importAccounts(); },
             login: function (name) { self.login(name); },
+            multiOpen: function (names) { self.multiOpen(names); },
             remove: function (name) { self.remove(name); },
             openScripts: function () { self.onOpenPage(1); },
             openConfig: function () { self.onOpenPage(2); }
@@ -34,12 +36,28 @@
     };
 
     IOS2AccountPresenter.prototype.login = function (name) {
+        this.activeAccountName = String(name || '');
         this.view.setBusy(name);
         this.view.setStatus('正在认证 ' + String(name || '') + '…');
-        try { this.loginService.login(name); }
+        try {
+            var scripts = this.getEnabledScripts ? this.getEnabledScripts() : [];
+            this.loginService.login(name, scripts);
+        }
         catch (error) {
             this.view.setBusy('');
             this.view.setStatus(error.message || '认证启动失败', 'warning');
+        }
+    };
+
+    IOS2AccountPresenter.prototype.multiOpen = function (names) {
+        this.view.setBusy('multi');
+        this.view.setStatus('正在认证 ' + names.length + ' 个账号…');
+        try {
+            var scripts = this.getEnabledScripts ? this.getEnabledScripts() : [];
+            this.loginService.multiLogin(names, scripts);
+        } catch (error) {
+            this.view.setBusy('');
+            this.view.setStatus(error.message || '多开启动失败', 'warning');
         }
     };
 
@@ -72,9 +90,18 @@
         this.view.setStatus('认证成功，正在进入游戏…', 'success');
     };
 
+    IOS2AccountPresenter.prototype.currentAccountName = function () {
+        return this.activeAccountName || '';
+    };
+
     IOS2AccountPresenter.prototype.onLoginFailed = function (message) {
         this.view.setBusy('');
         this.view.setStatus('登录失败：' + String(message || '未知错误'), 'warning');
+    };
+
+    IOS2AccountPresenter.prototype.onMultiLoginReady = function () {
+        this.view.setBusy('');
+        this.view.setStatus('WebKit 游戏实例已启动', 'success');
     };
 
     global.IOS2AccountPresenter = IOS2AccountPresenter;

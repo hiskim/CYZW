@@ -55,6 +55,7 @@
 		509D4AEB17EBB82600697056 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 509D4AEA17EBB82600697056 /* IOKit.framework */; };
 		6B75B0D12345678900000001 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6B75B0D12345678900000002 /* UniformTypeIdentifiers.framework */; };
 		7A2E00100000000000000001 /* IOS2ScriptWebView.mm in Sources */ = {isa = PBXBuildFile; fileRef = 7A2E00110000000000000001 /* IOS2ScriptWebView.mm */; };
+		7A2E00200000000000000001 /* IOS2GameWebView.mm in Sources */ = {isa = PBXBuildFile; fileRef = 7A2E00210000000000000001 /* IOS2GameWebView.mm */; };
 		A92275421517C094001B78AA /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A92275411517C094001B78AA /* QuartzCore.framework */; };
 		A92275441517C094001B78AA /* OpenGLES.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A92275431517C094001B78AA /* OpenGLES.framework */; };
 		A92275461517C094001B78AA /* OpenAL.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A92275451517C094001B78AA /* OpenAL.framework */; };
@@ -153,6 +154,8 @@
 		6B75B0D12345678900000002 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
 		7A2E00110000000000000001 /* IOS2ScriptWebView.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; name = IOS2ScriptWebView.mm; path = ios/IOS2ScriptWebView.mm; sourceTree = "<group>"; };
 		7A2E00120000000000000001 /* IOS2ScriptWebView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = IOS2ScriptWebView.h; path = ios/IOS2ScriptWebView.h; sourceTree = "<group>"; };
+		7A2E00210000000000000001 /* IOS2GameWebView.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; name = IOS2GameWebView.mm; path = ios/IOS2GameWebView.mm; sourceTree = "<group>"; };
+		7A2E00220000000000000001 /* IOS2GameWebView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = IOS2GameWebView.h; path = ios/IOS2GameWebView.h; sourceTree = "<group>"; };
 		A922753D1517C094001B78AA /* IOS2-mobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "IOS2-mobile.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A92275411517C094001B78AA /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		A92275431517C094001B78AA /* OpenGLES.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenGLES.framework; path = System/Library/Frameworks/OpenGLES.framework; sourceTree = SDKROOT; };
@@ -369,6 +372,8 @@
 				509D4AAC17EBB2AB00697056 /* AppController.mm */,
 				7A2E00120000000000000001 /* IOS2ScriptWebView.h */,
 				7A2E00110000000000000001 /* IOS2ScriptWebView.mm */,
+				7A2E00220000000000000001 /* IOS2GameWebView.h */,
+				7A2E00210000000000000001 /* IOS2GameWebView.mm */,
 				509D4AB717EBB2AB00697056 /* Info.plist */,
 				509D4AB817EBB2AB00697056 /* main.m */,
 				509D4AB917EBB2AB00697056 /* Prefix.pch */,
@@ -426,6 +431,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A92277001517C097001B78AA /* Build configuration list for PBXNativeTarget "IOS2-mobile" */;
 			buildPhases = (
+				7A2E00300000000000000001 /* Prepare WebKit Runtime */,
 				A92275391517C094001B78AA /* Sources */,
 				A922753A1517C094001B78AA /* Frameworks */,
 				A922753B1517C094001B78AA /* Resources */,
@@ -516,6 +522,27 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		7A2E00300000000000000001 /* Prepare WebKit Runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Prepare WebKit Runtime";
+			outputPaths = (
+				"$(SRCROOT)/../../../src/ios2-web-cocos2d.js",
+				"$(SRCROOT)/../../../ios-libs/libcocos2d iOS.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/../../../../scripts/prepare_ios2_xcode.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		509D4A8017EBB24E00697056 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -538,6 +565,7 @@
 				4D3EB2581F8F4A6C007DA644 /* jsb_module_register.cpp in Sources */,
 				509D4ABC17EBB2AB00697056 /* AppController.mm in Sources */,
 				7A2E00100000000000000001 /* IOS2ScriptWebView.mm in Sources */,
+				7A2E00200000000000000001 /* IOS2GameWebView.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -578,7 +606,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 051C017921E2F92300D4A347 /* UserConfigMac.debug.xcconfig */;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = YES;
+				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				COMBINE_HIDPI_IMAGES = YES;
 				DEAD_CODE_STRIPPING = YES;
@@ -603,7 +631,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 051C017821E2F92300D4A347 /* UserConfigMac.release.xcconfig */;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = YES;
+				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				COMBINE_HIDPI_IMAGES = YES;
 				DEAD_CODE_STRIPPING = YES;
@@ -691,6 +719,7 @@
 				GCC_PREFIX_HEADER = ios/Prefix.pch;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					CC_TARGET_OS_IPHONE,
+					"IOS2_WEBKIT_DEBUG=1",
 					"$(inherited)",
 				);
 				GCC_SYMBOLS_PRIVATE_EXTERN = YES;

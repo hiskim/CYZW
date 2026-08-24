@@ -86,9 +86,33 @@
 
     function IOS2LoginService() {}
 
-    IOS2LoginService.prototype.login = function (accountName) {
+    function currentManifestJSON() {
+        try {
+            var rawData = global.cc && cc.sys && cc.sys.manifestResult && cc.sys.manifestResult.rawData;
+            return rawData ? JSON.stringify(rawData) : '{}';
+        } catch (error) {
+            return '{}';
+        }
+    }
+
+    IOS2LoginService.prototype.login = function (accountName, scripts) {
         if (global.__ios2ScriptRuntime) global.__ios2ScriptRuntime.install();
+        var backend = 'native';
+        try { backend = String(nativeCall('runtimeBackend') || 'native'); } catch (ignored) {}
+        if (backend === 'webkit') {
+            nativeCall('loginBinFiles:scriptsJSON:manifestJSON:', JSON.stringify([accountName]),
+                JSON.stringify(scripts || []), currentManifestJSON());
+            return;
+        }
         nativeCall('loginBinFile:', accountName);
+    };
+
+    IOS2LoginService.prototype.multiLogin = function (accountNames, scripts) {
+        if (!Array.isArray(accountNames) || accountNames.length < 2 || accountNames.length > 4) {
+            throw new Error('请选择 2 到 4 个账号');
+        }
+        nativeCall('loginBinFiles:scriptsJSON:manifestJSON:', JSON.stringify(accountNames),
+            JSON.stringify(scripts || []), currentManifestJSON());
     };
 
     global.IOS2AccountRepository = IOS2AccountRepository;

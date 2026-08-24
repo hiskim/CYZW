@@ -67,6 +67,45 @@ the game's native JSB `XMLHttpRequest` without a WebView.
 The downloaded manifest and remote bundles are cached by Cocos under the app's
 local storage.
 
+## Selectable game runtime
+
+The account manager can start either of two isolated game backends:
+
+- `Cocos 极速` keeps the existing Creator 2.4.9 JSB/native renderer. It is the
+   default and remains single-instance.
+- `WebKit 多开` creates one isolated `WKWebView` for every selected account.
+   Each instance has its own non-persistent data store, JavaScript realm,
+   login response, and WebGL canvas.
+
+Open `配置`, select `WebKit 多开`, then return to the account page and press
+`多开`. Select 2 to 4 bin files and confirm. Two instances use a vertical split,
+three use a 2+1 grid, and four use a 2x2 grid. All instances use the app's
+internal Web entry and the same CDN/cache namespace as the native runtime; no
+external Web entry URL is configured by the user.
+
+The normal `登录` button also works in WebKit mode. It authenticates that bin
+file and opens one full-screen WebKit game instance.
+
+The WebKit instances receive the live native manifest before startup, so both
+backends use the same current bundle versions and cache keys. The bundled
+Creator 2.4.9 Web engine parses standard PVR/PVRTC textures, while the runtime
+also detects the CDN's ASTC payloads stored with a `.pvr` suffix and uploads
+them through `WEBGL_compressed_texture_astc`. Texture candidates remain
+restricted to `.pvr`; startup fails if neither PVRTC nor ASTC is available.
+No PNG or WebP fallback is used:
+
+```js
+IOS2PVR.load(gl, textureURL).then(function (result) {
+      // result.texture is the compressed WebGLTexture.
+});
+```
+
+The page reports both PVRTC and ASTC WebGL capabilities to the native log.
+Current automatic upload supports PVR v3 PVRTC formats 2bpp/4bpp, RGB/RGBA,
+and ASTC 2D block formats exposed by WebKit.
+Validate the final CDN texture set on a physical iPhone because the simulator
+does not provide representative compressed-texture GPU support.
+
 ## Account management UI
 
 The first screen is an account manager implemented with the open-source
@@ -133,3 +172,31 @@ If Xcode reports `No available simulator runtimes for platform iphonesimulator`
 while compiling `Images.xcassets`, install an iOS Simulator runtime from
 Xcode Settings > Components. This is an Xcode installation issue, not a Cocos
 or application link error.
+
+## Debug WebKit in Xcode
+
+Open `cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj`, select
+the `IOS2-mobile` scheme and the Debug configuration, then choose an iPhone or
+iOS Simulator and press Run. The `Prepare WebKit Runtime` build phase
+automatically copies the matching Creator 2.4.9 browser engine and builds the
+correct simulator/device Cocos archive, so switching Xcode destinations does
+not reuse an archive from the other platform.
+
+WebKit messages are forwarded to the Xcode console. Filter for these prefixes:
+
+- `[ios2][web]` for JavaScript `console.log`, `console.warn`, and `console.error`.
+- `[ios2] Web resource missing` for internal custom-scheme 404s.
+- `[ios2] Web CDN request failed` for original CDN URLs and HTTP errors.
+- `[ios2] Web game ... error` for JavaScript exceptions and rejected promises.
+
+Debug builds on iOS 16.4 or newer mark each game `WKWebView` as inspectable.
+On the Mac, enable Safari > Settings > Advanced > Show features for web
+developers, then use Safari > Develop to inspect the running simulator/device
+canvas, network requests, JavaScript console, and loaded resources.
+
+The iOS CDN currently publishes `remote/launcher/index.<version>.jsc` but not
+the browser text file `index.<version>.js`. The `.jsc` file is V8/JSB bytecode
+and cannot run in WKWebView's JavaScriptCore. Until a matching Creator Web
+launcher build is supplied, WebKit mode shows this incompatibility on screen
+and in the Xcode console instead of remaining black. CDN resources and the
+PVR/ASTC cache can still be shared; only the executable Web bundle is missing.

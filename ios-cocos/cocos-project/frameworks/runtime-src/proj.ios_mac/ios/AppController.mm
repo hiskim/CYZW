@@ -30,6 +30,7 @@
 #import "RootViewController.h"
 #import "SDKWrapper.h"
 #import "IOS2ScriptWebView.h"
+#import "IOS2GameWebView.h"
 #import "platform/ios/CCEAGLView-ios.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <OpenGLES/ES2/gl.h>
@@ -46,6 +47,7 @@ static BOOL s_ios2AuthReady = NO;
 static BOOL s_ios2SDKLoginPending = NO;
 static NSString *s_ios2SDKLoginAction = nil;
 static NSString *s_ios2AccountID = nil;
+static NSString *s_ios2AuthResponseBase64 = nil;
 
 // These values are the production identity embedded in the reference iOS
 // client.  Game scripts use the HSDK init response to decide which in-game
@@ -56,6 +58,7 @@ static NSString * const kIOS2GameVersion = @"0.33.0-ios";
 static NSString * const kIOS2HSDKVersion = @"1.4.0";
 static NSString * const kIOS2FrameRateDefaultsKey = @"ios2.preferredFrameRate";
 static NSString * const kIOS2ShowFPSDefaultsKey = @"ios2.showFPS";
+static NSString * const kIOS2RuntimeBackendDefaultsKey = @"ios2.runtimeBackend";
 
 static NSInteger IOS2PreferredFrameRate(void)
 {
@@ -523,6 +526,8 @@ static void IOS2ListScriptFiles(void)
 
 static void IOS2Authenticate(NSData *binData)
 {
+    [s_ios2AuthResponseBase64 release];
+    s_ios2AuthResponseBase64 = nil;
     NSURL *url = [NSURL URLWithString:@"https://xxz-xyzw.hortorgames.com/login/authuser?_seq=1"];
     if (!url) {
         s_ios2LoginBusy = NO;
@@ -549,6 +554,7 @@ static void IOS2Authenticate(NSData *binData)
         }
         s_ios2AuthReady = YES;
         NSString *base64 = [data base64EncodedStringWithOptions:0];
+        s_ios2AuthResponseBase64 = [base64 copy];
         IOS2CallJavaScript(@"__ios2BinLoginReady", base64);
         IOS2PublishSDKUser();
         IOS2FinishSDKLogin(0);
@@ -721,6 +727,12 @@ static void IOS2Authenticate(NSData *binData)
 + (void)webViewResponse:(NSString *)message;
 + (void)webViewEvent:(NSString *)message;
 + (void)syncRole:(NSString *)json;
++ (NSString *)runtimeBackend;
++ (void)setRuntimeBackend:(NSString *)backend;
++ (void)loginBinFiles:(NSString *)namesJSON scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON;
++ (void)hideWebGames;
++ (NSInteger)webGameInstanceCount;
++ (void)webGameManagerRequested;
 @end
 
 @implementation IOS2Native
@@ -771,6 +783,108 @@ static void IOS2Authenticate(NSData *binData)
 + (void)syncRole:(NSString *)json
 {
     [IOS2ScriptWebView syncRoleJSON:json];
+}
+
++ (NSString *)runtimeBackend
+{
+    NSString *backend = [[NSUserDefaults standardUserDefaults] stringForKey:kIOS2RuntimeBackendDefaultsKey];
+    return [backend isEqualToString:@"webkit"] ? @"webkit" : @"native";
+}
+
++ (void)setRuntimeBackend:(NSString *)backend
+{
+    NSString *value = [backend isEqualToString:@"webkit"] ? @"webkit" : @"native";
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2RuntimeBackendDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSLog(@"[ios2] runtime backend selected: %@", value);
+}
+
++ (void)loginBinFiles:(NSString *)namesJSON scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON
+{
+    NSData *jsonData = [namesJSON dataUsingEncoding:NSUTF8StringEncoding];
+    id object = jsonData ? [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil] : nil;
+    if (![object isKindOfClass:[NSArray class]] || [(NSArray *)object count] < 1 || [(NSArray *)object count] > 4) {
+        IOS2CallJavaScript(@"__ios2MultiLoginFailed", @"请选择 1 到 4 个账号");
+        return;
+    }
+
+    NSArray *names = [(NSArray *)object copy];
+    NSMutableArray<NSDictionary *> *instances = [NSMutableArray arrayWithCapacity:names.count];
+    dispatch_group_t group = dispatch_group_create();
+    NSObject *resultLock = [NSObject new];
+    __block NSString *failure = nil;
+    for (id value in names) {
+        if (![value isKindOfClass:[NSString class]]) {
+            failure = @"账号名称无效";
+            break;
+        }
+        NSString *name = (NSString *)value;
+        NSString *safeName = IOS2SafeBinName(name);
+        NSURL *url = [IOS2BinDirectory() URLByAppendingPathComponent:safeName];
+        NSData *binData = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil];
+        if (!binData.length) {
+            failure = [NSString stringWithFormat:@"无法读取 %@", name];
+            break;
+        }
+        dispatch_group_enter(group);
+        NSURL *authURL = [NSURL URLWithString:@"https://xxz-xyzw.hortorgames.com/login/authuser?_seq=1"];
+        IOS2StartPOST(authURL, binData,
+                      @{ @"Content-Type": @"application/octet-stream",
+                         @"O4e-Encoding": @"lx",
+                         @"Connection": @"close" },
+                      ^(NSData *data, NSHTTPURLResponse *http, NSError *error) {
+            @synchronized (resultLock) {
+                if (error || !http || http.statusCode < 200 || http.statusCode >= 300 || data.length <= 4) {
+                    if (!failure) failure = [NSString stringWithFormat:@"%@ 认证失败：%@", name,
+                        error.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]];
+                } else {
+                    [instances addObject:@{
+                        @"account": name,
+                        @"authResponse": [data base64EncodedStringWithOptions:0]
+                    }];
+                }
+            }
+            dispatch_group_leave(group);
+        });
+    }
+    if (failure) {
+        IOS2CallJavaScript(@"__ios2MultiLoginFailed", failure);
+        return;
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        if (failure || instances.count != names.count) {
+            IOS2CallJavaScript(@"__ios2MultiLoginFailed", failure ?: @"部分账号认证失败");
+            return;
+        }
+        NSMutableArray *ordered = [NSMutableArray arrayWithCapacity:names.count];
+        for (NSString *name in names) {
+            for (NSDictionary *instance in instances) {
+                if ([instance[@"account"] isEqualToString:name]) {
+                    [ordered addObject:instance];
+                    break;
+                }
+            }
+        }
+        [IOS2GameWebView showInstances:ordered
+                   scriptsJSON:scriptsJSON ?: @"[]"
+                  manifestJSON:manifestJSON ?: @"{}"];
+        IOS2CallJavaScript(@"__ios2MultiLoginReady", @"");
+    });
+}
+
++ (void)hideWebGames
+{
+    [IOS2GameWebView hide];
+}
+
++ (NSInteger)webGameInstanceCount
+{
+    return (NSInteger)[IOS2GameWebView instanceCount];
+}
+
++ (void)webGameManagerRequested
+{
+    IOS2CallJavaScript(@"__ios2WebGameManagerRequested", @"");
 }
 
 + (void)applyPerformancePreferences

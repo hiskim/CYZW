@@ -7,6 +7,7 @@ PROJECT_ROOT="$IOS2_ROOT/cocos-project"
 
 SOURCE_APP=${IOS2_SOURCE_APP:-/Volumes/WD/tk-mobile.app}
 COCOS_ROOT=${IOS2_COCOS_ROOT:-/Applications/Cocos/Creator/2.4.9/CocosCreator.app/Contents/Resources/cocos2d-x}
+COCOS_RESOURCES_ROOT=${IOS2_COCOS_RESOURCES_ROOT:-$(dirname "$COCOS_ROOT")}
 TEMPLATE_ROOT="$COCOS_ROOT/templates/js-template-default"
 IOS_PROJECT_DIR="$PROJECT_ROOT/frameworks/runtime-src/proj.ios_mac"
 IOS_PROJECT="$IOS_PROJECT_DIR/IOS2.xcodeproj"
@@ -16,6 +17,13 @@ LOCAL_ENGINE_PROJECT="$LOCAL_ENGINE_ROOT/build/cocos2d_libs.xcodeproj"
 
 if [ ! -d "$TEMPLATE_ROOT" ]; then
     echo "ios2: Cocos 2.4.9 template not found: $TEMPLATE_ROOT" >&2
+    exit 1
+fi
+
+WEB_ENGINE_SOURCE="$COCOS_RESOURCES_ROOT/engine/bin/cocos2d-js-for-preview.js"
+WEB_ENGINE_TARGET="$PROJECT_ROOT/src/ios2-web-cocos2d.js"
+if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
+    echo "ios2: Cocos 2.4.9 Web engine not found: $WEB_ENGINE_SOURCE" >&2
     exit 1
 fi
 
@@ -103,6 +111,10 @@ if [ ! -d "$PROJECT_ROOT/src" ]; then
     cp -R "$SOURCE_APP/src/." "$PROJECT_ROOT/src/"
 fi
 
+if [ ! -f "$WEB_ENGINE_TARGET" ] || [ "$WEB_ENGINE_SOURCE" -nt "$WEB_ENGINE_TARGET" ]; then
+    cp "$WEB_ENGINE_SOURCE" "$WEB_ENGINE_TARGET"
+fi
+
 # Install the native login bridge into the copied startup script. Keeping this
 # injection here makes prepare_ios2.sh repeatable without modifying the source
 # app's main.js.
@@ -152,6 +164,9 @@ if [ -f "$IOS_PROJECT/project.pbxproj" ]; then
     perl -0pi -e 's/^\s+CODE_SIGN_IDENTITY = "iPhone Developer";\r?\n//mg; s/^\s+DEVELOPMENT_TEAM = "";\r?\n//mg; s/^\s+CODE_SIGN_STYLE = Automatic;\r?\n//mg; s/(ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n)/$1\t\t\t\tCODE_SIGN_STYLE = Automatic;\n/g; s/ALWAYS_SEARCH_USER_PATHS = YES;/ALWAYS_SEARCH_USER_PATHS = NO;/g' "$IOS_PROJECT/project.pbxproj"
     if ! grep -q 'ENABLE_DEBUG_DYLIB = NO;' "$IOS_PROJECT/project.pbxproj"; then
         perl -0pi -e 's/(ENABLE_BITCODE = NO;\n)/$1\t\t\t\tENABLE_DEBUG_DYLIB = NO;\n/g' "$IOS_PROJECT/project.pbxproj"
+    fi
+    if ! grep -q 'IOS2_WEBKIT_DEBUG=1' "$IOS_PROJECT/project.pbxproj"; then
+        perl -0pi -e 's/(A92277011517C097001B78AA \/\* Debug \*\/ = \{[\s\S]*?GCC_PREPROCESSOR_DEFINITIONS = \(\n\s+CC_TARGET_OS_IPHONE,\n)/$1\t\t\t\t\t"IOS2_WEBKIT_DEBUG=1",\n/' "$IOS_PROJECT/project.pbxproj"
     fi
     # With ALWAYS_SEARCH_USER_PATHS disabled, old Cocos angle-bracket includes
     # need to be in HEADER_SEARCH_PATHS (USER_HEADER_SEARCH_PATHS becomes -iquote).

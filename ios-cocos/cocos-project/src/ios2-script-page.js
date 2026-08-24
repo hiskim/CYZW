@@ -156,26 +156,7 @@
 
         _runEnabledScripts: function (callback) {
             var errors = [];
-            var webViewScripts = [];
-            var enabled = this.scripts.filter(function (script) { return script && script.enabled && script.name; });
-            for (var index = 0; index < enabled.length; index++) {
-                var name = enabled[index].name;
-                try {
-                    var source = global.jsb && jsb.reflection && jsb.reflection.callStaticMethod ?
-                        jsb.reflection.callStaticMethod('IOS2Native', 'scriptFileContent:', name) : '';
-                    if (!source) throw new Error('脚本内容为空');
-                    webViewScripts.push({ name: name, source: String(source) });
-                    // The imported source runs once in WKWebView, where its
-                    // DOM/UI is rendered. Cocos JSB only hosts the bridge and
-                    // executes requested game-module calls, preventing two
-                    // independent script instances from racing each other.
-                    if (global.__ios2ScriptRuntime && typeof global.__ios2ScriptRuntime.install === 'function') {
-                        global.__ios2ScriptRuntime.install();
-                    }
-                } catch (error) {
-                    errors.push(name + ': ' + (error && (error.message || error.stack) || '执行失败'));
-                }
-            }
+            var webViewScripts = this._enabledScriptRecords(errors);
             // Cocos JSB keeps access to the real game modules; WKWebView gives
             // the same untouched source a real DOM so its HTML/CSS controls
             // become visible. The native bridge forwards WebSocket requests
@@ -189,6 +170,31 @@
             }
             if (typeof callback === 'function') callback(errors);
             return errors;
+        },
+
+        _enabledScriptRecords: function (errors) {
+            var records = [];
+            errors = errors || [];
+            var enabled = this.scripts.filter(function (script) { return script && script.enabled && script.name; });
+            for (var index = 0; index < enabled.length; index++) {
+                var name = enabled[index].name;
+                try {
+                    var source = global.jsb && jsb.reflection && jsb.reflection.callStaticMethod ?
+                        jsb.reflection.callStaticMethod('IOS2Native', 'scriptFileContent:', name) : '';
+                    if (!source) throw new Error('脚本内容为空');
+                    records.push({ name: name, source: String(source) });
+                    // The imported source runs once in WKWebView, where its
+                    // DOM/UI is rendered. Cocos JSB only hosts the bridge and
+                    // executes requested game-module calls, preventing two
+                    // independent script instances from racing each other.
+                    if (global.__ios2ScriptRuntime && typeof global.__ios2ScriptRuntime.install === 'function') {
+                        global.__ios2ScriptRuntime.install();
+                    }
+                } catch (error) {
+                    errors.push(name + ': ' + (error && (error.message || error.stack) || '执行失败'));
+                }
+            }
+            return records;
         },
 
         _runEnabledScriptsAfterLogin: function () {

@@ -1,8 +1,10 @@
 DerivedData/
 build/
+cocos-project/build/
 *.xcuserstate
 xcuserdata/
 *.DS_Store
+cocos-project/src/ios2-web-cocos2d.js
 cocos-project/assets/
 cocos-project/ios-libs/
 

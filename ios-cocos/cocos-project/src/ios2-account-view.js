@@ -97,6 +97,16 @@
             this.actions.importAccounts, 8);
         importButton.setPosition(width - 166, top + 12);
         this.root.addChild(importButton);
+        var backend = 'native';
+        try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
+        catch (ignored) {}
+        this.runtimeBackend = backend;
+        if (backend === 'webkit') {
+            var multiButton = button('多开', 92, 48, COLORS.success, cc.Color.WHITE,
+                this._showMultiOpen.bind(this), 8);
+            multiButton.setPosition(width - 274, top + 12);
+            this.root.addChild(multiButton);
+        }
 
         this.list = new fgui.GComponent();
         this.list.setPosition(20, top + 104);
@@ -245,6 +255,68 @@
         this.root.addChild(overlay);
     };
 
+    IOS2AccountView.prototype._showMultiOpen = function () {
+        var self = this;
+        var width = this.root.width;
+        var height = this.root.height;
+        var overlay = new fgui.GComponent();
+        overlay.setSize(width, height);
+        overlay.opaque = true;
+        overlay.addChild(graph(width, height, cc.color(16, 24, 36, 132)));
+        var panelWidth = Math.min(width - 36, 460);
+        var visibleCount = Math.min(this.accounts.length, 8);
+        var panelHeight = Math.min(height - 80, 154 + visibleCount * 52);
+        var panel = new fgui.GComponent();
+        panel.setSize(panelWidth, panelHeight);
+        panel.setPosition((width - panelWidth) / 2, (height - panelHeight) / 2);
+        panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 8, COLORS.border));
+        var heading = text('选择 2 到 4 个账号', 23, COLORS.text, panelWidth - 40, 42, fgui.AlignType.Center);
+        heading.bold = true;
+        heading.setPosition(20, 16);
+        panel.addChild(heading);
+        var selected = [];
+        var list = new fgui.GComponent();
+        list.setPosition(20, 62);
+        list.setSize(panelWidth - 40, panelHeight - 132);
+        list.overflow = fgui.OverflowType.Scroll;
+        panel.addChild(list);
+        function refreshRows() {
+            list.removeChildren(0, -1, true);
+            for (var index = 0; index < self.accounts.length; index++) {
+                (function (record, rowIndex) {
+                    var checked = selected.indexOf(record.name) >= 0;
+                    var row = button((checked ? '✓  ' : '○  ') + String(record.name || '').replace(/\.bin$/i, ''),
+                        panelWidth - 40, 46, checked ? COLORS.accentSoft : COLORS.background,
+                        checked ? COLORS.accent : COLORS.text, function () {
+                            var selectedIndex = selected.indexOf(record.name);
+                            if (selectedIndex >= 0) selected.splice(selectedIndex, 1);
+                            else if (selected.length < 4) selected.push(record.name);
+                            refreshRows();
+                        }, 6);
+                    row.setPosition(0, rowIndex * 52);
+                    list.addChild(row);
+                }(self.accounts[index], index));
+            }
+        }
+        refreshRows();
+        var close = function () { overlay.dispose(); };
+        var cancel = button('取消', 118, 44, COLORS.background, COLORS.text, close, 8);
+        cancel.setPosition(panelWidth / 2 - 128, panelHeight - 60);
+        panel.addChild(cancel);
+        var confirm = button('启动多开', 118, 44, COLORS.success, cc.Color.WHITE, function () {
+            if (selected.length < 2 || selected.length > 4) {
+                self.setStatus('请选择 2 到 4 个账号', 'warning');
+                return;
+            }
+            close();
+            self.actions.multiOpen(selected.slice(0));
+        }, 8);
+        confirm.setPosition(panelWidth / 2 + 10, panelHeight - 60);
+        panel.addChild(confirm);
+        overlay.addChild(panel);
+        this.root.addChild(overlay);
+    };
+
     IOS2AccountView.prototype.setAccounts = function (accounts) {
         this.accounts = Array.isArray(accounts) ? accounts.slice(0) : [];
         this.render();
@@ -261,7 +333,13 @@
         this.status.color = COLORS[tone] || COLORS.muted;
     };
 
-    IOS2AccountView.prototype.show = function () { this.root.visible = true; };
+    IOS2AccountView.prototype.show = function () {
+        var backend = 'native';
+        try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
+        catch (ignored) {}
+        if (backend !== this.runtimeBackend) this._build();
+        this.root.visible = true;
+    };
     IOS2AccountView.prototype.hide = function () { this.root.visible = false; };
 
     global.IOS2AccountView = IOS2AccountView;

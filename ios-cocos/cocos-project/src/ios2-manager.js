@@ -38,7 +38,10 @@
             this.accountPresenter = new global.IOS2AccountPresenter({
                 repository: this.accountRepository,
                 loginService: new global.IOS2LoginService(),
-                onOpenPage: function (page) { self.showPage(page); }
+                onOpenPage: function (page) { self.showPage(page); },
+                getEnabledScripts: function () {
+                    return typeof self._enabledScriptRecords === 'function' ? self._enabledScriptRecords([]) : [];
+                }
             });
         },
 
@@ -192,8 +195,17 @@
         },
 
         onLoginReady: function () {
-            if (this.gameStarted) return;
             if (this.accountPresenter) this.accountPresenter.onLoginReady();
+            var backend = 'native';
+            if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+                try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
+                catch (ignored) {}
+            }
+            if (backend === 'webkit') {
+                this.onLoginFailed('WebKit 模式请使用账号页的“多开”按钮');
+                return;
+            }
+            if (this.gameStarted) return;
             this._setStatus('认证成功，正在进入游戏…', COLORS.success);
             this.gameStarted = true;
             if (this.accountPresenter) this.accountPresenter.hide();
@@ -306,4 +318,17 @@
     global.__ios2SettingsDeleteFailed = global.__ios2OnSettingsDeleteFailed;
     global.__ios2OnBinLoginReady = function () { if (global.__ios2Manager) global.__ios2Manager.onLoginReady(); };
     global.__ios2OnBinLoginFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onLoginFailed(message); };
+    global.__ios2MultiLoginReady = function () {
+        if (global.__ios2Manager && global.__ios2Manager.accountPresenter) {
+            global.__ios2Manager.accountPresenter.onMultiLoginReady();
+        }
+    };
+    global.__ios2MultiLoginFailed = function (message) {
+        if (global.__ios2Manager) global.__ios2Manager.onLoginFailed(message);
+    };
+    global.__ios2WebGameManagerRequested = function () {
+        if (!global.__ios2Manager) return;
+        global.__ios2Manager.gameStarted = false;
+        global.__ios2Manager.showPage(0);
+    };
 }(window));
