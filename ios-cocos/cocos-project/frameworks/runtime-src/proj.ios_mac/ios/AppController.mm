@@ -507,17 +507,6 @@ static BOOL IOS2DeleteScript(NSString *name, NSError **error)
     return [[NSFileManager defaultManager] removeItemAtURL:url error:error];
 }
 
-static void IOS2SaveBin(NSData *data, NSString *preferredName)
-{
-    NSURL *directory = [IOS2DocumentsDirectory() URLByAppendingPathComponent:@"ios2" isDirectory:YES];
-    [[NSFileManager defaultManager] createDirectoryAtURL:directory
-                              withIntermediateDirectories:YES
-                               attributes:nil
-                                                    error:nil];
-    [data writeToURL:[directory URLByAppendingPathComponent:@"last.bin"] atomically:YES];
-    if (preferredName.length) IOS2StoreBin(data, preferredName);
-}
-
 static NSArray<NSDictionary *> *IOS2BinFileRecords(BOOL includeLast)
 {
     NSURL *documents = IOS2DocumentsDirectory();
@@ -740,7 +729,9 @@ static void IOS2Authenticate(NSData *binData)
     }
 
     IOS2SetAccountIDForBinData(data);
-    IOS2SaveBin(data, url.lastPathComponent);
+    // Keep the selected account available for later switching without
+    // creating the unused ios2/last.bin marker file.
+    IOS2StoreBin(data, url.lastPathComponent);
     IOS2Authenticate(data);
 }
 
@@ -1201,9 +1192,6 @@ static void IOS2Authenticate(NSData *binData)
         s_ios2AuthReady = NO;
         s_ios2LoginBusy = YES;
         IOS2SetAccountIDForBinData(data);
-        // The selected file is already in the managed directory. Only update
-        // last.bin here, otherwise every login would create a duplicate.
-        IOS2SaveBin(data, nil);
         IOS2Authenticate(data);
     });
 }
