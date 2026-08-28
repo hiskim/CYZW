@@ -480,6 +480,47 @@
                 if (this._findSocket()) this._sendWebViewEvent({ type: 'open' });
                 return;
             }
+            if (request.type === 'storage') {
+                var stores = [global.localStorage, global.cc && global.cc.sys && global.cc.sys.localStorage];
+                var action = String(payload.action || '');
+                var key = payload.key === undefined || payload.key === null ? '' : String(payload.key);
+                var value = payload.value === undefined || payload.value === null ? '' : String(payload.value);
+                // Keep manager-owned records private and intact. Imported
+                // scripts can use arbitrary keys, while the ios2.* namespace
+                // contains account/script preferences owned by this app.
+                if ((action === 'set' || action === 'remove') && key.indexOf('ios2.') === 0) {
+                    this._sendWebViewResponse(id, true, { success: true });
+                    return;
+                }
+                var handled = false;
+                for (var storeIndex = 0; storeIndex < stores.length; storeIndex++) {
+                    var store = stores[storeIndex];
+                    if (!store) continue;
+                    try {
+                        if (action === 'set' && typeof store.setItem === 'function') {
+                            store.setItem(key, value);
+                            handled = true;
+                        } else if (action === 'remove' && typeof store.removeItem === 'function') {
+                            store.removeItem(key);
+                            handled = true;
+                        } else if (action === 'clear') {
+                            if (typeof store.key !== 'function' || typeof store.removeItem !== 'function') continue;
+                            var keys = [];
+                            var length = Number(store.length) || 0;
+                            for (var keyIndex = 0; keyIndex < length; keyIndex++) {
+                                var storedKey = store.key(keyIndex);
+                                if (storedKey !== null && String(storedKey).indexOf('ios2.') !== 0) keys.push(String(storedKey));
+                            }
+                            for (var removeIndex = 0; removeIndex < keys.length; removeIndex++) store.removeItem(keys[removeIndex]);
+                            handled = true;
+                        }
+                    } catch (ignored) {}
+                    if (handled) break;
+                }
+                if (!handled) throw new Error('localStorage 不可用');
+                this._sendWebViewResponse(id, true, { success: true });
+                return;
+            }
             if (request.type === 'module') {
                 try {
                     var requireFn = this._findRequire();

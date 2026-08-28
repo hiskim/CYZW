@@ -120,6 +120,22 @@
         return date.getFullYear() + '-' + month + '-' + day + ' ' + hours + ':' + minutes;
     }
 
+    function readPreference(storage, key, fallback, allowed) {
+        if (!storage || typeof storage.getItem !== 'function') return fallback;
+        try {
+            var value = storage.getItem(key);
+            if (allowed && allowed.indexOf(value) < 0) return fallback;
+            return value === null || value === undefined || value === '' ? fallback : String(value);
+        } catch (ignored) {
+            return fallback;
+        }
+    }
+
+    function writePreference(storage, key, value) {
+        if (!storage || typeof storage.setItem !== 'function') return;
+        try { storage.setItem(key, String(value)); } catch (ignored) {}
+    }
+
     function safeAreaTop(width, height) {
         var common = global.__ios2ManagerParts && global.__ios2ManagerParts.common;
         var fallback = common && common.SAFE_AREA_FALLBACK_TOP || 44;
@@ -145,11 +161,12 @@
 
     function IOS2AccountView(actions) {
         this.actions = actions || {};
+        this.storage = this.actions.storage || null;
         this.accounts = [];
         this.page = 0;
         this.busyName = '';
-        this.viewMode = 'list';
-        this.sortMode = 'recent';
+        this.viewMode = readPreference(this.storage, 'ios2.accountViewMode', 'list', ['list', 'grid']);
+        this.sortMode = readPreference(this.storage, 'ios2.accountSortMode', 'recent', ['recent', 'updated', 'name']);
         this.root = new fgui.GComponent();
         this.root.name = 'IOS2AccountHome';
         this.root.opaque = true;
@@ -327,6 +344,7 @@
 
     IOS2AccountView.prototype._toggleView = function () {
         this.viewMode = this.viewMode === 'grid' ? 'list' : 'grid';
+        writePreference(this.storage, 'ios2.accountViewMode', this.viewMode);
         this.page = 0;
         this._build();
     };
@@ -334,9 +352,18 @@
     IOS2AccountView.prototype._showSortMenu = function () {
         var self = this;
         this._showQuickMenu('账号排序', [
-            { key: 'recent', label: '最近使用', action: function () { self.sortMode = 'recent'; } },
-            { key: 'updated', label: '更新时间', action: function () { self.sortMode = 'updated'; } },
-            { key: 'name', label: '账号名称', action: function () { self.sortMode = 'name'; } }
+            { key: 'recent', label: '最近使用', action: function () {
+                self.sortMode = 'recent';
+                writePreference(self.storage, 'ios2.accountSortMode', self.sortMode);
+            } },
+            { key: 'updated', label: '更新时间', action: function () {
+                self.sortMode = 'updated';
+                writePreference(self.storage, 'ios2.accountSortMode', self.sortMode);
+            } },
+            { key: 'name', label: '账号名称', action: function () {
+                self.sortMode = 'name';
+                writePreference(self.storage, 'ios2.accountSortMode', self.sortMode);
+            } }
         ]);
     };
 

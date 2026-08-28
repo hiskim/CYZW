@@ -9,6 +9,7 @@
         this.getEnabledScripts = options.getEnabledScripts;
         var self = this;
         this.view = new global.IOS2AccountView({
+            storage: this.repository.storage,
             importAccounts: function () { self.importAccounts(); },
             login: function (name) { self.login(name); },
             multiOpen: function (names) { self.multiOpen(names); },

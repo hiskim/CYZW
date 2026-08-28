@@ -567,7 +567,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         NSString *instanceID = NSUUID.UUID.UUIDString;
         WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
         [configuration setURLSchemeHandler:[IOS2GameSchemeHandler sharedInstance] forURLScheme:@"ios2-game"];
-        configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
+        // Game settings are commonly stored through localStorage. A
+        // non-persistent store discarded those values whenever the game view
+        // was closed, so use the app's persistent WebKit store instead.
+        configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
         configuration.allowsInlineMediaPlayback = YES;
         WKUserContentController *controller = configuration.userContentController;
         [controller addScriptMessageHandler:self name:@"ios2Game"];
