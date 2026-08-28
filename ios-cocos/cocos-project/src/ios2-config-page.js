@@ -64,7 +64,7 @@
                 item.addChild(arrow);
                 self.content.addChild(item, 5);
             }
-            var firstRowY = size.height - common.NAV_HEIGHT - 260;
+            var firstRowY = this._navTop(size) - 260;
             option(firstRowY, '游戏运行模式', runtimeBackend === 'webkit' ? 'WebKit 多开' : 'Cocos 极速', function () {
                 var nextBackend = runtimeBackend === 'webkit' ? 'native' : 'webkit';
                 try { jsb.reflection.callStaticMethod('IOS2Native', 'setRuntimeBackend:', nextBackend); }

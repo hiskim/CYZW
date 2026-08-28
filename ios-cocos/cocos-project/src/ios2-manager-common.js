@@ -5,6 +5,8 @@
     var parts = global.__ios2ManagerParts = global.__ios2ManagerParts || {};
     parts.common = {
         NAV_HEIGHT: 92,
+        SAFE_AREA_FALLBACK_TOP: 44,
+        SAFE_AREA_EXTRA_TOP: 8,
         COLORS: {
             background: cc.color(255, 255, 255, 255),
             panel: cc.color(248, 250, 253, 255),
@@ -16,6 +18,35 @@
             success: cc.color(24, 145, 92, 255),
             warning: cc.color(181, 105, 25, 255),
             danger: cc.color(224, 82, 82, 255)
+        },
+        safeAreaTop: function (size) {
+            var viewport = size || (cc.view && typeof cc.view.getVisibleSize === 'function' ?
+                cc.view.getVisibleSize() : cc.winSize);
+            var height = Number(viewport && viewport.height) || 0;
+            var width = Number(viewport && viewport.width) || 0;
+            var top = 0;
+            var hasRect = false;
+            var safeRect;
+            if (cc.sys && typeof cc.sys.getSafeAreaRect === 'function') {
+                try {
+                    safeRect = cc.sys.getSafeAreaRect();
+                    if (safeRect && isFinite(Number(safeRect.y)) && isFinite(Number(safeRect.height))) {
+                        top = Math.max(0, height - Number(safeRect.y) - Number(safeRect.height));
+                        hasRect = true;
+                    }
+                } catch (ignored) {}
+            }
+            var isIOS = !!(cc.sys && (cc.sys.os === cc.sys.OS_IOS || cc.sys.os === 'iOS'));
+            // Some iOS web adapters report the full viewport even when the
+            // native view has a Face ID or Dynamic Island inset.
+            if (isIOS && height >= width && top <= 0) {
+                top = this.SAFE_AREA_FALLBACK_TOP;
+            } else if (!hasRect && !isIOS) {
+                top = 0;
+            }
+            if (top <= 0) return 0;
+            top += this.SAFE_AREA_EXTRA_TOP;
+            return Math.min(top, Math.max(0, height - this.NAV_HEIGHT - 16));
         },
         safeStorage: function () {
             try { return global.localStorage; } catch (error) { return null; }
@@ -333,14 +364,21 @@
             var size = cc.winSize;
             var titleItem = parts.common.label(title, 36, parts.common.COLORS.text);
             titleItem.setAnchorPoint(0, 1);
-            titleItem.setPosition(38, size.height - parts.common.NAV_HEIGHT - 26);
+            titleItem.setPosition(38, this._navTop(size) - 26);
             this.content.addChild(titleItem);
             if (subtitle) {
                 var subtitleItem = parts.common.label(subtitle, 17, parts.common.COLORS.muted);
                 subtitleItem.setAnchorPoint(0, 1);
-                subtitleItem.setPosition(40, size.height - parts.common.NAV_HEIGHT - 70);
+                subtitleItem.setPosition(40, this._navTop(size) - 70);
                 this.content.addChild(subtitleItem);
             }
+        },
+
+        _navTop: function (size) {
+            var viewport = size || cc.winSize;
+            var inset = Number(this.safeTopInset);
+            if (!isFinite(inset)) inset = parts.common.safeAreaTop(viewport);
+            return viewport.height - parts.common.NAV_HEIGHT - Math.max(0, inset);
         },
 
         _panel: function (x, y, width, height, color) {

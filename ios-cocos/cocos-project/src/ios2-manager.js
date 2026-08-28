@@ -21,6 +21,7 @@
             this.binGroups = this._loadBinGroups();
             this._ensureBinGroups();
             this.scripts = [];
+            this.safeTopInset = common.safeAreaTop(cc.winSize);
             this._buildChrome();
             this._buildAccountHome();
             this._loadScripts();
@@ -55,6 +56,8 @@
 
         _buildChrome: function () {
             var size = cc.winSize;
+            this.safeTopInset = common.safeAreaTop(size);
+            this.navTop = this._navTop(size);
             this.background = common.rectNode(size.width, size.height, COLORS.background);
             this.addChild(this.background, 0);
             this.content = new cc.Node();
@@ -66,15 +69,15 @@
             this.addChild(this.logoutOverlay, 30);
 
             // The management navigation follows the account home layout and
-            // stays pinned to the top edge of the viewport.
+            // stays below the device's top safe area.
             this.navBackground = common.rectNode(size.width, NAV_HEIGHT, cc.color(255, 255, 255, 255));
-            this.navBackground.setPosition(0, size.height - NAV_HEIGHT);
+            this.navBackground.setPosition(0, this.navTop);
             this.addChild(this.navBackground, 20);
             this.navShadow = common.rectNode(size.width, 5, cc.color(38, 59, 89, 12));
-            this.navShadow.setPosition(0, size.height - NAV_HEIGHT - 5);
+            this.navShadow.setPosition(0, this.navTop - 5);
             this.addChild(this.navShadow, 21);
             this.navSeparator = common.rectNode(size.width, 1, COLORS.border);
-            this.navSeparator.setPosition(0, size.height - NAV_HEIGHT - 1);
+            this.navSeparator.setPosition(0, this.navTop - 1);
             this.addChild(this.navSeparator, 22);
 
             this.nav = new cc.Node();
@@ -83,12 +86,12 @@
             var names = ['Bin 文件', 'JS 脚本', '配置'];
             var self = this;
             this.navIndicator = common.surfaceNode(size.width / 3 - 56, 4, COLORS.accent, 2);
-            this.navIndicator.setPosition(28, size.height - NAV_HEIGHT);
+            this.navIndicator.setPosition(28, this.navTop);
             this.addChild(this.navIndicator, 25);
             this.navTouchSurface = new cc.Node();
             this.navTouchSurface.setAnchorPoint(0, 0);
             this.navTouchSurface.setContentSize(size.width, NAV_HEIGHT);
-            this.navTouchSurface.setPosition(0, size.height - NAV_HEIGHT);
+            this.navTouchSurface.setPosition(0, this.navTop);
             this.navTouchSurface.on(cc.Node.EventType.TOUCH_END, function (event) {
                 var location = event && typeof event.getLocation === 'function' ? event.getLocation() : null;
                 var width = cc.winSize.width || size.width;
@@ -103,7 +106,7 @@
                         if (self.gameStarted && self.background.active && self.page === page) self._resumeGame();
                         else self.showPage(page);
                     }, cc.color(45, 58, 76, 255));
-                    navItem.setPosition(size.width * (page + 0.5) / 3, size.height - NAV_HEIGHT / 2);
+                    navItem.setPosition(size.width * (page + 0.5) / 3, self.navTop + NAV_HEIGHT / 2);
                     self.nav.addChild(navItem);
                 }(index));
             }
@@ -142,7 +145,7 @@
                     cc.tween(this.navIndicator)
                         .to(0.18, { x: targetX }, { easing: 'sineOut' })
                         .start();
-                } else this.navIndicator.setPosition(targetX, cc.winSize.height - NAV_HEIGHT);
+                } else this.navIndicator.setPosition(targetX, this._navTop(cc.winSize));
             }
         },
 

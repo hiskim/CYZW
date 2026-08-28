@@ -118,6 +118,29 @@
         return date.getFullYear() + '-' + month + '-' + day + ' ' + hours + ':' + minutes;
     }
 
+    function safeAreaTop(width, height) {
+        var common = global.__ios2ManagerParts && global.__ios2ManagerParts.common;
+        var fallback = common && common.SAFE_AREA_FALLBACK_TOP || 44;
+        var extra = common && common.SAFE_AREA_EXTRA_TOP || 8;
+        var top = 0;
+        var hasRect = false;
+        var safeRect;
+        if (cc.sys && typeof cc.sys.getSafeAreaRect === 'function') {
+            try {
+                safeRect = cc.sys.getSafeAreaRect();
+                if (safeRect && isFinite(Number(safeRect.y)) && isFinite(Number(safeRect.height))) {
+                    top = Math.max(0, height - Number(safeRect.y) - Number(safeRect.height));
+                    hasRect = true;
+                }
+            } catch (ignored) {}
+        }
+        var isIOS = !!(cc.sys && (cc.sys.os === cc.sys.OS_IOS || cc.sys.os === 'iOS'));
+        if (isIOS && height >= width && top <= 0) top = fallback;
+        else if (!hasRect && !isIOS) top = 0;
+        if (top <= 0) return 0;
+        return Math.min(top + extra, Math.max(0, height - 120));
+    }
+
     function IOS2AccountView(actions) {
         this.actions = actions || {};
         this.accounts = [];
@@ -138,10 +161,11 @@
         var height = fgui.GRoot.inst.height;
         this.layoutWidth = width;
         this.layoutHeight = height;
+        this.layoutSafeTop = safeAreaTop(width, height);
         this.root.setSize(width, height);
         this.root.addChild(graph(width, height, COLORS.background));
 
-        var top = 40;
+        var top = 40 + this.layoutSafeTop;
         var compact = width < 360;
         var toolbarSize = compact ? 38 : 46;
         var toolbarGap = compact ? 5 : 9;
@@ -326,7 +350,7 @@
         var panelHeight = 58 + items.length * 52;
         var panel = new fgui.GComponent();
         panel.setSize(panelWidth, panelHeight);
-        panel.setPosition(width - panelWidth - 18, 96);
+        panel.setPosition(width - panelWidth - 18, 96 + this.layoutSafeTop);
         panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 16, COLORS.border));
         var heading = text(headingText, 18, COLORS.text, panelWidth - 32, 38);
         heading.bold = true;
@@ -528,7 +552,8 @@
         try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
         catch (ignored) {}
         if (backend !== this.runtimeBackend || this.layoutWidth !== fgui.GRoot.inst.width ||
-            this.layoutHeight !== fgui.GRoot.inst.height) this._build();
+            this.layoutHeight !== fgui.GRoot.inst.height ||
+            this.layoutSafeTop !== safeAreaTop(fgui.GRoot.inst.width, fgui.GRoot.inst.height)) this._build();
         this.root.visible = true;
     };
     IOS2AccountView.prototype.hide = function () { this.root.visible = false; };
