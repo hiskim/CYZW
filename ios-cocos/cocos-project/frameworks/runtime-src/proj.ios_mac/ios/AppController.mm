@@ -284,6 +284,17 @@ static void IOS2PublishSDKUser(void)
     s_ios2HSDKTargetInstanceID = previousTarget;
 }
 
+static void IOS2PublishSDKUserForAccountID(NSString *accountID, NSString *instanceID)
+{
+    if (!accountID.length) return;
+    NSLog(@"[ios2] publishing authenticated SDK user");
+    NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+    if (!previousTarget.length) s_ios2HSDKTargetInstanceID = instanceID;
+    IOS2CallHSDKMessage(@"sdk-get-userId", @{ @"userId": accountID,
+                                                @"uniqueId": accountID }, 0);
+    s_ios2HSDKTargetInstanceID = previousTarget;
+}
+
 static void IOS2FinishSDKLogin(NSInteger errCode)
 {
     if (!s_ios2SDKLoginPending) return;
@@ -897,6 +908,7 @@ static void IOS2Authenticate(NSData *binData)
                 } else {
                     [instances addObject:@{
                         @"account": name,
+                        @"accountID": IOS2AccountIDForBinData(binData) ?: @"",
                         @"authResponse": [data base64EncodedStringWithOptions:0]
                     }];
                 }
@@ -1195,6 +1207,21 @@ static void IOS2Authenticate(NSData *binData)
 
 + (void)loginForSDK
 {
+    // A WebKit multi-open instance is authenticated before its page is
+    // created. HSDK still asks the native bridge to log in during bootstrap;
+    // answer for that originating instance instead of opening another
+    // document picker. This path is synchronous so concurrent instances do
+    // not overwrite the shared pending-login state.
+    NSString *instanceID = [s_ios2HSDKTargetInstanceID copy];
+    if ([[self runtimeBackend] isEqualToString:@"webkit"] && instanceID.length &&
+        [IOS2GameWebView instanceCount] > 1) {
+        NSString *accountID = [IOS2GameWebView accountIDForInstance:instanceID];
+        IOS2PublishSDKUserForAccountID(accountID, instanceID);
+        IOS2FinishSDKLogin(0);
+        [instanceID release];
+        return;
+    }
+    [instanceID release];
     dispatch_async(dispatch_get_main_queue(), ^{
         // The manager authenticates the selected bin before starting the
         // remote launcher. Reuse that authenticated response when HSDK asks
@@ -1357,8 +1384,10 @@ static void IOS2Authenticate(NSData *binData)
         }, 0);
     } else if ([action isEqualToString:@"sdk-get-userId"] ||
                [action isEqualToString:@"user-getuserinfo"]) {
-        NSDictionary *account = s_ios2AccountID.length ?
-            @{ @"userId": s_ios2AccountID, @"uniqueId": s_ios2AccountID } : @{};
+        NSString *accountID = [IOS2GameWebView accountIDForInstance:instanceID];
+        if (!accountID.length) accountID = s_ios2AccountID;
+        NSDictionary *account = accountID.length ?
+            @{ @"userId": accountID, @"uniqueId": accountID } : @{};
         IOS2CallHSDKMessage(action, account, 0);
     } else if ([action isEqualToString:@"sdk-read-image"]) {
         [s_ios2HSDKImageInstanceID release];

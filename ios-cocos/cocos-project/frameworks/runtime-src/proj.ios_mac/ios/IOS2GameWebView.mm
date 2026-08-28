@@ -587,7 +587,11 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         webView.translatesAutoresizingMaskIntoConstraints = NO;
         webView.scrollView.bounces = NO;
         [self.presenter.view addSubview:webView];
-        [self.instances addObject:@{ @"id": instanceID, @"account": accountName, @"view": webView }];
+        NSString *accountID = [item[@"accountID"] isKindOfClass:[NSString class]] ? item[@"accountID"] : @"";
+        [self.instances addObject:@{ @"id": instanceID,
+                                     @"account": accountName,
+                                     @"accountID": accountID,
+                                     @"view": webView }];
         NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
         NSLog(@"[ios2] loading Web runtime revision=%@ account=%@", kIOS2WebRuntimeRevision, accountName);
         [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
@@ -799,6 +803,18 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 + (NSUInteger)instanceCount
 {
     return [self sharedInstance].instances.count;
+}
+
++ (NSString *)accountIDForInstance:(NSString *)instanceID
+{
+    if (!instanceID.length) return nil;
+    for (NSDictionary *record in [self sharedInstance].instances) {
+        if ([record[@"id"] isEqualToString:instanceID]) {
+            NSString *accountID = [record[@"accountID"] isKindOfClass:[NSString class]] ? record[@"accountID"] : nil;
+            return accountID.length ? accountID : nil;
+        }
+    }
+    return nil;
 }
 
 + (void)sendHSDKMessage:(NSString *)action

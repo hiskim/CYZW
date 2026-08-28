@@ -11,4 +11,5 @@
                   extra:(NSDictionary *)extra
                 errCode:(NSInteger)errCode
              toInstance:(NSString *)instanceID;
++ (NSString *)accountIDForInstance:(NSString *)instanceID;
 @end
