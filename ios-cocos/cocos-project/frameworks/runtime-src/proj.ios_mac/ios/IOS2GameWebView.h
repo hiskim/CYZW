@@ -5,4 +5,8 @@
 + (void)hide;
 + (void)closeAll;
 + (NSUInteger)instanceCount;
++ (void)sendHSDKMessage:(NSString *)action
+                  extra:(NSDictionary *)extra
+                errCode:(NSInteger)errCode
+             toInstance:(NSString *)instanceID;
 @end

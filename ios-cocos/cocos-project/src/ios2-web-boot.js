@@ -1,6 +1,9 @@
 (function () {
     'use strict';
 
+    var IOS2_WEB_RUNTIME_REVISION = '20260828-remote-bundle-route-1';
+    window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
+
     function showFatal(message) {
         var panel = document.getElementById('ios2WebError');
         if (!panel) {
@@ -13,6 +16,143 @@
         }
         panel.textContent = String(message || 'WebKit 游戏启动失败');
     }
+
+    function decryptJSC(data, keyText) {
+        var bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        var keyBytes = new TextEncoder().encode(keyText);
+        var key = new Uint8Array(16);
+        key.set(keyBytes.subarray(0, 16));
+
+        function uint32(source, includeLength) {
+            var length = source.length;
+            var count = Math.ceil(length / 4);
+            var values = new Uint32Array(count + (includeLength ? 1 : 0));
+            for (var index = 0; index < length; index++) {
+                values[index >>> 2] |= source[index] << ((index & 3) << 3);
+            }
+            if (includeLength) values[count] = length;
+            return values;
+        }
+
+        var values = uint32(bytes, false);
+        var keyValues = uint32(key, false);
+        var last = values.length - 1;
+        if (last < 1) return bytes;
+        var rounds = Math.floor(6 + 52 / values.length);
+        var sum = rounds * 0x9E3779B9;
+        var y = values[0];
+        while (sum !== 0) {
+            var e = sum >>> 2 & 3;
+            for (var position = last; position > 0; position--) {
+                var z = values[position - 1];
+                var mix = ((z >>> 5 ^ y << 2) + (y >>> 3 ^ z << 4)) ^
+                    ((sum ^ y) + (keyValues[position & 3 ^ e] ^ z));
+                y = values[position] = values[position] - mix >>> 0;
+            }
+            z = values[last];
+            mix = ((z >>> 5 ^ y << 2) + (y >>> 3 ^ z << 4)) ^
+                ((sum ^ y) + (keyValues[e] ^ z));
+            y = values[0] = values[0] - mix >>> 0;
+            sum = sum - 0x9E3779B9 >>> 0;
+        }
+
+        var decodedLength = values[last];
+        var maximumLength = last << 2;
+        if (decodedLength < maximumLength - 3 || decodedLength > maximumLength) {
+            throw new Error('Invalid XXTEA payload length');
+        }
+        var output = new Uint8Array(decodedLength);
+        for (var outputIndex = 0; outputIndex < decodedLength; outputIndex++) {
+            output[outputIndex] = values[outputIndex >>> 2] >>> ((outputIndex & 3) << 3) & 0xFF;
+        }
+        return output;
+    }
+    window.__ios2DecryptJSC = decryptJSC;
+
+    function installEncryptedBundleLoader() {
+        var downloader = cc.assetManager && cc.assetManager.downloader;
+        if (!downloader || downloader.__ios2EncryptedBundles) return;
+        downloader.__ios2EncryptedBundles = true;
+        var originalScripts = downloader._downloaders || {};
+        var originalJSONDownloader = originalScripts['.json'];
+        var originalScriptDownloader = originalScripts['.js'];
+        // Remote bundles can arrive as ios2-game://app/remote/<name>/... or
+        // ios2-game://app/<name>/... depending on which loader requested them.
+        var encryptedBundle = /(?:^|\/)(?:remote\/)?(?:game|launcher|TEST_REMOTE_MODULE)\/index\.[^/]+\.js(?:\?|$)/;
+        var loaded = Object.create(null);
+
+        function execute(code, url) {
+            code = code.replace(/cc\.assetManager\.loadAny=function\(\)\{\},?/g, '');
+            code = code.replace(/[a-zA-Z]\.PlatformManager\.instance\.isH5&&\(cc\.assetManager\.loadBundle=function\(\)\{\}\),?/g, '');
+            (0, eval)(code + '\n//# sourceURL=' + url);
+        }
+
+        downloader.register('.js', function (url, options, onComplete) {
+            if (!encryptedBundle.test(url)) {
+                return originalScriptDownloader(url, options, onComplete);
+            }
+            var encryptedURL = url + 'c';
+            if (loaded[encryptedURL]) {
+                onComplete(null);
+                return;
+            }
+            fetch(encryptedURL, { cache: 'force-cache' })
+                .then(function (response) {
+                    if (!response.ok) throw new Error('download failed: ' + encryptedURL + ', status: ' + response.status);
+                    return response.arrayBuffer();
+                })
+                .then(function (buffer) {
+                    var bytes = decryptJSC(buffer, '0Aed5E79bbEa69f8');
+                    var code = new TextDecoder().decode(bytes);
+                    execute(code, encryptedURL);
+                    loaded[encryptedURL] = true;
+                    console.log('[ios2-web] decrypted bundle', encryptedURL, bytes.length);
+                    onComplete(null);
+                })
+                .catch(function (error) { onComplete(error); });
+        });
+
+        function downloadJSON(url, options, onComplete) {
+            if (typeof originalJSONDownloader === 'function') {
+                return originalJSONDownloader(url, options, onComplete);
+            }
+            fetch(url, { cache: 'force-cache' })
+                .then(function (response) {
+                    if (!response.ok) throw new Error('download failed: ' + url + ', status: ' + response.status);
+                    return response.json();
+                })
+                .then(function (json) { onComplete(null, json); })
+                .catch(function (error) { onComplete(error); });
+        }
+
+        function downloadBundle(url, options, onComplete) {
+            var bundleName = cc.path.basename(url);
+            var version = options.version || downloader.bundleVers && downloader.bundleVers[bundleName];
+            var versionPart = version ? version + '.' : '';
+            var completeCount = 0;
+            var failure = null;
+            var config = null;
+
+            function done(error) {
+                if (error && !failure) failure = error;
+                completeCount++;
+                if (completeCount === 2) onComplete(failure, config);
+            }
+
+            downloadJSON(url + '/config.' + versionPart + 'json', options, function (error, data) {
+                if (data) {
+                    data.base = url + '/';
+                    config = data;
+                }
+                done(error);
+            });
+            downloader._downloaders['.js'](url + '/index.' + versionPart + 'js', options, done);
+        }
+
+        downloader.register('bundle', downloadBundle);
+        console.log('[ios2-web] custom bundle loader installed');
+    }
+    window.__ios2InstallEncryptedBundleLoader = installEncryptedBundleLoader;
 
     function installASTCTextureSupport() {
         var parser = cc.assetManager && cc.assetManager.parser;
@@ -104,16 +244,31 @@
         });
     }
 
+    function reportCapabilities(gl) {
+        if (!gl || !window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.ios2Game) return;
+        var support = window.IOS2PVR && window.IOS2PVR.extensions ? window.IOS2PVR.extensions(gl) : {};
+        window.webkit.messageHandlers.ios2Game.postMessage({
+            type: 'capabilities',
+            instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+            pvrtc: !!support.pvrtc,
+            astc: !!support.astc
+        });
+    }
+
     function boot() {
+        console.log('[ios2-web] boot revision', IOS2_WEB_RUNTIME_REVISION);
         var settings = window._CCSettings;
         if (!settings || !window.cc) {
             showFatal('WebKit 游戏启动失败\n\n缺少 Web runtime settings 或 Cocos Web 引擎。');
             throw new Error('Web runtime settings or Cocos engine is missing');
         }
         var manifest = window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.manifest || {};
+        var bundledVers = settings.bundleVers || {};
         var liveBundleVers = manifest.bundleVers;
         if (typeof liveBundleVers === 'string') liveBundleVers = JSON.parse(liveBundleVers);
-        if (liveBundleVers && typeof liveBundleVers === 'object') settings.bundleVers = liveBundleVers;
+        if (liveBundleVers && typeof liveBundleVers === 'object') {
+            settings.bundleVers = Object.assign({}, bundledVers, liveBundleVers);
+        }
         window.BATTLE_VERSION = manifest.battleVersion || window.BATTLE_VERSION;
         settings.platform = 'web-mobile';
         settings.server = 'ios2-game://app/cdn';
@@ -138,6 +293,7 @@
             remoteBundles: settings.remoteBundles,
             server: settings.server
         });
+        installEncryptedBundleLoader();
         var bundles = [{
             name: cc.AssetManager.BuiltinBundleName.INTERNAL,
             url: 'ios2-game://app/assets/internal'
@@ -163,10 +319,8 @@
                 var detail = error && (error.stack || error.message) || String(error || '未知错误');
                 if (name === 'launcher') {
                     var version = settings.bundleVers && settings.bundleVers.launcher || '<unknown>';
-                    showFatal('WebKit 游戏代码不可用\n\nCDN 缺少浏览器代码：\n' +
-                        'remote/launcher/index.' + version + '.js\n\n' +
-                        '当前 iOS CDN 只有 index.' + version + '.jsc。该文件是 V8/JSB 二进制字节码，' +
-                        'WKWebView 的 JavaScriptCore 无法执行。\n\n' + detail);
+                    showFatal('WebKit 游戏代码加载失败\n\n无法下载或解密：\n' +
+                        'remote/launcher/index.' + version + '.jsc\n\n' + detail);
                 } else {
                     showFatal('WebKit 游戏启动失败\n\n加载 ' + name + ' 失败：\n' + detail);
                 }
@@ -179,6 +333,7 @@
                     var gl = device && device._gl;
                     var pvrtc = device && device.ext('WEBGL_compressed_texture_pvrtc');
                     var astc = gl && gl.getExtension('WEBGL_compressed_texture_astc');
+                    reportCapabilities(gl);
                     if (!pvrtc && !astc) {
                         throw new Error('PVRTC or ASTC is required; PNG/WebP fallback is disabled');
                     }

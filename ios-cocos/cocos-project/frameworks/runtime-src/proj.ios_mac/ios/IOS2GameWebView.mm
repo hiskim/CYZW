@@ -4,8 +4,32 @@
 #import <WebKit/WebKit.h>
 #import <CommonCrypto/CommonDigest.h>
 
+// Implemented by AppController.mm. WebKit HSDK calls are fed through the
+// same native dispatcher used by the Cocos JSB runtime.
+@interface SDKMessager : NSObject
++ (void)callNative:(NSString *)channel withMessage:(NSString *)message;
+@end
+
+typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response, NSError *error);
+
+/*
+ * Keep CDN downloads on the same connection stack as the working login and
+ * manifest requests. NSURLSession can negotiate HTTP/3 in the simulator;
+ * this endpoint has been observed to leave that response open there.
+ */
+@interface IOS2WebHTTPConnection : NSObject <NSURLConnectionDataDelegate>
+@property (nonatomic, strong) NSURLConnection *connection;
+@property (nonatomic, strong) NSMutableData *bodyData;
+@property (nonatomic, strong) NSHTTPURLResponse *response;
+@property (nonatomic, strong) IOS2WebHTTPCompletion completion;
+@property (nonatomic, assign) BOOL finished;
+- (instancetype)initWithRequest:(NSURLRequest *)request completion:(IOS2WebHTTPCompletion)completion;
+- (void)start;
+- (void)cancel;
+@end
+
 @interface IOS2GameSchemeHandler : NSObject <WKURLSchemeHandler>
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSURLSessionDataTask *> *tasks;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, IOS2WebHTTPConnection *> *tasks;
 @property (nonatomic, strong) dispatch_queue_t cacheQueue;
 @end
 
@@ -17,6 +41,7 @@
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
+static NSString * const kIOS2WebRuntimeRevision = @"20260828-remote-bundle-route-1";
 
 static NSString *IOS2GameMIMEType(NSString *path)
 {
@@ -49,6 +74,71 @@ static NSString *IOS2GameSHA256(NSString *value)
     for (NSUInteger index = 0; index < CC_SHA256_DIGEST_LENGTH; index++) [result appendFormat:@"%02x", digest[index]];
     return result;
 }
+
+@implementation IOS2WebHTTPConnection
+
+- (instancetype)initWithRequest:(NSURLRequest *)request completion:(IOS2WebHTTPCompletion)completion
+{
+    self = [super init];
+    if (self) {
+        _bodyData = [[NSMutableData alloc] init];
+        _completion = [completion copy];
+        _connection = [[NSURLConnection alloc] initWithRequest:request
+                                                       delegate:self
+                                               startImmediately:NO];
+    }
+    return self;
+}
+
+- (void)start
+{
+    [self.connection scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    [self.connection start];
+}
+
+- (void)cancel
+{
+    [self.connection cancel];
+    self.completion = nil;
+    self.connection = nil;
+}
+
+- (void)finishWithResponse:(NSHTTPURLResponse *)response error:(NSError *)error
+{
+    if (self.finished) return;
+    self.finished = YES;
+    IOS2WebHTTPCompletion completion = self.completion;
+    if (completion) completion([self.bodyData copy], response, error);
+    self.completion = nil;
+    self.connection = nil;
+}
+
+- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response
+{
+    (void)connection;
+    self.response = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+    [self.bodyData setLength:0];
+}
+
+- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data
+{
+    (void)connection;
+    [self.bodyData appendData:data];
+}
+
+- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error
+{
+    (void)connection;
+    [self finishWithResponse:self.response error:error];
+}
+
+- (void)connectionDidFinishLoading:(NSURLConnection *)connection
+{
+    (void)connection;
+    [self finishWithResponse:self.response error:nil];
+}
+
+@end
 
 @implementation IOS2GameSchemeHandler
 
@@ -85,11 +175,19 @@ static NSString *IOS2GameSHA256(NSString *value)
                                                userInfo:@{NSLocalizedDescriptionKey: @"Resource not found"}]];
         return;
     }
-    NSURLResponse *response = [[NSURLResponse alloc] initWithURL:url
-                                                       MIMEType:IOS2GameMIMEType(url.path)
-                                          expectedContentLength:(NSInteger)data.length
-                                               textEncodingName:[IOS2GameMIMEType(url.path) hasPrefix:@"text/"] ||
-                                                                [url.path.pathExtension.lowercaseString isEqualToString:@"js"] ? @"utf-8" : nil];
+    NSString *mimeType = IOS2GameMIMEType(url.path);
+    NSDictionary *headers = @{
+        @"Content-Type": mimeType,
+        @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)data.length],
+        // Native cacheList.json owns CDN caching; avoid retaining a stale
+        // WebKit runtime after an Xcode rebuild.
+        @"Cache-Control": @"no-store"
+    };
+    /* WKURLSchemeTask needs an HTTP response to expose fetch().ok/status. */
+    NSURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url
+                                                           statusCode:200
+                                                          HTTPVersion:@"HTTP/1.1"
+                                                         headerFields:headers];
     [task didReceiveResponse:response];
     [task didReceiveData:data];
     [task didFinish];
@@ -115,33 +213,54 @@ static NSString *IOS2GameSHA256(NSString *value)
             @"index.html": @"ios2-web-index.html",
             @"settings.js": @"settings.b2e22.js",
             @"cocos2d.js": @"ios2-web-cocos2d.js",
+            @"physics.js": @"ios2-web-physics.js",
             @"boot.js": @"ios2-web-boot.js"
         };
         NSString *resource = files[name];
         NSString *path = nil;
-        if (resource.length) {
+        if ([name isEqualToString:@"game-defines.js"]) {
+            path = [[NSBundle mainBundle] pathForResource:@"game-defines.js"
+                                                    ofType:nil
+                                               inDirectory:@"jsb-adapter"];
+        } else if (resource.length) {
             path = [[NSBundle mainBundle] pathForResource:resource ofType:nil inDirectory:@"src"];
         } else if ([url.path hasPrefix:@"/src/"]) {
             path = [[NSBundle mainBundle].resourcePath stringByAppendingPathComponent:[url.path substringFromIndex:1]];
         } else if ([url.path hasPrefix:@"/assets/"]) {
             path = [[NSBundle mainBundle].resourcePath stringByAppendingPathComponent:[url.path substringFromIndex:1]];
         }
-        [self respondToTask:task data:path.length ? [NSData dataWithContentsOfFile:path] : nil url:url];
-        return;
+        NSData *localData = path.length ? [NSData dataWithContentsOfFile:path] : nil;
+        if (localData.length || [url.path hasPrefix:@"/src/"]) {
+            [self respondToTask:task data:localData url:url];
+            return;
+        }
+
+        /*
+         * Cocos' remote bundle loader keeps the bundle URL it was given. In
+         * WebKit that URL is ios2-game://app/game/... (or
+         * ios2-game://app/TEST_REMOTE_MODULE/...), while the CDN stores the
+         * same files below /remote/<bundle>/. Fall through to the CDN path
+         * for these non-packaged app resources instead of reporting them as
+         * missing local files.
+         */
     }
-    if (![url.host isEqualToString:@"cdn"] &&
-        !([url.host isEqualToString:@"app"] && [url.path hasPrefix:@"/cdn/"])) {
+    if (![url.host isEqualToString:@"cdn"] && ![url.host isEqualToString:@"app"]) {
         [self respondToTask:task data:nil url:url];
         return;
     }
     NSString *remoteURL = nil;
     if ([url.host isEqualToString:@"app"]) {
         NSString *cdnPath = [url.path substringFromIndex:[@"/cdn" length]];
+        if (![url.path hasPrefix:@"/cdn/"]) {
+            cdnPath = [@"/remote" stringByAppendingString:url.path];
+            NSLog(@"[ios2] Web bundle resource mapped: %@ -> %@", url.absoluteString, cdnPath);
+        }
         remoteURL = [@"https://xxz-xyzw-res.hortorgames.com" stringByAppendingString:cdnPath ?: @""];
         if (url.query.length) remoteURL = [remoteURL stringByAppendingFormat:@"?%@", url.query];
     } else {
         NSString *encoded = [url.path stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
-        remoteURL = encoded.stringByRemovingPercentEncoding;
+        remoteURL = [@"https://xxz-xyzw-res.hortorgames.com/" stringByAppendingString:encoded.stringByRemovingPercentEncoding ?: @""];
+        if (url.query.length) remoteURL = [remoteURL stringByAppendingFormat:@"?%@", url.query];
     }
     NSURL *remote = [NSURL URLWithString:remoteURL ?: @""];
     if (!remote || ![@[@"http", @"https"] containsObject:remote.scheme.lowercaseString]) {
@@ -160,17 +279,32 @@ static NSString *IOS2GameSHA256(NSString *value)
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSURLSessionDataTask *download = [[NSURLSession sharedSession] dataTaskWithURL:remote
-                completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:remote
+                                                                      cachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData
+                                                                  timeoutInterval:60.0];
+            request.HTTPMethod = @"GET";
+            [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
+            [request setValue:@"close" forHTTPHeaderField:@"Connection"];
+            IOS2WebHTTPConnection *download = [[IOS2WebHTTPConnection alloc] initWithRequest:request
+                                                                                       completion:^(NSData *data, NSHTTPURLResponse *response, NSError *error) {
                 if (![self finishDownloadForTask:task]) return;
-                NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-                if (error || !data.length || http.statusCode < 200 || http.statusCode >= 300) {
+                NSInteger status = response ? response.statusCode : 0;
+                if (error || !data.length || status < 200 || status >= 300) {
                     NSLog(@"[ios2] Web CDN request failed: %@ status=%ld error=%@",
-                          remoteURL, (long)http.statusCode, error.localizedDescription ?: @"<none>");
-                    [task didFailWithError:error ?: [NSError errorWithDomain:@"IOS2GameWebView" code:http.statusCode
-                                                                    userInfo:@{NSLocalizedDescriptionKey: @"CDN request failed"}]];
+                          remoteURL, (long)status, error.localizedDescription ?: @"<none>");
+                    NSError *failure = error;
+                    if (!failure) {
+                        NSString *message = status ? [NSString stringWithFormat:@"CDN request failed (HTTP %ld)", (long)status]
+                                                   : @"CDN request failed";
+                        failure = [NSError errorWithDomain:@"IOS2GameWebView"
+                                                       code:(status ?: -1)
+                                                   userInfo:@{NSLocalizedDescriptionKey: message}];
+                    }
+                    [task didFailWithError:failure];
                     return;
                 }
+                NSLog(@"[ios2] Web CDN request finished: %@ status=%ld bytes=%lu",
+                      remoteURL, (long)status, (unsigned long)data.length);
                 dispatch_async(self.cacheQueue, ^{
                     NSFileManager *manager = [NSFileManager defaultManager];
                     NSURL *webDirectory = [IOS2GameCacheDirectory() URLByAppendingPathComponent:@"webkit" isDirectory:YES];
@@ -190,7 +324,7 @@ static NSString *IOS2GameSHA256(NSString *value)
                 });
             }];
             @synchronized (self.tasks) { self.tasks[[self keyForTask:task]] = download; }
-            [download resume];
+            [download start];
         });
     });
 }
@@ -198,7 +332,7 @@ static NSString *IOS2GameSHA256(NSString *value)
 - (void)webView:(WKWebView *)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task
 {
     (void)webView;
-    NSURLSessionDataTask *download = nil;
+    IOS2WebHTTPConnection *download = nil;
     @synchronized (self.tasks) {
         NSString *key = [self keyForTask:task];
         download = self.tasks[key];
@@ -250,6 +384,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     return [NSString stringWithFormat:
         @"(function(){'use strict';"
          "window.__IOS2_GAME_INSTANCE__=%@;"
+         "window.jsb=window.jsb||{};window.jsb.reflection=window.jsb.reflection||{};"
+         "window.jsb.reflection.callStaticMethod=function(){var args=Array.prototype.slice.call(arguments),klass=args.shift(),method=args.shift();if(klass==='SDKMessager'&&method==='callNative:withMessage:'){var channel=args[0]||'sdk',message=args[1]||'{}';try{window.webkit.messageHandlers.ios2Game.postMessage({type:'hsdk',instance:window.__IOS2_GAME_INSTANCE__.id,channel:channel,message:String(message)});}catch(error){console.error('[ios2-web] HSDK bridge failed',error);}}return null;};"
          "function authBytes(){var value=window.__IOS2_GAME_INSTANCE__.authResponse||'',binary=atob(value),bytes=new Uint8Array(binary.length);for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);return bytes.buffer;}"
          "var NativeXHR=window.XMLHttpRequest;function IOS2XHR(){this._native=new NativeXHR();this._fake=false;this._listeners={};this._readyState=0;this._status=0;this._response=null;this._responseType='';var self=this;['readystatechange','load','error','timeout','abort','loadend','progress'].forEach(function(type){self._native['on'+type]=function(event){var handler=self['on'+type];if(typeof handler==='function')handler.call(self,event);var list=self._listeners[type]||[];for(var i=0;i<list.length;i++)list[i].call(self,event);};});}"
          "IOS2XHR.prototype.open=function(method,url){this._fake=/\\/login\\/authuser(?:\\?|$)/.test(String(url||''));if(this._fake){this._readyState=1;this._emit('readystatechange');}else this._native.open.apply(this._native,arguments);};"
@@ -261,7 +397,6 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
          "function upload(gl,buffer){var pvr=parse(buffer),ext=extensions(gl).pvrtc;if(!ext)throw new Error('PVRTC WebGL extension is unavailable');var formats=[ext.COMPRESSED_RGB_PVRTC_2BPPV1_IMG,ext.COMPRESSED_RGBA_PVRTC_2BPPV1_IMG,ext.COMPRESSED_RGB_PVRTC_4BPPV1_IMG,ext.COMPRESSED_RGBA_PVRTC_4BPPV1_IMG],texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);for(var i=0;i<pvr.levels.length;i++){var item=pvr.levels[i];gl.compressedTexImage2D(gl.TEXTURE_2D,i,formats[pvr.format],item.width,item.height,0,item.data);}gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,pvr.levels.length>1?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);return {texture:texture,width:pvr.width,height:pvr.height,format:pvr.format};}"
          "window.IOS2PVR={extensions:extensions,parse:parse,upload:upload,load:function(gl,url,options){return fetch(url,options||{}).then(function(response){if(!response.ok)throw new Error('PVR request failed: '+response.status);return response.arrayBuffer();}).then(function(buffer){return upload(gl,buffer);});}};"
          "window.addEventListener('load',function(){setTimeout(function(){var scripts=window.__IOS2_GAME_INSTANCE__.scripts||[];for(var i=0;i<scripts.length;i++){try{(0,eval)(String(scripts[i].source||'')+'\\n//# sourceURL=ios2-game/'+String(scripts[i].name||'script.js'));}catch(error){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(error&&error.stack||error)});}}},0);});"
-         "window.addEventListener('DOMContentLoaded',function(){var canvas=document.querySelector('canvas'),gl=canvas&&(canvas.getContext('webgl2')||canvas.getContext('webgl')||canvas.getContext('experimental-webgl')),support=gl?extensions(gl):{};window.webkit.messageHandlers.ios2Game.postMessage({type:'capabilities',instance:window.__IOS2_GAME_INSTANCE__.id,pvrtc:!!support.pvrtc,astc:!!support.astc});});"
          "window.addEventListener('error',function(event){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(event.message||'Web game error')});});"
          "window.addEventListener('unhandledrejection',function(event){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(event.reason&&event.reason.stack||event.reason||'Unhandled rejection')});});"
          "['log','warn','error'].forEach(function(level){var original=console[level];console[level]=function(){var args=Array.prototype.slice.call(arguments);try{window.webkit.messageHandlers.ios2Game.postMessage({type:'console',level:level,instance:window.__IOS2_GAME_INSTANCE__.id,message:args.map(function(value){return String(value&&value.stack||value);}).join(' ')});}catch(ignored){}return original.apply(console,args);};});"
@@ -319,7 +454,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         webView.scrollView.bounces = NO;
         [self.presenter.view addSubview:webView];
         [self.instances addObject:@{ @"id": instanceID, @"account": accountName, @"view": webView }];
-        [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"ios2-game://app/index.html"]]];
+        NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
+        NSLog(@"[ios2] loading Web runtime revision=%@ account=%@", kIOS2WebRuntimeRevision, accountName);
+        [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
     }
     [self layoutInstances];
     [self.presenter.view bringSubviewToFront:self.toolbar];
@@ -468,6 +605,43 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     return [self sharedInstance].instances.count;
 }
 
++ (void)sendHSDKMessage:(NSString *)action
+                  extra:(NSDictionary *)extra
+                errCode:(NSInteger)errCode
+             toInstance:(NSString *)instanceID
+{
+    if (!instanceID.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        IOS2GameWebView *manager = [self sharedInstance];
+        WKWebView *webView = nil;
+        for (NSDictionary *record in manager.instances) {
+            if ([record[@"id"] isEqualToString:instanceID]) {
+                webView = record[@"view"];
+                break;
+            }
+        }
+        if (!webView) {
+            NSLog(@"[ios2] HSDK response dropped; WebKit instance %@ is gone", instanceID);
+            return;
+        }
+        NSDictionary *message = @{
+            @"action": action ?: @"",
+            @"meta": @{ @"errCode": @(errCode) },
+            @"extra": extra ?: @{}
+        };
+        NSData *messageData = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
+        NSString *messageJSON = [[NSString alloc] initWithData:messageData encoding:NSUTF8StringEncoding] ?: @"{}";
+        NSData *argumentData = [NSJSONSerialization dataWithJSONObject:messageJSON options:NSJSONWritingFragmentsAllowed error:nil];
+        NSString *argumentJSON = [[NSString alloc] initWithData:argumentData encoding:NSUTF8StringEncoding] ?: @"\"{}\"";
+        NSString *script = [NSString stringWithFormat:
+            @"if (window.HSDK && typeof window.HSDK.onMessage === 'function') window.HSDK.onMessage('sdk', %@);",
+            argumentJSON];
+        [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+            if (error) NSLog(@"[ios2] HSDK WebKit response failed action=%@ error=%@", action, error.localizedDescription);
+        }];
+    });
+}
+
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation
 {
     (void)webView; (void)navigation;
@@ -502,6 +676,21 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         NSLog(@"[ios2] Web game %@ error: %@", body[@"instance"], body[@"message"]);
     } else if ([body[@"type"] isEqualToString:@"console"]) {
         NSLog(@"[ios2][web][%@][%@] %@", body[@"instance"], body[@"level"], body[@"message"]);
+    } else if ([body[@"type"] isEqualToString:@"hsdk"]) {
+        NSString *channel = [body[@"channel"] isKindOfClass:[NSString class]] ? body[@"channel"] : @"sdk";
+        NSString *message = [body[@"message"] isKindOfClass:[NSString class]] ? body[@"message"] : @"{}";
+        NSData *messageData = [message dataUsingEncoding:NSUTF8StringEncoding];
+        id object = messageData ? [NSJSONSerialization JSONObjectWithData:messageData options:NSJSONReadingMutableContainers error:nil] : nil;
+        if (![object isKindOfClass:[NSDictionary class]]) {
+            NSLog(@"[ios2] invalid WebKit HSDK request: %@", message);
+            return;
+        }
+        NSMutableDictionary *request = [(NSDictionary *)object mutableCopy];
+        NSString *instanceID = [body[@"instance"] isKindOfClass:[NSString class]] ? body[@"instance"] : @"";
+        if (instanceID.length) request[@"__ios2Instance"] = instanceID;
+        NSData *requestData = [NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
+        NSString *requestJSON = [[NSString alloc] initWithData:requestData encoding:NSUTF8StringEncoding] ?: @"{}";
+        [SDKMessager callNative:channel withMessage:requestJSON];
     }
 }
 

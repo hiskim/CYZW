@@ -46,6 +46,11 @@ static BOOL s_ios2LoginBusy = NO;
 static BOOL s_ios2AuthReady = NO;
 static BOOL s_ios2SDKLoginPending = NO;
 static NSString *s_ios2SDKLoginAction = nil;
+static NSString *s_ios2SDKLoginInstanceID = nil;
+static NSString *s_ios2HSDKImageInstanceID = nil;
+// Set while synchronously dispatching a request that originated in a
+// particular WKWebView. IOS2CallHSDKMessage uses it to route the response.
+static NSString *s_ios2HSDKTargetInstanceID = nil;
 static NSString *s_ios2AccountID = nil;
 static NSString *s_ios2AuthResponseBase64 = nil;
 
@@ -251,6 +256,13 @@ static void IOS2CallHSDKMessage(NSString *action, NSDictionary *extra, NSInteger
     NSString *script = [NSString stringWithFormat:
         @"if (window.HSDK && typeof window.HSDK.onMessage === 'function') window.HSDK.onMessage('sdk', %@);",
         argumentJSON ?: @"null"];
+    NSString *targetInstanceID = [s_ios2HSDKTargetInstanceID copy];
+    if (targetInstanceID.length) {
+        [IOS2GameWebView sendHSDKMessage:action extra:extra errCode:errCode toInstance:targetInstanceID];
+        [targetInstanceID release];
+        return;
+    }
+    [targetInstanceID release];
     dispatch_async(dispatch_get_main_queue(), ^{
         se::ScriptEngine *engine = se::ScriptEngine::getInstance();
         if (engine) engine->evalString(script.UTF8String);
@@ -265,17 +277,30 @@ static void IOS2PublishSDKUser(void)
     // current role through authuser but has no account state for its server
     // selector.
     NSLog(@"[ios2] publishing authenticated SDK user");
+    NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+    if (!previousTarget.length) s_ios2HSDKTargetInstanceID = s_ios2SDKLoginInstanceID;
     IOS2CallHSDKMessage(@"sdk-get-userId", @{ @"userId": s_ios2AccountID,
                                                 @"uniqueId": s_ios2AccountID }, 0);
+    s_ios2HSDKTargetInstanceID = previousTarget;
 }
 
 static void IOS2FinishSDKLogin(NSInteger errCode)
 {
     if (!s_ios2SDKLoginPending) return;
     s_ios2SDKLoginPending = NO;
-    NSString *action = s_ios2SDKLoginAction ?: @"user_login_show_dialog";
+    NSString *action = [s_ios2SDKLoginAction copy];
+    if (!action) action = [@"user_login_show_dialog" copy];
+    [s_ios2SDKLoginAction release];
     s_ios2SDKLoginAction = nil;
+    NSString *loginInstanceID = [s_ios2SDKLoginInstanceID copy];
+    [s_ios2SDKLoginInstanceID release];
+    s_ios2SDKLoginInstanceID = nil;
+    NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+    s_ios2HSDKTargetInstanceID = loginInstanceID;
     IOS2CallHSDKMessage(action, @{}, errCode);
+    s_ios2HSDKTargetInstanceID = previousTarget;
+    [loginInstanceID release];
+    [action release];
 }
 
 static UIImage *IOS2AvatarImage(UIImage *source, CGFloat sideLength)
@@ -332,11 +357,19 @@ static NSArray<NSString *> *IOS2SaveAvatarImages(UIImage *source)
         s_ios2PickerDelegate = nil;
         if (images.count == 2) {
             NSLog(@"[ios2] avatar image selected");
+            NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+            s_ios2HSDKTargetInstanceID = s_ios2HSDKImageInstanceID;
             IOS2CallHSDKMessage(@"sdk-read-image", @{ @"images": images }, 0);
+            s_ios2HSDKTargetInstanceID = previousTarget;
         } else {
             NSLog(@"[ios2] avatar image processing failed");
+            NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+            s_ios2HSDKTargetInstanceID = s_ios2HSDKImageInstanceID;
             IOS2CallHSDKMessage(@"sdk-read-image", @{}, 1);
+            s_ios2HSDKTargetInstanceID = previousTarget;
         }
+        [s_ios2HSDKImageInstanceID release];
+        s_ios2HSDKImageInstanceID = nil;
     }];
 }
 
@@ -344,7 +377,12 @@ static NSArray<NSString *> *IOS2SaveAvatarImages(UIImage *source)
 {
     [picker dismissViewControllerAnimated:YES completion:^{
         s_ios2PickerDelegate = nil;
+        NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+        s_ios2HSDKTargetInstanceID = s_ios2HSDKImageInstanceID;
         IOS2CallHSDKMessage(@"sdk-read-image", @{}, 1);
+        s_ios2HSDKTargetInstanceID = previousTarget;
+        [s_ios2HSDKImageInstanceID release];
+        s_ios2HSDKImageInstanceID = nil;
     }];
 }
 
@@ -1149,6 +1187,10 @@ static void IOS2Authenticate(NSData *binData)
         s_ios2SDKLoginPending = NO;
         [s_ios2SDKLoginAction release];
         s_ios2SDKLoginAction = nil;
+        [s_ios2SDKLoginInstanceID release];
+        s_ios2SDKLoginInstanceID = nil;
+        [s_ios2HSDKImageInstanceID release];
+        s_ios2HSDKImageInstanceID = nil;
         [s_ios2AccountID release];
         s_ios2AccountID = nil;
         IOS2CallHSDKMessage(@"user-logout-from-sdk", @{}, 0);
@@ -1224,6 +1266,9 @@ static void IOS2Authenticate(NSData *binData)
 
     NSString *action = [request[@"action"] isKindOfClass:[NSString class]] ? request[@"action"] : @"";
     NSDictionary *extra = [request[@"extra"] isKindOfClass:[NSDictionary class]] ? request[@"extra"] : @{};
+    NSString *instanceID = [request[@"__ios2Instance"] isKindOfClass:[NSString class]] ? request[@"__ios2Instance"] : @"";
+    NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+    s_ios2HSDKTargetInstanceID = instanceID.length ? instanceID : nil;
     NSLog(@"[ios2] HSDK request action=%@ extra=%@", action, extra);
 
     if ([action isEqualToString:@"game-init"]) {
@@ -1252,7 +1297,10 @@ static void IOS2Authenticate(NSData *binData)
                [action isEqualToString:@"user-tokenlogin"] ||
                [action isEqualToString:@"user-multi-platform-login"]) {
         s_ios2SDKLoginPending = YES;
+        [s_ios2SDKLoginAction release];
         s_ios2SDKLoginAction = [action copy];
+        [s_ios2SDKLoginInstanceID release];
+        s_ios2SDKLoginInstanceID = [instanceID copy];
         [IOS2Native loginForSDK];
     } else if ([action isEqualToString:@"user-logout"]) {
         [IOS2Native logout];
@@ -1279,10 +1327,17 @@ static void IOS2Authenticate(NSData *binData)
             @{ @"userId": s_ios2AccountID, @"uniqueId": s_ios2AccountID } : @{};
         IOS2CallHSDKMessage(action, account, 0);
     } else if ([action isEqualToString:@"sdk-read-image"]) {
+        [s_ios2HSDKImageInstanceID release];
+        s_ios2HSDKImageInstanceID = [instanceID copy];
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *presenter = IOS2TopViewController();
             if (!presenter || ![UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypePhotoLibrary]) {
+                NSString *previousTarget = s_ios2HSDKTargetInstanceID;
+                s_ios2HSDKTargetInstanceID = s_ios2HSDKImageInstanceID;
                 IOS2CallHSDKMessage(action, @{}, 1);
+                s_ios2HSDKTargetInstanceID = previousTarget;
+                [s_ios2HSDKImageInstanceID release];
+                s_ios2HSDKImageInstanceID = nil;
                 return;
             }
 
@@ -1349,6 +1404,7 @@ static void IOS2Authenticate(NSData *binData)
         // service cannot leave a game's promise chain pending.
         IOS2CallHSDKMessage(action, @{}, 0);
     }
+    s_ios2HSDKTargetInstanceID = previousTarget;
 }
 
 @end

@@ -8,7 +8,11 @@
 
     parts.config = {
         _showConfig: function () {
-            var size = cc.winSize;
+            // The native view can resize after the management scene is created.
+            // Read the current visible rect so rows are laid out inside the
+            // viewport instead of using a stale winSize value.
+            var size = cc.view && typeof cc.view.getVisibleSize === 'function' ?
+                cc.view.getVisibleSize() : cc.winSize;
             this._header('配置管理', '启动与显示偏好');
             var storage = this.storage;
             var showFPS = storage ? storage.getItem('ios2.showFPS') === '1' : false;
@@ -60,25 +64,26 @@
                 item.addChild(arrow);
                 self.content.addChild(item, 5);
             }
-            option(size.height - 260, '游戏运行模式', runtimeBackend === 'webkit' ? 'WebKit 多开' : 'Cocos 极速', function () {
+            var firstRowY = size.height - 260;
+            option(firstRowY, '游戏运行模式', runtimeBackend === 'webkit' ? 'WebKit 多开' : 'Cocos 极速', function () {
                 var nextBackend = runtimeBackend === 'webkit' ? 'native' : 'webkit';
                 try { jsb.reflection.callStaticMethod('IOS2Native', 'setRuntimeBackend:', nextBackend); }
                 catch (error) { self._setStatus('无法切换运行模式', COLORS.warning); return; }
                 self._showConfig();
             });
-            option(size.height - 342, 'WebKit 游戏实例', String(webGameInstances), function () {
+            option(firstRowY - 82, 'WebKit 游戏实例', String(webGameInstances), function () {
                 self._setStatus(webGameInstances ? '当前实例正在同屏运行。' : '请在 Bin 文件页面点击“多开”。');
             });
-            option(size.height - 424, '显示 FPS', showFPS ? '开' : '关', function () {
+            option(firstRowY - 164, '显示 FPS', showFPS ? '开' : '关', function () {
                 if (storage) storage.setItem('ios2.showFPS', showFPS ? '0' : '1');
                 self._setNativePerformance('showFPS', showFPS ? 0 : 1);
                 self._showConfig();
             });
-            option(size.height - 506, '登录后恢复性能设置', autoRestore ? '开' : '关', function () {
+            option(firstRowY - 246, '登录后恢复性能设置', autoRestore ? '开' : '关', function () {
                 if (storage) storage.setItem('ios2.autoRestore', autoRestore ? '0' : '1');
                 self._showConfig();
             });
-            option(size.height - 588, '目标帧率', frameRate + ' FPS', function () {
+            option(firstRowY - 328, '目标帧率', frameRate + ' FPS', function () {
                 var values = ['30', '45', '60'];
                 var next = values[(values.indexOf(frameRate) + 1) % values.length];
                 if (storage) storage.setItem('ios2.frameRate', next);

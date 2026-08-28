@@ -70,8 +70,9 @@ bool AppDelegate::applicationDidFinishLaunching()
     jsb_set_xxtea_key("0Aed5E79bbEa69f8");
     jsb_init_file_operation_delegate();
 
-#if defined(COCOS2D_DEBUG) && (COCOS2D_DEBUG > 0)
-    // Enable debugger here
+#if defined(COCOS2D_DEBUG) && (COCOS2D_DEBUG > 0) && defined(IOS2_ENABLE_JS_DEBUGGER)
+    // Cocos 2.4.9's legacy JS Inspector is opt-in. It can abort on recent
+    // Xcode/iOS Simulator runtimes; native LLDB debugging remains available.
     jsb_enable_debugger("0.0.0.0", 6086, false);
 #endif
 

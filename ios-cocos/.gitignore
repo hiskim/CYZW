@@ -5,6 +5,7 @@ cocos-project/build/
 xcuserdata/
 *.DS_Store
 cocos-project/src/ios2-web-cocos2d.js
+cocos-project/src/ios2-web-physics.js
 cocos-project/assets/
 cocos-project/ios-libs/
 

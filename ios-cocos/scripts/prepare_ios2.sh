@@ -20,11 +20,23 @@ if [ ! -d "$TEMPLATE_ROOT" ]; then
     exit 1
 fi
 
-WEB_ENGINE_SOURCE="$COCOS_RESOURCES_ROOT/engine/bin/cocos2d-js-for-preview.js"
-WEB_ENGINE_TARGET="$PROJECT_ROOT/src/ios2-web-cocos2d.js"
+WEB_MOBILE_ROOT=${IOS2_WEB_MOBILE_ROOT:-/Users/gg/NewProject_1/build/web-mobile}
+WEB_ENGINE_SOURCE=${IOS2_WEB_ENGINE:-$WEB_MOBILE_ROOT/cocos2d-js-min.js}
 if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
-    echo "ios2: Cocos 2.4.9 Web engine not found: $WEB_ENGINE_SOURCE" >&2
+    WEB_ENGINE_SOURCE=/Users/gg/code/XY/APP/out/renderer/cocos2d-js-min.a5841.js
+fi
+if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
+    WEB_ENGINE_SOURCE="$COCOS_RESOURCES_ROOT/engine/bin/cocos2d-js-for-preview.js"
+fi
+WEB_ENGINE_TARGET="$PROJECT_ROOT/src/ios2-web-cocos2d.js"
+WEB_PHYSICS_SOURCE=${IOS2_WEB_PHYSICS:-$WEB_MOBILE_ROOT/physics-min.js}
+WEB_PHYSICS_TARGET="$PROJECT_ROOT/src/ios2-web-physics.js"
+if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
+    echo "ios2: compatible Cocos Web engine not found: $WEB_ENGINE_SOURCE" >&2
     exit 1
+fi
+if [ ! -f "$WEB_PHYSICS_SOURCE" ]; then
+    WEB_PHYSICS_SOURCE=""
 fi
 
 require_source_app() {
@@ -111,9 +123,18 @@ if [ ! -d "$PROJECT_ROOT/src" ]; then
     cp -R "$SOURCE_APP/src/." "$PROJECT_ROOT/src/"
 fi
 
-if [ ! -f "$WEB_ENGINE_TARGET" ] || [ "$WEB_ENGINE_SOURCE" -nt "$WEB_ENGINE_TARGET" ]; then
+if [ ! -f "$WEB_ENGINE_TARGET" ] || ! cmp -s "$WEB_ENGINE_SOURCE" "$WEB_ENGINE_TARGET"; then
     cp "$WEB_ENGINE_SOURCE" "$WEB_ENGINE_TARGET"
 fi
+if [ -n "$WEB_PHYSICS_SOURCE" ] && { [ ! -f "$WEB_PHYSICS_TARGET" ] || ! cmp -s "$WEB_PHYSICS_SOURCE" "$WEB_PHYSICS_TARGET"; }; then
+    cp "$WEB_PHYSICS_SOURCE" "$WEB_PHYSICS_TARGET"
+fi
+
+# The supplied 2.4.9 Web build assumes the WeChat global exists on a WebGL
+# startup failure. WKWebView does not provide it, and the resulting reference
+# error hides the actual renderer error. Reapply this small compatibility fix
+# after every engine copy, including the Xcode build phase.
+perl -0pi -e 's/(console\.error\("This device does not support webgl"\),\s*)wx\)\)/$1typeof wx !== "undefined" \&\& wx))/g' "$WEB_ENGINE_TARGET"
 
 # Install the native login bridge into the copied startup script. Keeping this
 # injection here makes prepare_ios2.sh repeatable without modifying the source

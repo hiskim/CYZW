@@ -194,9 +194,16 @@ On the Mac, enable Safari > Settings > Advanced > Show features for web
 developers, then use Safari > Develop to inspect the running simulator/device
 canvas, network requests, JavaScript console, and loaded resources.
 
-The iOS CDN currently publishes `remote/launcher/index.<version>.jsc` but not
-the browser text file `index.<version>.js`. The `.jsc` file is V8/JSB bytecode
-and cannot run in WKWebView's JavaScriptCore. Until a matching Creator Web
-launcher build is supplied, WebKit mode shows this incompatibility on screen
-and in the Xcode console instead of remaining black. CDN resources and the
-PVR/ASTC cache can still be shared; only the executable Web bundle is missing.
+The CDN publishes executable bundles as XXTEA-encrypted `.jsc` files. WebKit
+mode intercepts Creator's `.js` bundle requests, downloads the matching `.jsc`,
+decrypts it with the H5 loader key, and evaluates the resulting text JavaScript.
+This is distinct from V8 bytecode and is compatible with JavaScriptCore. The
+engine and bootstrap structure were verified against the existing H5 renderer
+under `autoupdate/APP/out/renderer`.
+
+The preparation scripts prefer the supplied Creator 2.4.9 web-mobile build at
+`/Users/gg/NewProject_1/build/web-mobile/`, copying `cocos2d-js-min.js` and
+`physics-min.js`. Set `IOS2_WEB_MOBILE_ROOT` to use another web-mobile build,
+or set `IOS2_WEB_ENGINE` and `IOS2_WEB_PHYSICS` to override the individual
+engine paths. If the web-mobile engine is unavailable, the scripts fall back to
+the production renderer engine and then Creator 2.4.9's preview engine.
