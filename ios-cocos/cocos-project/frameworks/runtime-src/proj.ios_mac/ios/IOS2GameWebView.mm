@@ -156,6 +156,35 @@ static NSString *IOS2GameSHA256(NSString *value)
     return [NSString stringWithFormat:@"%p", task];
 }
 
+- (BOOL)isTaskActive:(id<WKURLSchemeTask>)task
+{
+    @synchronized (self.tasks) {
+        return self.tasks[[self keyForTask:task]] != nil;
+    }
+}
+
+- (void)registerTask:(id<WKURLSchemeTask>)task url:(NSURL *)url
+{
+    @synchronized (self.tasks) {
+        self.tasks[[self keyForTask:task]] = url.absoluteString ?: @"<unknown>";
+    }
+}
+
+- (void)updateTask:(id<WKURLSchemeTask>)task remoteURL:(NSString *)remoteURL
+{
+    @synchronized (self.tasks) {
+        NSString *key = [self keyForTask:task];
+        if (self.tasks[key]) self.tasks[key] = remoteURL;
+    }
+}
+
+- (void)finishTask:(id<WKURLSchemeTask>)task
+{
+    @synchronized (self.tasks) {
+        [self.tasks removeObjectForKey:[self keyForTask:task]];
+    }
+}
+
 + (instancetype)sharedInstance
 {
     if (!s_ios2GameSchemeHandler) {
@@ -170,10 +199,14 @@ static NSString *IOS2GameSHA256(NSString *value)
 
 - (void)respondToTask:(id<WKURLSchemeTask>)task data:(NSData *)data url:(NSURL *)url
 {
+    // WKWebView can stop a task while a cache/CDN callback is queued on the
+    // main queue. Never send a second response to a stopped task.
+    if (![self isTaskActive:task]) return;
     if (!data) {
         NSLog(@"[ios2] Web resource missing: %@", url.absoluteString);
         [task didFailWithError:[NSError errorWithDomain:@"IOS2GameWebView" code:404
                                                userInfo:@{NSLocalizedDescriptionKey: @"Resource not found"}]];
+        [self finishTask:task];
         return;
     }
     NSString *mimeType = IOS2GameMIMEType(url.path);
@@ -192,6 +225,7 @@ static NSString *IOS2GameSHA256(NSString *value)
     [task didReceiveResponse:response];
     [task didReceiveData:data];
     [task didFinish];
+    [self finishTask:task];
 }
 
 - (NSURL *)cachedFileForURL:(NSString *)remoteURL index:(NSDictionary *)index
@@ -214,10 +248,6 @@ static NSString *IOS2GameSHA256(NSString *value)
         NSArray<NSDictionary *> *pending = [self.pendingTasks[remoteURL] copy] ?: @[];
         [self.downloads removeObjectForKey:remoteURL];
         [self.pendingTasks removeObjectForKey:remoteURL];
-        for (NSDictionary *entry in pending) {
-            id<WKURLSchemeTask> task = entry[@"task"];
-            [self.tasks removeObjectForKey:[self keyForTask:task]];
-        }
         return pending;
     }
 }
@@ -228,8 +258,13 @@ static NSString *IOS2GameSHA256(NSString *value)
         for (NSDictionary *entry in pending) {
             id<WKURLSchemeTask> task = entry[@"task"];
             NSURL *url = entry[@"url"];
-            if (error) [task didFailWithError:error];
-            else [self respondToTask:task data:data url:url];
+            if (![self isTaskActive:task]) continue;
+            if (error) {
+                [task didFailWithError:error];
+                [self finishTask:task];
+            } else {
+                [self respondToTask:task data:data url:url];
+            }
         }
     });
 }
@@ -238,6 +273,7 @@ static NSString *IOS2GameSHA256(NSString *value)
 {
     (void)webView;
     NSURL *url = task.request.URL;
+    [self registerTask:task url:url];
     if ([url.host isEqualToString:@"app"] && ![url.path hasPrefix:@"/cdn/"]) {
         NSString *name = url.lastPathComponent;
         NSDictionary *files = @{
@@ -298,7 +334,9 @@ static NSString *IOS2GameSHA256(NSString *value)
         [self respondToTask:task data:nil url:url];
         return;
     }
+    [self updateTask:task remoteURL:remoteURL];
     dispatch_async(self.cacheQueue, ^{
+        if (![self isTaskActive:task]) return;
         NSURL *cacheDirectory = IOS2GameCacheDirectory();
         NSURL *indexURL = [cacheDirectory URLByAppendingPathComponent:@"cacheList.json"];
         NSData *indexData = [NSData dataWithContentsOfURL:indexURL];
@@ -312,6 +350,7 @@ static NSString *IOS2GameSHA256(NSString *value)
         }
         BOOL shouldStartDownload = NO;
         @synchronized (self.tasks) {
+            if (!self.tasks[[self keyForTask:task]]) return;
             NSMutableArray<NSDictionary *> *pending = self.pendingTasks[remoteURL];
             if (!pending) {
                 pending = [NSMutableArray array];
