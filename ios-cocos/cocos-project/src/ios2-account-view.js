@@ -562,7 +562,8 @@
         panel.setPosition(0, sheetTop);
         panel.addChild(graph(panelWidth, panelHeight, cc.color(248, 249, 253, 255), 18));
         var selected = [];
-        var selectionLimit = 2;
+        var minSelection = 2;
+        var maxSelection = 4;
 
         var nav = new fgui.GComponent();
         nav.setSize(panelWidth, navHeight);
@@ -606,15 +607,16 @@
         var close = function () { overlay.dispose(); };
         cancel.onClick(close);
         confirm.onClick(function () {
-            if (selected.length !== selectionLimit) return;
+            if (selected.length < minSelection || selected.length > maxSelection) return;
             close();
             self.actions.multiOpen(selected.slice(0));
         });
 
         function updateHeader() {
-            heading.text = '群控启动（' + selected.length + '）';
-            confirm.visible = selected.length === selectionLimit;
-            confirm.touchable = selected.length === selectionLimit;
+            var ready = selected.length >= minSelection && selected.length <= maxSelection;
+            heading.text = '群控启动（' + selected.length + '/' + maxSelection + '）';
+            confirm.visible = ready;
+            confirm.touchable = ready;
         }
 
         function refreshRows() {
@@ -669,7 +671,7 @@
             var selectedIndex = selected.indexOf(item.__ios2AccountName);
             if (selectedIndex >= 0) selected.splice(selectedIndex, 1);
             else {
-                if (selected.length >= selectionLimit) selected.shift();
+                if (selected.length >= maxSelection) return;
                 selected.push(item.__ios2AccountName);
             }
             refreshRows();
