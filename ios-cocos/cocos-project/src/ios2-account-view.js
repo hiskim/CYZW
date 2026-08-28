@@ -124,6 +124,17 @@
         return String(record && record.name || '').replace(/\.bin$/i, '') || '未命名账号';
     }
 
+    function verticalScrollBuffer() {
+        var byteValues = [fgui.ScrollType.Vertical, fgui.ScrollBarDisplayType.Hidden];
+        var intValues = [16 | 64];
+        return {
+            readByte: function () { return byteValues.length ? byteValues.shift() : 0; },
+            readInt: function () { return intValues.length ? intValues.shift() : 0; },
+            readBool: function () { return false; },
+            readS: function () { return null; }
+        };
+    }
+
     function formatSize(bytes) {
         bytes = Number(bytes) || 0;
         if (bytes < 1024) return bytes + ' B';
@@ -552,12 +563,6 @@
         var iconSize = Math.max(34, Math.min(50, Math.floor(rowHeight * 0.48)));
         var listWidth = panelWidth - sideMargin * 2;
 
-        if (sideMargin > 22) {
-            var backPlate = graph(width - sideMargin * 2, 70, cc.color(215, 217, 224, 255), 18);
-            backPlate.setPosition(sideMargin, Math.max(this.layoutSafeTop + 34, sheetTop - 34));
-            overlay.addChild(backPlate);
-        }
-
         var panel = new fgui.GComponent();
         panel.setSize(panelWidth, panelHeight);
         panel.setPosition(0, sheetTop);
@@ -592,10 +597,16 @@
         nav.addChild(confirm);
         nav.addChild(graph(panelWidth, 1, cc.color(226, 228, 234, 255))).setPosition(0, navHeight - 1);
 
-        var list = new fgui.GComponent();
+        var list = new fgui.GList();
         list.setPosition(sideMargin, navHeight);
         list.setSize(listWidth, Math.max(rowHeight, panelHeight - navHeight));
-        list.overflow = fgui.OverflowType.Scroll;
+        list.layout = fgui.ListLayoutType.SingleColumn;
+        list.lineGap = 0;
+        list.selectionMode = fgui.ListSelectionMode.None;
+        list.scrollItemToViewOnClick = false;
+        list.setupScroll(verticalScrollBuffer());
+        panel.addChild(graph(listWidth, Math.max(rowHeight, panelHeight - navHeight), COLORS.surface, 18))
+            .setPosition(sideMargin, navHeight);
         panel.addChild(list);
 
         var close = function () { overlay.dispose(); };
@@ -613,23 +624,23 @@
         }
 
         function refreshRows() {
+            var scrollY = list.scrollPane ? list.scrollPane.posY : 0;
             list.removeChildren(0, -1, true);
             if (!records.length) {
                 var empty = text('还没有可用 bin 文件', 22, COLORS.muted, listWidth, 88,
                     fgui.AlignType.Center);
                 empty.setPosition(0, Math.max(0, list.height / 2 - 44));
                 list.addChild(empty);
+                list.ensureBoundsCorrect();
                 updateHeader();
                 return;
             }
-            var listBackground = graph(listWidth, Math.max(list.height, records.length * rowHeight), COLORS.surface, 18);
-            list.addChild(listBackground);
             for (var index = 0; index < records.length; index++) {
                 (function (record, rowIndex) {
                     var checked = selected.indexOf(record.name) >= 0;
                     var row = new fgui.GComponent();
+                    row.__ios2AccountName = record.name;
                     row.setSize(listWidth, rowHeight);
-                    row.setPosition(0, rowIndex * rowHeight);
                     row.opaque = true;
                     row.addChild(graph(listWidth, rowHeight,
                         checked ? cc.color(207, 208, 212, 255) : COLORS.surface));
@@ -652,20 +663,23 @@
                         row.addChild(line);
                     }
 
-                    row.onClick(function () {
-                        var selectedIndex = selected.indexOf(record.name);
-                        if (selectedIndex >= 0) selected.splice(selectedIndex, 1);
-                        else {
-                            if (selected.length >= selectionLimit) selected.shift();
-                            selected.push(record.name);
-                        }
-                        refreshRows();
-                    });
                     list.addChild(row);
                 }(records[index], index));
             }
+            list.ensureBoundsCorrect();
+            if (list.scrollPane) list.scrollPane.setPosY(scrollY, false);
             updateHeader();
         }
+        list.on(fgui.Event.CLICK_ITEM, function (item) {
+            if (!item || !item.__ios2AccountName) return;
+            var selectedIndex = selected.indexOf(item.__ios2AccountName);
+            if (selectedIndex >= 0) selected.splice(selectedIndex, 1);
+            else {
+                if (selected.length >= selectionLimit) selected.shift();
+                selected.push(item.__ios2AccountName);
+            }
+            refreshRows();
+        });
         refreshRows();
         overlay.addChild(panel);
         this.root.addChild(overlay);
