@@ -32,7 +32,7 @@
         this.view.setRuntimeBackend(this._runtimeBackend());
         this.view.show();
         this.view.setAccounts(this.repository.cached());
-        this.view.setStatus('账号文件仅保存在本机。');
+        this.view.setStatus('');
         try { this.repository.refresh(); }
         catch (error) { this.view.setStatus(error.message || '无法读取账号列表', 'warning'); }
     };

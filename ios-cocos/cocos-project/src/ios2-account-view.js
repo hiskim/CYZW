@@ -257,22 +257,16 @@
             this.root.addChild(multiButton);
         }
 
-        var groupTitleSize = compact ? 22 : 24;
-        var groupTitle = text('本机账号', groupTitleSize, COLORS.text, 200, 42);
-        groupTitle.setPosition(30, top + 74);
-        this.root.addChild(groupTitle);
-        var groupTitleRight = 30 + (compact ? 92 : 100);
         var countRight = backend === 'webkit' ? width - 124 : width - 18;
-        var countWidth = backend === 'webkit' ?
-            Math.max(48, Math.min(90, countRight - groupTitleRight - 4)) : 132;
+        var countWidth = Math.max(48, Math.min(132, countRight - 30));
         this.accountCount = text('', 16, COLORS.muted, countWidth, 36, fgui.AlignType.Right);
         this.accountCount.autoSize = fgui.AutoSizeType.Shrink;
         this.accountCount.setPosition(countRight - countWidth, top + 77);
         this.root.addChild(this.accountCount);
 
         this.list = new fgui.GComponent();
-        this.list.setPosition(24, top + 116);
-        this.list.setSize(width - 48, Math.max(190, height - top - 188));
+        this.list.setPosition(24, top + 104);
+        this.list.setSize(width - 48, Math.max(190, height - top - 176));
         this.list.overflow = fgui.OverflowType.Hidden;
         this.root.addChild(this.list);
 
