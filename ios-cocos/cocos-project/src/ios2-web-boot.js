@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260828-native-platform-profile-pvr-parser-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260828-cocos-release-manager-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     function showFatal(message) {
@@ -15,6 +15,70 @@
             document.body.appendChild(panel);
         }
         panel.textContent = String(message || 'WebKit 游戏启动失败');
+    }
+
+    // Cocos' release manager only frees assets whose reference count has
+    // reached zero. Keep this entry point shared by scene, WebKit and native
+    // lifecycle notifications so cleanup is safe to request more than once.
+    var assetReleaseState = {
+        busy: false,
+        sequence: 0
+    };
+
+    function managedAssetCount() {
+        var manager = window.cc && window.cc.assetManager;
+        var assets = manager && manager.assets;
+        return assets && typeof assets.count === 'number' ? assets.count : -1;
+    }
+
+    function releaseUnusedAssets(reason) {
+        var manager = window.cc && window.cc.assetManager;
+        if (!manager || typeof manager.releaseUnusedAssets !== 'function') return false;
+        if (assetReleaseState.busy) return false;
+
+        assetReleaseState.busy = true;
+        var sequence = ++assetReleaseState.sequence;
+        var before = managedAssetCount();
+        try {
+            manager.releaseUnusedAssets();
+        } catch (error) {
+            assetReleaseState.busy = false;
+            console.warn('[ios2-web] Cocos releaseUnusedAssets failed', reason || 'unknown', error);
+            return false;
+        }
+
+        // ReleaseManager defers destruction to the next tick. Log after that
+        // tick so the count reflects the actual cleanup when available.
+        window.setTimeout(function () {
+            if (sequence !== assetReleaseState.sequence) return;
+            assetReleaseState.busy = false;
+            console.log('[ios2-web] Cocos unused assets released', reason || 'unknown',
+                'assets=' + before + '->' + managedAssetCount());
+        }, 0);
+        return true;
+    }
+    window.__ios2ReleaseUnusedAssets = releaseUnusedAssets;
+
+    function installAssetReleaseHooks() {
+        if (window.__ios2AssetReleaseHooksInstalled) return;
+        window.__ios2AssetReleaseHooksInstalled = true;
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) releaseUnusedAssets('document-hidden');
+        });
+        window.addEventListener('pagehide', function () {
+            releaseUnusedAssets('pagehide');
+        });
+    }
+
+    function installDirectorAssetReleaseHook() {
+        var director = window.cc && window.cc.director;
+        var Director = window.cc && window.cc.Director;
+        if (!director || !Director || !Director.EVENT_AFTER_SCENE_LAUNCH ||
+            director.__ios2AssetReleaseHookInstalled) return;
+        director.__ios2AssetReleaseHookInstalled = true;
+        director.on(Director.EVENT_AFTER_SCENE_LAUNCH, function () {
+            releaseUnusedAssets('after-scene-launch');
+        });
     }
 
     function decryptJSC(data, keyText) {
@@ -306,6 +370,7 @@
 
     function boot() {
         console.log('[ios2-web] boot revision', IOS2_WEB_RUNTIME_REVISION);
+        installAssetReleaseHooks();
         var settings = window._CCSettings;
         if (!settings || !window.cc) {
             showFatal('WebKit 游戏启动失败\n\n缺少 Web runtime settings 或 Cocos Web 引擎。');
@@ -383,6 +448,7 @@
                     // that event has completed and before loading the scene.
                     installASTCTextureSupport();
                     console.log('[ios2-web] WebKit PVR parser restored after engine init');
+                    installDirectorAssetReleaseHook();
                     var device = cc.renderer && cc.renderer.device;
                     var gl = device && device._gl;
                     var pvrtc = device && device.ext('WEBGL_compressed_texture_pvrtc');

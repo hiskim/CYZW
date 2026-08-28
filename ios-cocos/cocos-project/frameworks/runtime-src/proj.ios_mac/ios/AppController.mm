@@ -1534,6 +1534,7 @@ Application* app = nullptr;
      Use this method to release shared resources, save user data, invalidate timers, and store enough application state information to restore your application to its current state in case it is terminated later.
      If your application supports background execution, called instead of applicationWillTerminate: when the user quits.
      */
+    [IOS2GameWebView releaseUnusedAssetsForAllInstances];
     [[SDKWrapper getInstance] applicationDidEnterBackground:application];
 }
 
@@ -1559,6 +1560,7 @@ Application* app = nullptr;
     /*
      Free up as much memory as possible by purging cached data objects that can be recreated (or reloaded from disk) later.
      */
+    [IOS2GameWebView releaseUnusedAssetsForAllInstances];
 }
 
 @end

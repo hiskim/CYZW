@@ -47,7 +47,7 @@ typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response,
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
-static NSString * const kIOS2WebRuntimeRevision = @"20260828-remote-bundle-route-1";
+static NSString * const kIOS2WebRuntimeRevision = @"20260828-cocos-release-manager-1";
 
 static NSString *IOS2GameMIMEType(NSString *path)
 {
@@ -666,6 +666,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         IOS2GameWebView *manager = [self sharedInstance];
         manager.toolbar.hidden = YES;
         for (NSDictionary *record in manager.instances) ((WKWebView *)record[@"view"]).hidden = YES;
+        [self releaseUnusedAssetsForAllInstances];
     });
 }
 
@@ -673,6 +674,22 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         [[self sharedInstance] closeAllInstances];
+    });
+}
+
++ (void)releaseUnusedAssetsForAllInstances
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        IOS2GameWebView *manager = s_ios2GameWebView;
+        if (!manager) return;
+        NSString *script = @"if (typeof window.__ios2ReleaseUnusedAssets === 'function') "
+                            "window.__ios2ReleaseUnusedAssets('native-lifecycle');";
+        for (NSDictionary *record in manager.instances) {
+            WKWebView *webView = record[@"view"];
+            [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+                if (error) NSLog(@"[ios2] Cocos asset cleanup request failed: %@", error.localizedDescription);
+            }];
+        }
     });
 }
 
