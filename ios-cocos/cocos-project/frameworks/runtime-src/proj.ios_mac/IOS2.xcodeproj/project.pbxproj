@@ -531,13 +531,12 @@
 			);
 			inputPaths = (
 				"$(SRCROOT)/../../../src/ios2-web-boot.js",
+				"$(SRCROOT)/../../../src/ios2-web-cocos2d.js",
 				"$(SRCROOT)/../../../src/ios2-web-index.html",
 				"$(SRCROOT)/../../../../scripts/prepare_ios2_xcode.sh",
 			);
 			name = "Prepare WebKit Runtime";
 			outputPaths = (
-				"$(SRCROOT)/../../../src/ios2-web-cocos2d.js",
-				"$(SRCROOT)/../../../src/ios2-web-physics.js",
 				"$(SRCROOT)/../../../ios-libs/libcocos2d iOS.a",
 			);
 			runOnlyForDeploymentPostprocessing = 0;

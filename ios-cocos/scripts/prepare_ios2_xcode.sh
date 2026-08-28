@@ -9,31 +9,24 @@ fi
 PROJECT_ROOT=$(CDPATH= cd -- "$SRCROOT/../../.." && pwd)
 IOS2_ROOT=$(CDPATH= cd -- "$PROJECT_ROOT/.." && pwd)
 COCOS_RESOURCES_ROOT=${IOS2_COCOS_RESOURCES_ROOT:-/Applications/Cocos/Creator/2.4.9/CocosCreator.app/Contents/Resources}
-WEB_MOBILE_ROOT=${IOS2_WEB_MOBILE_ROOT:-/Users/gg/NewProject_1/build/web-mobile}
-WEB_ENGINE_SOURCE=${IOS2_WEB_ENGINE:-$WEB_MOBILE_ROOT/cocos2d-js-min.js}
-if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
-    WEB_ENGINE_SOURCE=/Users/gg/code/XY/APP/out/renderer/cocos2d-js-min.a5841.js
-fi
-if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
-    WEB_ENGINE_SOURCE="$COCOS_RESOURCES_ROOT/engine/bin/cocos2d-js-for-preview.js"
-fi
 WEB_ENGINE_TARGET="$PROJECT_ROOT/src/ios2-web-cocos2d.js"
-WEB_PHYSICS_SOURCE=${IOS2_WEB_PHYSICS:-$WEB_MOBILE_ROOT/physics-min.js}
-WEB_PHYSICS_TARGET="$PROJECT_ROOT/src/ios2-web-physics.js"
+WEB_ENGINE_SOURCE=${IOS2_WEB_ENGINE:-}
 ENGINE_PROJECT="$PROJECT_ROOT/frameworks/cocos2d-x-local/build/cocos2d_libs.xcodeproj"
 ENGINE_OUTPUT="$PROJECT_ROOT/ios-libs/libcocos2d iOS.a"
 BUILD_ROOT="$IOS2_ROOT/build/xcode-engine-${PLATFORM_NAME:-iphoneos}"
 CONFIGURATION=${CONFIGURATION:-Debug}
 
-if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
-    echo "error: compatible Cocos Web engine not found: $WEB_ENGINE_SOURCE" >&2
-    exit 1
-fi
-if [ -f "$WEB_PHYSICS_SOURCE" ] && { [ ! -f "$WEB_PHYSICS_TARGET" ] || ! cmp -s "$WEB_PHYSICS_SOURCE" "$WEB_PHYSICS_TARGET"; }; then
-    cp "$WEB_PHYSICS_SOURCE" "$WEB_PHYSICS_TARGET"
-fi
-if [ ! -f "$WEB_ENGINE_TARGET" ] || ! cmp -s "$WEB_ENGINE_SOURCE" "$WEB_ENGINE_TARGET"; then
+if [ -n "$WEB_ENGINE_SOURCE" ] && { [ ! -f "$WEB_ENGINE_TARGET" ] || ! cmp -s "$WEB_ENGINE_SOURCE" "$WEB_ENGINE_TARGET"; }; then
+    if [ ! -f "$WEB_ENGINE_SOURCE" ]; then
+        echo "error: compatible Cocos Web engine not found: $WEB_ENGINE_SOURCE" >&2
+        exit 1
+    fi
     cp "$WEB_ENGINE_SOURCE" "$WEB_ENGINE_TARGET"
+fi
+if [ ! -f "$WEB_ENGINE_TARGET" ]; then
+    echo "error: project-local Cocos Web engine not found: $WEB_ENGINE_TARGET" >&2
+    echo "error: set IOS2_WEB_ENGINE=/path/to/cocos2d-js-min.js once to import a replacement." >&2
+    exit 1
 fi
 
 # The supplied 2.4.9 Web build assumes the WeChat global exists on a WebGL

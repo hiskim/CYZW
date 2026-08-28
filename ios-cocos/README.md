@@ -202,9 +202,8 @@ This is distinct from V8 bytecode and is compatible with JavaScriptCore. The
 engine and bootstrap structure were verified against the existing H5 renderer
 under `autoupdate/APP/out/renderer`.
 
-The preparation scripts prefer the supplied Creator 2.4.9 web-mobile build at
-`/Users/gg/NewProject_1/build/web-mobile/`, copying `cocos2d-js-min.js` and
-`physics-min.js`. Set `IOS2_WEB_MOBILE_ROOT` to use another web-mobile build,
-or set `IOS2_WEB_ENGINE` and `IOS2_WEB_PHYSICS` to override the individual
-engine paths. If the web-mobile engine is unavailable, the scripts fall back to
-the production renderer engine and then Creator 2.4.9's preview engine.
+The project carries the verified Creator 2.4.9 web-mobile engine at
+`cocos-project/src/ios2-web-cocos2d.js`, and preparation scripts use that
+project-local copy by default. To refresh it, run the preparation script once
+with `IOS2_WEB_ENGINE=/path/to/cocos2d-js-min.js`; subsequent builds do not
+depend on the external build directory.

@@ -161,6 +161,363 @@
     }
     window.__ios2DecryptJSC = decryptJSC;
 
+    function installTypeScriptRuntimeHelpers() {
+        var extendStatics = Object.setPrototypeOf ||
+            ({ __proto__: [] } instanceof Array && function (target, source) { target.__proto__ = source; }) ||
+            function (target, source) {
+                for (var key in source) {
+                    if (Object.prototype.hasOwnProperty.call(source, key)) target[key] = source[key];
+                }
+            };
+
+        if (typeof window.__extends !== 'function') {
+            window.__extends = function (derived, base) {
+                if (typeof base !== 'function' && base !== null) {
+                    throw new TypeError('Class extends value ' + String(base) + ' is not a constructor or null');
+                }
+                extendStatics(derived, base);
+                function TemporaryConstructor() { this.constructor = derived; }
+                derived.prototype = base === null ? Object.create(base) :
+                    (TemporaryConstructor.prototype = base.prototype, new TemporaryConstructor());
+            };
+        }
+        if (typeof window.__assign !== 'function') {
+            window.__assign = Object.assign || function (target) {
+                for (var source, index = 1, length = arguments.length; index < length; index++) {
+                    source = arguments[index];
+                    for (var key in source) {
+                        if (Object.prototype.hasOwnProperty.call(source, key)) target[key] = source[key];
+                    }
+                }
+                return target;
+            };
+        }
+        if (typeof window.__rest !== 'function') {
+            window.__rest = function (source, exclude) {
+                var target = {};
+                for (var key in source) {
+                    if (Object.prototype.hasOwnProperty.call(source, key) && exclude.indexOf(key) < 0) target[key] = source[key];
+                }
+                if (source !== null && typeof Object.getOwnPropertySymbols === 'function') {
+                    var symbols = Object.getOwnPropertySymbols(source);
+                    for (var index = 0; index < symbols.length; index++) {
+                        if (exclude.indexOf(symbols[index]) < 0 && Object.prototype.propertyIsEnumerable.call(source, symbols[index])) {
+                            target[symbols[index]] = source[symbols[index]];
+                        }
+                    }
+                }
+                return target;
+            };
+        }
+        if (typeof window.__decorate !== 'function') {
+            window.__decorate = function (decorators, target, key, descriptor) {
+                var result, count = arguments.length;
+                var value = count < 3 ? target : descriptor === null ? descriptor = Object.getOwnPropertyDescriptor(target, key) : descriptor;
+                if (typeof Reflect === 'object' && typeof Reflect.decorate === 'function') {
+                    value = Reflect.decorate(decorators, target, key, descriptor);
+                } else {
+                    for (var index = decorators.length - 1; index >= 0; index--) {
+                        if ((result = decorators[index])) {
+                            value = (count < 3 ? result(value) : count > 3 ? result(target, key, value) : result(target, key)) || value;
+                        }
+                    }
+                }
+                return count > 3 && value && Object.defineProperty(target, key, value), value;
+            };
+        }
+        if (typeof window.__param !== 'function') {
+            window.__param = function (paramIndex, decorator) {
+                return function (target, key) { decorator(target, key, paramIndex); };
+            };
+        }
+        if (typeof window.__metadata !== 'function') {
+            window.__metadata = function (metadataKey, metadataValue) {
+                if (typeof Reflect === 'object' && typeof Reflect.metadata === 'function') {
+                    return Reflect.metadata(metadataKey, metadataValue);
+                }
+            };
+        }
+        if (typeof window.__awaiter !== 'function') {
+            window.__awaiter = function (thisArg, args, PromiseCtor, generator) {
+                function adopt(value) {
+                    return value instanceof PromiseCtor ? value : new PromiseCtor(function (resolve) { resolve(value); });
+                }
+                return new (PromiseCtor || (PromiseCtor = Promise))(function (resolve, reject) {
+                    function fulfilled(value) { try { step(generator.next(value)); } catch (error) { reject(error); } }
+                    function rejected(value) { try { step(generator.throw(value)); } catch (error) { reject(error); } }
+                    function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+                    step((generator = generator.apply(thisArg, args || [])).next());
+                });
+            };
+        }
+        if (typeof window.__generator !== 'function') {
+            window.__generator = function (thisArg, body) {
+                var state = { label: 0, sent: sent, trys: [], ops: [] };
+                var iterator, result, operation, generator = { next: verb(0), throw: verb(1), return: verb(2) };
+                if (typeof Symbol === 'function') generator[Symbol.iterator] = function () { return this; };
+                return generator;
+
+                function sent() {
+                    if (result[0] & 1) throw result[1];
+                    return result[1];
+                }
+                function verb(type) { return function (value) { return step([type, value]); }; }
+                function step(op) {
+                    if (iterator) throw new TypeError('Generator is already executing.');
+                    while (state) {
+                        try {
+                            iterator = 1;
+                            if (result && (operation = op[0] & 2 ? result.return : op[0] ? result.throw || ((operation = result.return) && operation.call(result), 0) : result.next) && !(operation = operation.call(result, op[1])).done) return operation;
+                            result = 0;
+                            if (operation) op = [op[0] & 2, operation.value];
+                            switch (op[0]) {
+                            case 0:
+                            case 1:
+                                operation = op;
+                                break;
+                            case 4:
+                                state.label++;
+                                return { value: op[1], done: false };
+                            case 5:
+                                state.label++;
+                                result = op[1];
+                                op = [0];
+                                continue;
+                            case 7:
+                                op = state.ops.pop();
+                                state.trys.pop();
+                                continue;
+                            default:
+                                operation = state.trys;
+                                operation = operation.length > 0 && operation[operation.length - 1];
+                                if (!operation && (op[0] === 6 || op[0] === 2)) { state = 0; continue; }
+                                if (op[0] === 3 && (!operation || (op[1] > operation[0] && op[1] < operation[3]))) { state.label = op[1]; break; }
+                                if (op[0] === 6 && state.label < operation[1]) { state.label = operation[1]; operation = op; break; }
+                                if (operation && state.label < operation[2]) { state.label = operation[2]; state.ops.push(op); break; }
+                                if (operation[2]) state.ops.pop();
+                                state.trys.pop();
+                                continue;
+                            }
+                            op = body.call(thisArg, state);
+                        } catch (error) {
+                            op = [6, error];
+                            result = 0;
+                        } finally {
+                            iterator = operation = 0;
+                        }
+                    }
+                    if (op[0] & 5) throw op[1];
+                    return { value: op[0] ? op[1] : void 0, done: true };
+                }
+            };
+        }
+        if (typeof window.__createBinding !== 'function') {
+            window.__createBinding = Object.create ? function (target, module, key, alias) {
+                if (alias === undefined) alias = key;
+                Object.defineProperty(target, alias, { enumerable: true, get: function () { return module[key]; } });
+            } : function (target, module, key, alias) {
+                if (alias === undefined) alias = key;
+                target[alias] = module[key];
+            };
+        }
+        if (typeof window.__exportStar !== 'function') {
+            window.__exportStar = function (module, exports) {
+                for (var key in module) {
+                    if (key !== 'default' && !Object.prototype.hasOwnProperty.call(exports, key)) window.__createBinding(exports, module, key);
+                }
+            };
+        }
+        if (typeof window.__values !== 'function') {
+            window.__values = function (value) {
+                var iteratorSymbol = typeof Symbol === 'function' && Symbol.iterator;
+                var iterator = iteratorSymbol && value[iteratorSymbol];
+                var index = 0;
+                if (iterator) return iterator.call(value);
+                if (value && typeof value.length === 'number') {
+                    return { next: function () {
+                        if (value && index >= value.length) value = void 0;
+                        return { value: value && value[index++], done: !value };
+                    } };
+                }
+                throw new TypeError(iteratorSymbol ? 'Object is not iterable.' : 'Symbol.iterator is not defined.');
+            };
+        }
+        if (typeof window.__read !== 'function') {
+            window.__read = function (value, count) {
+                var iteratorSymbol = typeof Symbol === 'function' && value[Symbol.iterator];
+                if (!iteratorSymbol) return value;
+                var iterator = iteratorSymbol.call(value), item, error, result = [];
+                try {
+                    while ((count === undefined || count-- > 0) && !(item = iterator.next()).done) result.push(item.value);
+                } catch (exception) {
+                    error = { error: exception };
+                } finally {
+                    try {
+                        if (item && !item.done && (iteratorSymbol = iterator.return)) iteratorSymbol.call(iterator);
+                    } finally {
+                        if (error) throw error.error;
+                    }
+                }
+                return result;
+            };
+        }
+        if (typeof window.__spread !== 'function') {
+            window.__spread = function () {
+                var result = [];
+                for (var index = 0; index < arguments.length; index++) result = result.concat(window.__read(arguments[index]));
+                return result;
+            };
+        }
+        if (typeof window.__spreadArrays !== 'function') {
+            window.__spreadArrays = function () {
+                var total = 0;
+                for (var index = 0; index < arguments.length; index++) total += arguments[index].length;
+                var result = Array(total), offset = 0;
+                for (index = 0; index < arguments.length; index++) {
+                    var source = arguments[index];
+                    for (var itemIndex = 0; itemIndex < source.length; itemIndex++, offset++) result[offset] = source[itemIndex];
+                }
+                return result;
+            };
+        }
+        if (typeof window.__spreadArray !== 'function') {
+            window.__spreadArray = function (target, source, pack) {
+                if (pack || arguments.length === 2) {
+                    for (var index = 0, length = source.length, copy; index < length; index++) {
+                        if (copy || !(index in source)) {
+                            if (!copy) copy = Array.prototype.slice.call(source, 0, index);
+                            copy[index] = source[index];
+                        }
+                    }
+                    source = copy || Array.prototype.slice.call(source);
+                }
+                return target.concat(source);
+            };
+        }
+        if (typeof window.__await !== 'function') {
+            window.__await = function (value) {
+                return this instanceof window.__await ? (this.v = value, this) : new window.__await(value);
+            };
+        }
+        if (typeof window.__asyncGenerator !== 'function') {
+            window.__asyncGenerator = function (thisArg, args, generator) {
+                if (!Symbol.asyncIterator) throw new TypeError('Symbol.asyncIterator is not defined.');
+                var method, gen = generator.apply(thisArg, args || []), queue = [];
+                var asyncIterator = {};
+                resume('next');
+                resume('throw', function (value) { throw value; });
+                resume('return');
+                asyncIterator[Symbol.asyncIterator] = function () { return this; };
+                return asyncIterator;
+
+                function resume(name, fallback) {
+                    if (gen[name]) asyncIterator[name] = function (value) {
+                        return new Promise(function (resolve, reject) {
+                            queue.push([name, value, resolve, reject]) > 1 || step(name, value);
+                        });
+                    };
+                    else if (fallback) asyncIterator[name] = fallback;
+                }
+                function step(name, value) {
+                    try {
+                        method = gen[name](value);
+                        method.value instanceof window.__await ? Promise.resolve(method.value.v).then(next, fail) : settle(queue[0][2], method);
+                    } catch (error) {
+                        settle(queue[0][3], error);
+                    }
+                }
+                function next(value) { step('next', value); }
+                function fail(value) { step('throw', value); }
+                function settle(resolve, value) {
+                    resolve(value);
+                    queue.shift();
+                    if (queue.length) step(queue[0][0], queue[0][1]);
+                }
+            };
+        }
+        if (typeof window.__asyncDelegator !== 'function') {
+            window.__asyncDelegator = function (iterator) {
+                var pending, delegator = {};
+                verb('next');
+                verb('throw', function (value) { throw value; });
+                verb('return');
+                delegator[Symbol.iterator] = function () { return this; };
+                return delegator;
+
+                function verb(name, fallback) {
+                    delegator[name] = iterator[name] ? function (value) {
+                        return (pending = !pending) ? { value: window.__await(iterator[name](value)), done: name === 'return' } :
+                            fallback ? fallback(value) : value;
+                    } : fallback;
+                }
+            };
+        }
+        if (typeof window.__asyncValues !== 'function') {
+            window.__asyncValues = function (value) {
+                if (!Symbol.asyncIterator) throw new TypeError('Symbol.asyncIterator is not defined.');
+                var iterator = value[Symbol.asyncIterator];
+                var asyncIterator;
+                if (iterator) return iterator.call(value);
+                value = typeof window.__values === 'function' ? window.__values(value) : value[Symbol.iterator]();
+                asyncIterator = {};
+                verb('next');
+                verb('throw');
+                verb('return');
+                asyncIterator[Symbol.asyncIterator] = function () { return this; };
+                return asyncIterator;
+
+                function verb(name) {
+                    asyncIterator[name] = value[name] && function (arg) {
+                        return new Promise(function (resolve, reject) {
+                            settle(resolve, reject, (arg = value[name](arg)).done, arg.value);
+                        });
+                    };
+                }
+                function settle(resolve, reject, done, value) {
+                    Promise.resolve(value).then(function (value) { resolve({ value: value, done: done }); }, reject);
+                }
+            };
+        }
+        if (typeof window.__makeTemplateObject !== 'function') {
+            window.__makeTemplateObject = function (cooked, raw) {
+                if (Object.defineProperty) Object.defineProperty(cooked, 'raw', { value: raw });
+                else cooked.raw = raw;
+                return cooked;
+            };
+        }
+        if (typeof window.__importStar !== 'function') {
+            window.__importStar = function (module) {
+                if (module && module.__esModule) return module;
+                var result = {};
+                if (module != null) {
+                    for (var key in module) {
+                        if (key !== 'default' && Object.prototype.hasOwnProperty.call(module, key)) window.__createBinding(result, module, key);
+                    }
+                }
+                Object.defineProperty(result, 'default', { enumerable: true, value: module });
+                return result;
+            };
+        }
+        if (typeof window.__importDefault !== 'function') {
+            window.__importDefault = function (module) {
+                return module && module.__esModule ? module : { default: module };
+            };
+        }
+        if (typeof window.__classPrivateFieldGet !== 'function') {
+            window.__classPrivateFieldGet = function (receiver, privateMap) {
+                if (!privateMap.has(receiver)) throw new TypeError('attempted to get private field on non-instance');
+                return privateMap.get(receiver);
+            };
+        }
+        if (typeof window.__classPrivateFieldSet !== 'function') {
+            window.__classPrivateFieldSet = function (receiver, privateMap, value) {
+                if (!privateMap.has(receiver)) throw new TypeError('attempted to set private field on non-instance');
+                privateMap.set(receiver, value);
+                return value;
+            };
+        }
+    }
+
     function installEncryptedBundleLoader() {
         var downloader = cc.assetManager && cc.assetManager.downloader;
         if (!downloader || downloader.__ios2EncryptedBundles) return;
@@ -174,6 +531,7 @@
         var loaded = Object.create(null);
 
         function execute(code, url) {
+            installTypeScriptRuntimeHelpers();
             code = code.replace(/cc\.assetManager\.loadAny=function\(\)\{\},?/g, '');
             code = code.replace(/[a-zA-Z]\.PlatformManager\.instance\.isH5&&\(cc\.assetManager\.loadBundle=function\(\)\{\}\),?/g, '');
             // Keep Cocos in its WebKit runtime, but expose the native iOS
@@ -420,6 +778,7 @@
                 settings.remoteBundles.indexOf(name) < 0) settings.remoteBundles.push(name);
         });
         var canvas = document.getElementById('GameCanvas');
+        installTypeScriptRuntimeHelpers();
         installASTCTextureSupport();
         cc.macro.SUPPORT_TEXTURE_FORMATS = ['.pvr'];
         var option = {
