@@ -195,7 +195,7 @@
                 var binaryOptions = Object.assign({}, options, { responseType: 'arraybuffer' });
                 downloader.downloadFile(url, binaryOptions, function (error, buffer) {
                     if (!error) {
-                        console.log('[ios2-web] PVR texture downloaded', url,
+                        console.log('[ios2-web] PVR texture loaded', url,
                             buffer && buffer.byteLength || 0, 'bytes');
                     }
                     onComplete(error, buffer);

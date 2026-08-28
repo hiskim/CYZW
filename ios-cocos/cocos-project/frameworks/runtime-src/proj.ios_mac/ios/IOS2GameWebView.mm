@@ -22,6 +22,7 @@ typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response,
 @property (nonatomic, strong) NSMutableData *bodyData;
 @property (nonatomic, strong) NSHTTPURLResponse *response;
 @property (nonatomic, strong) IOS2WebHTTPCompletion completion;
+@property (nonatomic, copy) NSString *requestID;
 @property (nonatomic, assign) BOOL finished;
 - (instancetype)initWithRequest:(NSURLRequest *)request completion:(IOS2WebHTTPCompletion)completion;
 - (void)start;
@@ -29,7 +30,12 @@ typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response,
 @end
 
 @interface IOS2GameSchemeHandler : NSObject <WKURLSchemeHandler>
-@property (nonatomic, strong) NSMutableDictionary<NSString *, IOS2WebHTTPConnection *> *tasks;
+// `tasks` maps a WKURLSchemeTask to its remote URL.  Several WebKit requests
+// may resolve to one CDN URL, so downloads and their waiting tasks are tracked
+// independently.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *tasks;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, IOS2WebHTTPConnection *> *downloads;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *pendingTasks;
 @property (nonatomic, strong) dispatch_queue_t cacheQueue;
 @end
 
@@ -147,21 +153,13 @@ static NSString *IOS2GameSHA256(NSString *value)
     return [NSString stringWithFormat:@"%p", task];
 }
 
-- (BOOL)finishDownloadForTask:(id<WKURLSchemeTask>)task
-{
-    NSString *key = [self keyForTask:task];
-    @synchronized (self.tasks) {
-        if (!self.tasks[key]) return NO;
-        [self.tasks removeObjectForKey:key];
-        return YES;
-    }
-}
-
 + (instancetype)sharedInstance
 {
     if (!s_ios2GameSchemeHandler) {
         s_ios2GameSchemeHandler = [IOS2GameSchemeHandler new];
         s_ios2GameSchemeHandler.tasks = [NSMutableDictionary dictionary];
+        s_ios2GameSchemeHandler.downloads = [NSMutableDictionary dictionary];
+        s_ios2GameSchemeHandler.pendingTasks = [NSMutableDictionary dictionary];
         s_ios2GameSchemeHandler.cacheQueue = dispatch_queue_create("com.xyzw.ios2.web-cache", DISPATCH_QUEUE_SERIAL);
     }
     return s_ios2GameSchemeHandler;
@@ -198,9 +196,39 @@ static NSString *IOS2GameSHA256(NSString *value)
     NSDictionary *files = [index[@"files"] isKindOfClass:[NSDictionary class]] ? index[@"files"] : nil;
     NSDictionary *record = [files[remoteURL] isKindOfClass:[NSDictionary class]] ? files[remoteURL] : nil;
     NSString *relativePath = [record[@"url"] isKindOfClass:[NSString class]] ? record[@"url"] : nil;
-    if (!relativePath.length) return nil;
-    NSURL *fileURL = [IOS2GameCacheDirectory() URLByAppendingPathComponent:relativePath];
+    if (!relativePath.length || [relativePath hasPrefix:@"/"] || [relativePath containsString:@".."]) return nil;
+    NSURL *cacheDirectory = IOS2GameCacheDirectory().standardizedURL;
+    NSURL *fileURL = [[cacheDirectory URLByAppendingPathComponent:relativePath] standardizedURL];
+    NSString *cachePrefix = [cacheDirectory.path stringByAppendingString:@"/"];
+    if (![fileURL.path hasPrefix:cachePrefix]) return nil;
     return [[NSFileManager defaultManager] fileExistsAtPath:fileURL.path] ? fileURL : nil;
+}
+
+- (NSArray<NSDictionary *> *)takePendingTasksForURL:(NSString *)remoteURL requestID:(NSString *)requestID
+{
+    @synchronized (self.tasks) {
+        if (![self.downloads[remoteURL].requestID isEqualToString:requestID]) return @[];
+        NSArray<NSDictionary *> *pending = [self.pendingTasks[remoteURL] copy] ?: @[];
+        [self.downloads removeObjectForKey:remoteURL];
+        [self.pendingTasks removeObjectForKey:remoteURL];
+        for (NSDictionary *entry in pending) {
+            id<WKURLSchemeTask> task = entry[@"task"];
+            [self.tasks removeObjectForKey:[self keyForTask:task]];
+        }
+        return pending;
+    }
+}
+
+- (void)respondToPendingTasks:(NSArray<NSDictionary *> *)pending data:(NSData *)data error:(NSError *)error
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (NSDictionary *entry in pending) {
+            id<WKURLSchemeTask> task = entry[@"task"];
+            NSURL *url = entry[@"url"];
+            if (error) [task didFailWithError:error];
+            else [self respondToTask:task data:data url:url];
+        }
+    });
 }
 
 - (void)webView:(WKWebView *)webView startURLSchemeTask:(id<WKURLSchemeTask>)task
@@ -275,19 +303,38 @@ static NSString *IOS2GameSHA256(NSString *value)
         NSURL *cachedURL = [self cachedFileForURL:remoteURL index:index];
         NSData *cachedData = cachedURL ? [NSData dataWithContentsOfURL:cachedURL] : nil;
         if (cachedData.length) {
+            NSLog(@"[ios2] Web CDN cache hit: %@ bytes=%lu", remoteURL, (unsigned long)cachedData.length);
             dispatch_async(dispatch_get_main_queue(), ^{ [self respondToTask:task data:cachedData url:url]; });
             return;
         }
+        BOOL shouldStartDownload = NO;
+        @synchronized (self.tasks) {
+            NSMutableArray<NSDictionary *> *pending = self.pendingTasks[remoteURL];
+            if (!pending) {
+                pending = [NSMutableArray array];
+                self.pendingTasks[remoteURL] = pending;
+                shouldStartDownload = YES;
+            }
+            [pending addObject:@{ @"task": (id)task, @"url": url }];
+            self.tasks[[self keyForTask:task]] = remoteURL;
+        }
+        if (!shouldStartDownload) {
+            NSLog(@"[ios2] Web CDN request coalesced: %@", remoteURL);
+            return;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
+            @synchronized (self.tasks) {
+                if (!self.pendingTasks[remoteURL].count || self.downloads[remoteURL]) return;
+            }
             NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:remote
                                                                       cachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData
                                                                   timeoutInterval:60.0];
             request.HTTPMethod = @"GET";
             [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
             [request setValue:@"close" forHTTPHeaderField:@"Connection"];
+            NSString *downloadID = NSUUID.UUID.UUIDString;
             IOS2WebHTTPConnection *download = [[IOS2WebHTTPConnection alloc] initWithRequest:request
                                                                                        completion:^(NSData *data, NSHTTPURLResponse *response, NSError *error) {
-                if (![self finishDownloadForTask:task]) return;
                 NSInteger status = response ? response.statusCode : 0;
                 if (error || !data.length || status < 200 || status >= 300) {
                     NSLog(@"[ios2] Web CDN request failed: %@ status=%ld error=%@",
@@ -300,7 +347,10 @@ static NSString *IOS2GameSHA256(NSString *value)
                                                        code:(status ?: -1)
                                                    userInfo:@{NSLocalizedDescriptionKey: message}];
                     }
-                    [task didFailWithError:failure];
+                    dispatch_async(self.cacheQueue, ^{
+                        NSArray<NSDictionary *> *pending = [self takePendingTasksForURL:remoteURL requestID:downloadID];
+                        [self respondToPendingTasks:pending data:nil error:failure];
+                    });
                     return;
                 }
                 NSLog(@"[ios2] Web CDN request finished: %@ status=%ld bytes=%lu",
@@ -308,22 +358,47 @@ static NSString *IOS2GameSHA256(NSString *value)
                 dispatch_async(self.cacheQueue, ^{
                     NSFileManager *manager = [NSFileManager defaultManager];
                     NSURL *webDirectory = [IOS2GameCacheDirectory() URLByAppendingPathComponent:@"webkit" isDirectory:YES];
-                    [manager createDirectoryAtURL:webDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+                    NSError *directoryError = nil;
+                    if (![manager createDirectoryAtURL:webDirectory withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+                        NSLog(@"[ios2] Web CDN cache directory create failed: %@ error=%@", remoteURL,
+                              directoryError.localizedDescription ?: @"<none>");
+                        NSArray<NSDictionary *> *pending = [self takePendingTasksForURL:remoteURL requestID:downloadID];
+                        [self respondToPendingTasks:pending data:data error:nil];
+                        return;
+                    }
                     NSString *extension = remote.pathExtension.length ? [@"." stringByAppendingString:remote.pathExtension] : @"";
                     NSString *relativePath = [@"webkit/" stringByAppendingString:[IOS2GameSHA256(remoteURL) stringByAppendingString:extension]];
                     NSURL *fileURL = [IOS2GameCacheDirectory() URLByAppendingPathComponent:relativePath];
-                    [data writeToURL:fileURL options:NSDataWritingAtomic error:nil];
+                    NSError *fileWriteError = nil;
+                    if (![data writeToURL:fileURL options:NSDataWritingAtomic error:&fileWriteError]) {
+                        NSLog(@"[ios2] Web CDN cache file write failed: %@ error=%@", remoteURL,
+                              fileWriteError.localizedDescription ?: @"<none>");
+                        NSArray<NSDictionary *> *pending = [self takePendingTasksForURL:remoteURL requestID:downloadID];
+                        [self respondToPendingTasks:pending data:data error:nil];
+                        return;
+                    }
                     NSData *latestData = [NSData dataWithContentsOfURL:indexURL];
                     NSMutableDictionary *latest = latestData ? [[NSJSONSerialization JSONObjectWithData:latestData options:NSJSONReadingMutableContainers error:nil] mutableCopy] : [NSMutableDictionary dictionary];
                     NSMutableDictionary *cacheFiles = [latest[@"files"] isKindOfClass:[NSDictionary class]] ? [latest[@"files"] mutableCopy] : [NSMutableDictionary dictionary];
                     cacheFiles[remoteURL] = @{ @"url": relativePath, @"bundle": @"webkit" };
                     latest[@"files"] = cacheFiles;
                     NSData *updated = [NSJSONSerialization dataWithJSONObject:latest options:0 error:nil];
-                    [updated writeToURL:indexURL options:NSDataWritingAtomic error:nil];
-                    dispatch_async(dispatch_get_main_queue(), ^{ [self respondToTask:task data:data url:url]; });
+                    NSError *indexWriteError = nil;
+                    if (![updated writeToURL:indexURL options:NSDataWritingAtomic error:&indexWriteError]) {
+                        NSLog(@"[ios2] Web CDN cache index write failed: %@ error=%@", remoteURL,
+                              indexWriteError.localizedDescription ?: @"<none>");
+                    } else {
+                        NSLog(@"[ios2] Web CDN cache saved: %@ -> %@", remoteURL, relativePath);
+                    }
+                    NSArray<NSDictionary *> *pending = [self takePendingTasksForURL:remoteURL requestID:downloadID];
+                    [self respondToPendingTasks:pending data:data error:nil];
                 });
             }];
-            @synchronized (self.tasks) { self.tasks[[self keyForTask:task]] = download; }
+            @synchronized (self.tasks) {
+                if (!self.pendingTasks[remoteURL].count || self.downloads[remoteURL]) return;
+                download.requestID = downloadID;
+                self.downloads[remoteURL] = download;
+            }
             [download start];
         });
     });
@@ -335,8 +410,22 @@ static NSString *IOS2GameSHA256(NSString *value)
     IOS2WebHTTPConnection *download = nil;
     @synchronized (self.tasks) {
         NSString *key = [self keyForTask:task];
-        download = self.tasks[key];
+        NSString *remoteURL = self.tasks[key];
+        if (!remoteURL.length) return;
         [self.tasks removeObjectForKey:key];
+        NSMutableArray<NSDictionary *> *pending = self.pendingTasks[remoteURL];
+        NSIndexSet *indices = [pending indexesOfObjectsPassingTest:^BOOL(NSDictionary *entry, NSUInteger index, BOOL *stop) {
+            (void)index;
+            if (entry[@"task"] != (id)task) return NO;
+            *stop = YES;
+            return YES;
+        }];
+        [pending removeObjectsAtIndexes:indices];
+        if (!pending.count) {
+            [self.pendingTasks removeObjectForKey:remoteURL];
+            download = self.downloads[remoteURL];
+            [self.downloads removeObjectForKey:remoteURL];
+        }
     }
     [download cancel];
 }
