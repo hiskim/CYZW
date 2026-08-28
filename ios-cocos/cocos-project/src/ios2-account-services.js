@@ -91,6 +91,8 @@
         catch (ignored) { return 'native'; }
     }
 
+    IOS2LoginService.prototype.runtimeBackend = runtimeBackend;
+
     function currentManifestJSON() {
         try {
             var rawData = global.cc && cc.sys && cc.sys.manifestResult && cc.sys.manifestResult.rawData;

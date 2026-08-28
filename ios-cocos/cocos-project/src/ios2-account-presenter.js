@@ -10,6 +10,7 @@
         var self = this;
         this.view = new global.IOS2AccountView({
             storage: this.repository.storage,
+            runtimeBackend: this._runtimeBackend(),
             importAccounts: function () { self.importAccounts(); },
             login: function (name) { self.login(name); },
             multiOpen: function (names) { self.multiOpen(names); },
@@ -20,7 +21,15 @@
         this.view.setAccounts(this.repository.cached());
     }
 
+    IOS2AccountPresenter.prototype._runtimeBackend = function () {
+        if (this.loginService && typeof this.loginService.runtimeBackend === 'function') {
+            return this.loginService.runtimeBackend();
+        }
+        return 'native';
+    };
+
     IOS2AccountPresenter.prototype.show = function () {
+        this.view.setRuntimeBackend(this._runtimeBackend());
         this.view.show();
         this.view.setAccounts(this.repository.cached());
         this.view.setStatus('账号文件仅保存在本机。');

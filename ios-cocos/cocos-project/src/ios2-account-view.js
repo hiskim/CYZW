@@ -23,6 +23,13 @@
         return item;
     }
 
+    function ellipse(width, height, fill, border, lineSize) {
+        var item = new fgui.GGraph();
+        item.setSize(width, height);
+        item.drawEllipse(border ? (lineSize || 2) : 0, border || cc.Color.TRANSPARENT, fill);
+        return item;
+    }
+
     function text(value, fontSize, color, width, height, align) {
         var item = new fgui.GTextField();
         item.autoSize = fgui.AutoSizeType.None;
@@ -98,6 +105,25 @@
         return item;
     }
 
+    function checkCircle(selected, size) {
+        var item = new fgui.GComponent();
+        item.setSize(size, size);
+        if (selected) {
+            item.addChild(ellipse(size, size, COLORS.accent, null, 0));
+            var mark = text('✓', Math.max(23, Math.floor(size * 0.72)), cc.Color.WHITE,
+                size, size, fgui.AlignType.Center);
+            mark.setPosition(0, -1);
+            item.addChild(mark);
+        } else {
+            item.addChild(ellipse(size, size, cc.Color.TRANSPARENT, cc.color(202, 204, 208, 255), 3));
+        }
+        return item;
+    }
+
+    function accountDisplayName(record) {
+        return String(record && record.name || '').replace(/\.bin$/i, '') || '未命名账号';
+    }
+
     function formatSize(bytes) {
         bytes = Number(bytes) || 0;
         if (bytes < 1024) return bytes + ' B';
@@ -167,6 +193,7 @@
         this.busyName = '';
         this.viewMode = readPreference(this.storage, 'ios2.accountViewMode', 'list', ['list', 'grid']);
         this.sortMode = readPreference(this.storage, 'ios2.accountSortMode', 'recent', ['recent', 'updated', 'name']);
+        this.runtimeBackend = String(this.actions.runtimeBackend || 'native');
         this.root = new fgui.GComponent();
         this.root.name = 'IOS2AccountHome';
         this.root.opaque = true;
@@ -210,9 +237,7 @@
         var importButton = iconButton('+', toolbarSize, this.actions.importAccounts, '导入账号');
         importButton.setPosition(toolbarRight - (toolbarSize + toolbarGap) * 4, top - 2);
         this.root.addChild(importButton);
-        var backend = 'native';
-        try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
-        catch (ignored) {}
+        var backend = this.runtimeBackend || 'native';
         this.runtimeBackend = backend;
         if (backend === 'webkit') {
             var multiButton = button('多开', 82, 40, COLORS.success, cc.Color.WHITE,
@@ -512,60 +537,136 @@
         var self = this;
         var width = this.root.width;
         var height = this.root.height;
+        var records = this._orderedAccounts();
         var overlay = new fgui.GComponent();
         overlay.setSize(width, height);
         overlay.opaque = true;
-        overlay.addChild(graph(width, height, cc.color(16, 24, 36, 132)));
-        var panelWidth = Math.min(width - 36, 460);
-        var visibleCount = Math.min(this.accounts.length, 8);
-        var panelHeight = Math.min(height - 80, 154 + visibleCount * 52);
+        overlay.addChild(graph(width, height, cc.color(8, 12, 18, 154)));
+
+        var sheetTop = Math.max(this.layoutSafeTop + 84, Math.floor(height * 0.06));
+        var panelWidth = width;
+        var panelHeight = height - sheetTop;
+        var sideMargin = Math.max(20, Math.min(40, Math.floor(width * 0.04)));
+        var navHeight = height > 1200 ? 96 : 84;
+        var rowHeight = Math.max(72, Math.min(110, Math.floor(height * 0.043)));
+        var iconSize = Math.max(34, Math.min(50, Math.floor(rowHeight * 0.48)));
+        var listWidth = panelWidth - sideMargin * 2;
+
+        if (sideMargin > 22) {
+            var backPlate = graph(width - sideMargin * 2, 70, cc.color(215, 217, 224, 255), 18);
+            backPlate.setPosition(sideMargin, Math.max(this.layoutSafeTop + 34, sheetTop - 34));
+            overlay.addChild(backPlate);
+        }
+
         var panel = new fgui.GComponent();
         panel.setSize(panelWidth, panelHeight);
-        panel.setPosition((width - panelWidth) / 2, (height - panelHeight) / 2);
-        panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 8, COLORS.border));
-        var heading = text('选择 2 到 4 个账号', 23, COLORS.text, panelWidth - 40, 42, fgui.AlignType.Center);
-        heading.fontSize = 25;
-        heading.setPosition(20, 16);
-        panel.addChild(heading);
+        panel.setPosition(0, sheetTop);
+        panel.addChild(graph(panelWidth, panelHeight, cc.color(248, 249, 253, 255), 18));
         var selected = [];
+        var selectionLimit = 2;
+
+        var nav = new fgui.GComponent();
+        nav.setSize(panelWidth, navHeight);
+        nav.addChild(graph(panelWidth, navHeight, cc.color(248, 249, 253, 255)));
+        panel.addChild(nav);
+
+        var cancel = new fgui.GComponent();
+        cancel.setSize(88, navHeight);
+        cancel.opaque = true;
+        cancel.addChild(text('取消', 27, COLORS.accent, 88, navHeight, fgui.AlignType.Center));
+        cancel.setPosition(Math.max(0, sideMargin - 16), 0);
+        nav.addChild(cancel);
+
+        var heading = text('', 28, cc.color(0, 0, 0, 255), Math.max(120, panelWidth - 230), navHeight,
+            fgui.AlignType.Center);
+        heading.fontSize = 30;
+        heading.bold = true;
+        heading.setPosition((panelWidth - heading.width) / 2, 0);
+        nav.addChild(heading);
+
+        var confirm = new fgui.GComponent();
+        confirm.setSize(88, navHeight);
+        confirm.opaque = true;
+        confirm.addChild(text('启动', 27, COLORS.accent, 88, navHeight, fgui.AlignType.Center));
+        confirm.setPosition(panelWidth - sideMargin - 72, 0);
+        nav.addChild(confirm);
+        nav.addChild(graph(panelWidth, 1, cc.color(226, 228, 234, 255))).setPosition(0, navHeight - 1);
+
         var list = new fgui.GComponent();
-        list.setPosition(20, 62);
-        list.setSize(panelWidth - 40, panelHeight - 132);
+        list.setPosition(sideMargin, navHeight);
+        list.setSize(listWidth, Math.max(rowHeight, panelHeight - navHeight));
         list.overflow = fgui.OverflowType.Scroll;
         panel.addChild(list);
-        function refreshRows() {
-            list.removeChildren(0, -1, true);
-            for (var index = 0; index < self.accounts.length; index++) {
-                (function (record, rowIndex) {
-                    var checked = selected.indexOf(record.name) >= 0;
-                    var row = button((checked ? '✓  ' : '○  ') + String(record.name || '').replace(/\.bin$/i, ''),
-                        panelWidth - 40, 46, checked ? COLORS.accentSoft : COLORS.background,
-                        checked ? COLORS.accent : COLORS.text, function () {
-                            var selectedIndex = selected.indexOf(record.name);
-                            if (selectedIndex >= 0) selected.splice(selectedIndex, 1);
-                            else if (selected.length < 4) selected.push(record.name);
-                            refreshRows();
-                        }, 6);
-                    row.setPosition(0, rowIndex * 52);
-                    list.addChild(row);
-                }(self.accounts[index], index));
-            }
-        }
-        refreshRows();
+
         var close = function () { overlay.dispose(); };
-        var cancel = button('取消', 118, 44, COLORS.background, COLORS.text, close, 8);
-        cancel.setPosition(panelWidth / 2 - 128, panelHeight - 60);
-        panel.addChild(cancel);
-        var confirm = button('启动多开', 118, 44, COLORS.success, cc.Color.WHITE, function () {
-            if (selected.length < 2 || selected.length > 4) {
-                self.setStatus('请选择 2 到 4 个账号', 'warning');
-                return;
-            }
+        cancel.onClick(close);
+        confirm.onClick(function () {
+            if (selected.length !== selectionLimit) return;
             close();
             self.actions.multiOpen(selected.slice(0));
-        }, 8);
-        confirm.setPosition(panelWidth / 2 + 10, panelHeight - 60);
-        panel.addChild(confirm);
+        });
+
+        function updateHeader() {
+            heading.text = '群控启动（' + selected.length + '）';
+            confirm.visible = selected.length === selectionLimit;
+            confirm.touchable = selected.length === selectionLimit;
+        }
+
+        function refreshRows() {
+            list.removeChildren(0, -1, true);
+            if (!records.length) {
+                var empty = text('还没有可用 bin 文件', 22, COLORS.muted, listWidth, 88,
+                    fgui.AlignType.Center);
+                empty.setPosition(0, Math.max(0, list.height / 2 - 44));
+                list.addChild(empty);
+                updateHeader();
+                return;
+            }
+            var listBackground = graph(listWidth, Math.max(list.height, records.length * rowHeight), COLORS.surface, 18);
+            list.addChild(listBackground);
+            for (var index = 0; index < records.length; index++) {
+                (function (record, rowIndex) {
+                    var checked = selected.indexOf(record.name) >= 0;
+                    var row = new fgui.GComponent();
+                    row.setSize(listWidth, rowHeight);
+                    row.setPosition(0, rowIndex * rowHeight);
+                    row.opaque = true;
+                    row.addChild(graph(listWidth, rowHeight,
+                        checked ? cc.color(207, 208, 212, 255) : COLORS.surface));
+
+                    var marker = checkCircle(checked, iconSize);
+                    marker.setPosition(Math.max(18, Math.floor(sideMargin * 0.95)),
+                        Math.floor((rowHeight - iconSize) / 2));
+                    row.addChild(marker);
+
+                    var label = text(accountDisplayName(record), Math.max(25, Math.min(38, Math.floor(rowHeight * 0.36))),
+                        cc.color(0, 0, 0, 255), listWidth - marker.x - iconSize - 44,
+                        rowHeight, fgui.AlignType.Left);
+                    label.autoSize = fgui.AutoSizeType.Shrink;
+                    label.setPosition(marker.x + iconSize + 42, 0);
+                    row.addChild(label);
+
+                    if (!checked && rowIndex < records.length - 1) {
+                        var line = graph(listWidth - marker.x - iconSize - 42, 1, cc.color(222, 222, 224, 255));
+                        line.setPosition(marker.x + iconSize + 42, rowHeight - 1);
+                        row.addChild(line);
+                    }
+
+                    row.onClick(function () {
+                        var selectedIndex = selected.indexOf(record.name);
+                        if (selectedIndex >= 0) selected.splice(selectedIndex, 1);
+                        else {
+                            if (selected.length >= selectionLimit) selected.shift();
+                            selected.push(record.name);
+                        }
+                        refreshRows();
+                    });
+                    list.addChild(row);
+                }(records[index], index));
+            }
+            updateHeader();
+        }
+        refreshRows();
         overlay.addChild(panel);
         this.root.addChild(overlay);
     };
@@ -586,12 +687,15 @@
         this.status.color = COLORS[tone] || COLORS.muted;
     };
 
+    IOS2AccountView.prototype.setRuntimeBackend = function (backend) {
+        var next = String(backend || 'native');
+        if (next === this.runtimeBackend) return;
+        this.runtimeBackend = next;
+        this._build();
+    };
+
     IOS2AccountView.prototype.show = function () {
-        var backend = 'native';
-        try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
-        catch (ignored) {}
-        if (backend !== this.runtimeBackend || this.layoutWidth !== fgui.GRoot.inst.width ||
-            this.layoutHeight !== fgui.GRoot.inst.height ||
+        if (this.layoutWidth !== fgui.GRoot.inst.width || this.layoutHeight !== fgui.GRoot.inst.height ||
             this.layoutSafeTop !== safeAreaTop(fgui.GRoot.inst.width, fgui.GRoot.inst.height)) this._build();
         this.root.visible = true;
     };
