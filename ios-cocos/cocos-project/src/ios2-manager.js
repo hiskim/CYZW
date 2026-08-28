@@ -7,6 +7,15 @@
     if (!common) throw new Error('ios2 manager common module is missing');
     var NAV_HEIGHT = common.NAV_HEIGHT;
     var COLORS = common.COLORS;
+    var PENDING_SINGLE_LOGIN_KEY = 'ios2.pendingSingleLogin';
+
+    function displayAccountName(name) {
+        return String(name || '').replace(/\.bin$/i, '') || '账号';
+    }
+
+    function stopEvent(event) {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    }
 
     var methods = {
         ctor: function (scene, launcher) {
@@ -16,6 +25,9 @@
             this.gameStarted = false;
             this.scriptRunPending = false;
             this.status = '';
+            this.currentGameAccountName = '';
+            this.pendingLoginAfterRestart = '';
+            this.gamePopupLayer = null;
             this.storage = common.safeStorage();
             this.binFiles = this._loadBins();
             this.binGroups = this._loadBinGroups();
@@ -78,10 +90,9 @@
             this.content = new cc.Node();
             this.addChild(this.content, 1);
 
-            this.logoutOverlay = common.actionButton('↪', 24, this._logout.bind(this), COLORS.warning, 50);
-            this.logoutOverlay.setPosition(size.width - 48, size.height - 102);
-            this.logoutOverlay.active = false;
-            this.addChild(this.logoutOverlay, 30);
+            this.gameToolbar = this._createGameToolbar(size);
+            this.gameToolbar.active = false;
+            this.addChild(this.gameToolbar, 30);
 
             // The management navigation follows the account home layout and
             // stays below the device's top safe area.
@@ -132,11 +143,14 @@
                 page = 2;
                 this.status = 'JS 脚本仅支持 WebKit 模式';
             }
+            this._dismissGamePopup();
+            if (this.gameToolbar) this.gameToolbar.active = false;
             this.page = Math.max(0, Math.min(2, Number(page) || 0));
             if (this.page === 0 && this.accountPresenter) {
                 this._setFairyRootActive(true);
                 this._setLegacyChromeVisible(false);
                 this.accountPresenter.show();
+                this._consumePendingSingleLogin();
                 return;
             }
             this._setFairyRootActive(false);
@@ -190,12 +204,14 @@
                 self.logoutPending = false;
                 self.gameStarted = false;
                 if (typeof self._resetScriptRuntime === 'function') self._resetScriptRuntime();
-                if (self.logoutOverlay) self.logoutOverlay.active = false;
+                self._dismissGamePopup();
+                if (self.gameToolbar) self.gameToolbar.active = false;
                 self.background.active = true;
                 self.content.active = true;
                 self.status = '已退出当前登录';
-                self.showPage(0);
+                if (!self.pendingLoginAfterRestart) self.showPage(0);
                 if (typeof global.__ios2ResetToLauncher === 'function') setTimeout(global.__ios2ResetToLauncher, 0);
+                else if (self.pendingLoginAfterRestart) self.showPage(0);
             };
             try {
                 if (global.HSDK && typeof global.HSDK.logout === 'function') {
@@ -220,6 +236,307 @@
             this._setFairyRootActive(false);
             this.background.active = false;
             this.content.active = false;
+            this._dismissGamePopup();
+            this._updateGameToolbar(this.currentGameAccountName);
+            if (this.gameToolbar) this.gameToolbar.active = true;
+        },
+
+        _createToolbarButton: function (caption, size, callback) {
+            var button = new cc.Node();
+            button.setAnchorPoint(0.5, 0.5);
+            button.setContentSize(size, size);
+            var label = common.label(caption, Math.floor(size * 0.7), COLORS.accent);
+            label.setPosition(0, 0);
+            button.addChild(label);
+            var restoreScale = function () {
+                if (cc.tween) {
+                    cc.Tween.stopAllByTarget(button);
+                    cc.tween(button).to(0.1, { scale: 1 }, { easing: 'sineOut' }).start();
+                } else button.setScale(1);
+            };
+            button.on(cc.Node.EventType.TOUCH_START, function (event) {
+                if (cc.tween) {
+                    cc.Tween.stopAllByTarget(button);
+                    cc.tween(button).to(0.08, { scale: 0.94 }, { easing: 'sineOut' }).start();
+                } else button.setScale(0.94);
+                stopEvent(event);
+            });
+            button.on(cc.Node.EventType.TOUCH_END, function (event) {
+                restoreScale();
+                if (typeof callback === 'function') callback();
+                stopEvent(event);
+            });
+            button.on(cc.Node.EventType.TOUCH_CANCEL, function (event) {
+                restoreScale();
+                stopEvent(event);
+            });
+            return button;
+        },
+
+        _createGameToolbar: function (size) {
+            var toolbarHeight = this._gameToolbarHeight();
+            var buttonSize = 40;
+            var controlY = 26;
+            var toolbar = new cc.Node();
+            toolbar.setAnchorPoint(0, 0);
+            toolbar.setContentSize(size.width, toolbarHeight);
+            toolbar.setPosition(0, size.height - toolbarHeight);
+            if (cc.BlockInputEvents) toolbar.addComponent(cc.BlockInputEvents);
+            toolbar.addChild(common.rectNode(size.width, toolbarHeight, cc.color(239, 244, 252, 255)), 0);
+            toolbar.addChild(common.rectNode(size.width, 1, cc.color(222, 228, 238, 255)), 1);
+
+            var title = common.label('账号', 27, cc.color(24, 28, 35, 255));
+            title.setAnchorPoint(0, 0.5);
+            title.setContentSize(Math.max(96, size.width - 250), 42);
+            if (title.__ios2LabelComponent) {
+                title.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+                if (cc.Label.Overflow && cc.Label.Overflow.CLAMP !== undefined) {
+                    title.__ios2LabelComponent.overflow = cc.Label.Overflow.CLAMP;
+                }
+            }
+            title.setPosition(22, controlY);
+            toolbar.addChild(title, 2);
+            toolbar.__ios2Title = title;
+
+            var right = size.width - 18;
+            var icons = [
+                { key: 'close', caption: '↪', action: this._logout.bind(this) },
+                { key: 'info', caption: 'ⓘ', action: this._showGameInfo.bind(this) },
+                { key: 'switch', caption: '👥', action: this._showGameBinSwitcher.bind(this) },
+                { key: 'gear', caption: '⚙', action: this._showGameGearMenu.bind(this) }
+            ];
+            for (var index = 0; index < icons.length; index++) {
+                var icon = this._createToolbarButton(icons[index].caption, buttonSize, icons[index].action);
+                icon.__ios2Key = icons[index].key;
+                icon.setPosition(right - buttonSize / 2 - index * (buttonSize + 5), controlY);
+                toolbar.addChild(icon, 3);
+            }
+            return toolbar;
+        },
+
+        _gameToolbarHeight: function () {
+            return Math.max(78, this.safeTopInset + 50);
+        },
+
+        _updateGameToolbar: function (accountName) {
+            this.currentGameAccountName = accountName || this.currentGameAccountName ||
+                (this.accountPresenter && this.accountPresenter.currentAccountName ?
+                    this.accountPresenter.currentAccountName() : '');
+            if (this.gameToolbar && this.gameToolbar.__ios2Title && this.gameToolbar.__ios2Title.__ios2LabelComponent) {
+                this.gameToolbar.__ios2Title.__ios2LabelComponent.string = displayAccountName(this.currentGameAccountName);
+            } else if (this.gameToolbar && this.gameToolbar.__ios2Title) {
+                this.gameToolbar.__ios2Title.string = displayAccountName(this.currentGameAccountName);
+            }
+        },
+
+        _dismissGamePopup: function () {
+            if (this.gamePopupLayer) {
+                this.gamePopupLayer.removeFromParent(true);
+                this.gamePopupLayer = null;
+            }
+        },
+
+        _popupLayer: function () {
+            this._dismissGamePopup();
+            var size = cc.winSize;
+            var layer = new cc.Node();
+            layer.setAnchorPoint(0, 0);
+            layer.setContentSize(size.width, size.height);
+            layer.setPosition(0, 0);
+            if (cc.BlockInputEvents) layer.addComponent(cc.BlockInputEvents);
+            layer.on(cc.Node.EventType.TOUCH_END, function (event) {
+                this._dismissGamePopup();
+                stopEvent(event);
+            }, this);
+            this.gamePopupLayer = layer;
+            this.addChild(layer, 31);
+            return layer;
+        },
+
+        _menuRow: function (labelText, width, height, callback) {
+            var row = new cc.Node();
+            row.setAnchorPoint(0, 0);
+            row.setContentSize(width, height);
+            var label = common.label(labelText, 21, COLORS.text);
+            label.setAnchorPoint(0, 0.5);
+            label.setContentSize(width - 28, height);
+            if (label.__ios2LabelComponent) label.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+            label.setPosition(16, height / 2);
+            row.addChild(label);
+            row.on(cc.Node.EventType.TOUCH_END, function (event) {
+                this._dismissGamePopup();
+                if (typeof callback === 'function') callback();
+                stopEvent(event);
+            }, this);
+            return row;
+        },
+
+        _showGameGearMenu: function () {
+            var size = cc.winSize;
+            var layer = this._popupLayer();
+            var width = 176;
+            var rowHeight = 54;
+            var height = rowHeight * 2;
+            var panel = common.surfaceNode(width, height, cc.color(255, 255, 255, 255), 14, COLORS.border);
+            panel.setPosition(size.width - width - 16, size.height - this._gameToolbarHeight() - height - 8);
+            if (cc.BlockInputEvents) panel.addComponent(cc.BlockInputEvents);
+            layer.addChild(panel);
+            var self = this;
+            var relogin = this._menuRow('重新登录', width, rowHeight, function () {
+                self._requestGameAccountLogin(self.currentGameAccountName);
+            });
+            relogin.setPosition(0, rowHeight);
+            panel.addChild(relogin);
+            panel.addChild(common.rectNode(width, 1, cc.color(229, 232, 238, 255))).setPosition(0, rowHeight);
+            var close = this._menuRow('关闭', width, rowHeight, function () { self._logout(); });
+            close.setPosition(0, 0);
+            panel.addChild(close);
+        },
+
+        _showGameInfo: function () {
+            var size = cc.winSize;
+            var layer = this._popupLayer();
+            var width = Math.min(size.width - 48, 320);
+            var height = 74;
+            var panel = common.surfaceNode(width, height, cc.color(255, 255, 255, 255), 14, COLORS.border);
+            panel.setPosition((size.width - width) / 2, size.height - this._gameToolbarHeight() - height - 12);
+            layer.addChild(panel);
+            var label = common.label('当前账号：' + displayAccountName(this.currentGameAccountName), 19, COLORS.text);
+            label.setAnchorPoint(0, 0.5);
+            label.setContentSize(width - 32, height);
+            if (label.__ios2LabelComponent) label.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+            label.setPosition(16, height / 2);
+            panel.addChild(label);
+        },
+
+        _gameAccountRecords: function () {
+            var source = this.accountRepository ? this.accountRepository.cached() : (this.binFiles || []);
+            var records = [];
+            for (var index = 0; index < source.length; index++) {
+                var record = source[index];
+                if (!record || !record.name || record.last || record.name === 'last.bin') continue;
+                records.push(record);
+            }
+            records.sort(function (left, right) {
+                var leftTime = Number(left.modified) || 0;
+                var rightTime = Number(right.modified) || 0;
+                if (leftTime !== rightTime) return rightTime - leftTime;
+                return String(left.name || '').localeCompare(String(right.name || ''));
+            });
+            return records;
+        },
+
+        _showGameBinSwitcher: function () {
+            var size = cc.winSize;
+            var records = this._gameAccountRecords();
+            var currentName = this.currentGameAccountName;
+            var filtered = [];
+            for (var index = 0; index < records.length; index++) {
+                if (records[index].name !== currentName) filtered.push(records[index]);
+            }
+            if (filtered.length) records = filtered;
+            var layer = this._popupLayer();
+            var width = Math.min(size.width - 48, 430);
+            var rowHeight = 58;
+            var headerHeight = 54;
+            var maxPanelHeight = Math.max(190, size.height - this._gameToolbarHeight() - 48);
+            var contentHeight = records.length ? records.length * rowHeight : rowHeight;
+            var listHeight = Math.min(contentHeight, maxPanelHeight - headerHeight);
+            var panelHeight = headerHeight + listHeight;
+            var panel = common.surfaceNode(width, panelHeight, cc.color(255, 255, 255, 255), 18, COLORS.border);
+            panel.setPosition((size.width - width) / 2,
+                Math.max(16, size.height - this._gameToolbarHeight() - panelHeight - 10));
+            if (cc.BlockInputEvents) panel.addComponent(cc.BlockInputEvents);
+            layer.addChild(panel);
+
+            var title = common.label('切换 bin', 22, COLORS.text);
+            title.setAnchorPoint(0, 0.5);
+            title.setContentSize(width - 32, headerHeight);
+            if (title.__ios2LabelComponent) title.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+            title.setPosition(16, panelHeight - headerHeight / 2);
+            panel.addChild(title);
+            panel.addChild(common.rectNode(width, 1, cc.color(229, 232, 238, 255))).setPosition(0, panelHeight - headerHeight);
+
+            var view = new cc.Node();
+            view.setAnchorPoint(0, 0);
+            view.setContentSize(width, listHeight);
+            view.setPosition(0, 0);
+            if (cc.Mask) view.addComponent(cc.Mask);
+            panel.addChild(view);
+
+            var content = new cc.Node();
+            content.setAnchorPoint(0, 1);
+            content.setContentSize(width, Math.max(listHeight, contentHeight));
+            content.setPosition(0, listHeight);
+            view.addChild(content);
+            if (cc.ScrollView) {
+                var scroll = view.addComponent(cc.ScrollView);
+                scroll.horizontal = false;
+                scroll.vertical = true;
+                scroll.inertia = true;
+                scroll.brake = 0.78;
+                scroll.content = content;
+            }
+
+            if (!records.length) {
+                var empty = common.label('没有其他 bin 文件', 20, COLORS.muted);
+                empty.setPosition(width / 2, -rowHeight / 2);
+                content.addChild(empty);
+                return;
+            }
+
+            var self = this;
+            for (var rowIndex = 0; rowIndex < records.length; rowIndex++) {
+                (function (record, y) {
+                    var row = new cc.Node();
+                    row.setAnchorPoint(0, 1);
+                    row.setContentSize(width, rowHeight);
+                    row.setPosition(0, y);
+                    var label = common.label(displayAccountName(record.name), 21, COLORS.text);
+                    label.setAnchorPoint(0, 0.5);
+                    label.setContentSize(width - 36, rowHeight);
+                    if (label.__ios2LabelComponent) {
+                        label.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+                        if (cc.Label.Overflow && cc.Label.Overflow.CLAMP !== undefined) {
+                            label.__ios2LabelComponent.overflow = cc.Label.Overflow.CLAMP;
+                        }
+                    }
+                    label.setPosition(18, -rowHeight / 2);
+                    row.addChild(label);
+                    row.addChild(common.rectNode(width - 18, 1, cc.color(234, 236, 240, 255)))
+                        .setPosition(18, -rowHeight);
+                    row.on(cc.Node.EventType.TOUCH_END, function (event) {
+                        self._dismissGamePopup();
+                        self._requestGameAccountLogin(record.name);
+                        stopEvent(event);
+                    });
+                    content.addChild(row);
+                }(records[rowIndex], -rowIndex * rowHeight));
+            }
+        },
+
+        _requestGameAccountLogin: function (name) {
+            name = String(name || '');
+            if (!name) return;
+            this.pendingLoginAfterRestart = name;
+            try { if (this.storage) this.storage.setItem(PENDING_SINGLE_LOGIN_KEY, name); } catch (ignored) {}
+            this._logout();
+        },
+
+        _consumePendingSingleLogin: function () {
+            if (!this.storage || this.gameStarted || this._pendingLoginTimer) return;
+            var name = '';
+            try { name = String(this.storage.getItem(PENDING_SINGLE_LOGIN_KEY) || ''); } catch (ignored) {}
+            if (!name) return;
+            try { this.storage.removeItem(PENDING_SINGLE_LOGIN_KEY); } catch (ignored2) {}
+            this.pendingLoginAfterRestart = '';
+            var self = this;
+            this._pendingLoginTimer = setTimeout(function () {
+                self._pendingLoginTimer = null;
+                if (!self.accountPresenter) return;
+                self.currentGameAccountName = name;
+                self.accountPresenter.login(name);
+            }, 160);
         },
 
         onLoginReady: function () {
@@ -236,9 +553,12 @@
             if (this.gameStarted) return;
             this._setStatus('认证成功，正在进入游戏…', COLORS.success);
             this.gameStarted = true;
+            this.pendingLoginAfterRestart = '';
+            this._updateGameToolbar(this.accountPresenter && this.accountPresenter.currentAccountName ?
+                this.accountPresenter.currentAccountName() : this.currentGameAccountName);
             if (this.accountPresenter) this.accountPresenter.hide();
             this._setFairyRootActive(false);
-            if (this.logoutOverlay) this.logoutOverlay.active = true;
+            if (this.gameToolbar) this.gameToolbar.active = true;
             if (this.background) this.background.active = false;
             if (this.content) this.content.active = false;
             if (typeof global.__ios2StartGame === 'function') global.__ios2StartGame();

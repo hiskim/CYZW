@@ -518,14 +518,14 @@ static void IOS2SaveBin(NSData *data, NSString *preferredName)
     if (preferredName.length) IOS2StoreBin(data, preferredName);
 }
 
-static void IOS2ListBinFiles(void)
+static NSArray<NSDictionary *> *IOS2BinFileRecords(BOOL includeLast)
 {
     NSURL *documents = IOS2DocumentsDirectory();
     NSURL *root = [documents URLByAppendingPathComponent:@"ios2" isDirectory:YES];
     NSURL *directory = IOS2BinDirectory();
     NSMutableArray *records = [NSMutableArray array];
     NSFileManager *fileManager = [NSFileManager defaultManager];
-    NSArray *locations = @[[root URLByAppendingPathComponent:@"last.bin"], directory];
+    NSArray *locations = includeLast ? @[[root URLByAppendingPathComponent:@"last.bin"], directory] : @[directory];
     for (NSURL *location in locations) {
         BOOL isDirectory = NO;
         BOOL exists = [fileManager fileExistsAtPath:location.path isDirectory:&isDirectory];
@@ -546,6 +546,23 @@ static void IOS2ListBinFiles(void)
                                   @"last": @([url.lastPathComponent isEqualToString:@"last.bin"]) }];
         }
     }
+    [records sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        BOOL leftLast = [left[@"last"] boolValue];
+        BOOL rightLast = [right[@"last"] boolValue];
+        if (leftLast != rightLast) return leftLast ? NSOrderedAscending : NSOrderedDescending;
+        long long leftTime = [left[@"modified"] longLongValue];
+        long long rightTime = [right[@"modified"] longLongValue];
+        if (leftTime != rightTime) return leftTime > rightTime ? NSOrderedAscending : NSOrderedDescending;
+        NSString *leftName = [left[@"name"] isKindOfClass:[NSString class]] ? left[@"name"] : @"";
+        NSString *rightName = [right[@"name"] isKindOfClass:[NSString class]] ? right[@"name"] : @"";
+        return [leftName localizedCaseInsensitiveCompare:rightName];
+    }];
+    return records;
+}
+
+static void IOS2ListBinFiles(void)
+{
+    NSArray *records = IOS2BinFileRecords(YES);
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:records options:0 error:nil];
     NSString *json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
     IOS2CallJavaScript(@"__ios2BinFilesReady", json ?: @"[]");
@@ -1303,6 +1320,28 @@ static void IOS2Authenticate(NSData *binData)
 }
 
 @end
+
+extern "C" NSArray<NSDictionary *> *IOS2ManagedBinRecords(void)
+{
+    return IOS2BinFileRecords(NO);
+}
+
+extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSString *manifestJSON)
+{
+    if (![name isKindOfClass:[NSString class]] || !name.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([[IOS2Native runtimeBackend] isEqualToString:@"webkit"]) {
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:@[name] options:0 error:nil];
+            NSString *namesJSON = [[[NSString alloc] initWithData:jsonData
+                                                         encoding:NSUTF8StringEncoding] autorelease] ?: @"[]";
+            [IOS2Native loginBinFiles:namesJSON
+                          scriptsJSON:scriptsJSON ?: @"[]"
+                         manifestJSON:manifestJSON ?: @"{}"];
+            return;
+        }
+        [IOS2Native loginBinFile:name];
+    });
+}
 
 /*
  * HSDK's native iOS adapter calls this class through Cocos' ObjC bridge.

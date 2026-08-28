@@ -12,6 +12,9 @@
 
 typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response, NSError *error);
 
+extern "C" NSArray<NSDictionary *> *IOS2ManagedBinRecords(void);
+extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSString *manifestJSON);
+
 /*
  * Keep CDN downloads on the same connection stack as the working login and
  * manifest requests. NSURLSession can negotiate HTTP/3 in the simulator;
@@ -42,6 +45,10 @@ typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response,
 @interface IOS2GameWebView () <WKNavigationDelegate, WKScriptMessageHandler>
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *instances;
 @property (nonatomic, strong) UIView *toolbar;
+@property (nonatomic, strong) UILabel *toolbarTitle;
+@property (nonatomic, strong) UIButton *switchButton;
+@property (nonatomic, copy) NSString *scriptsJSON;
+@property (nonatomic, copy) NSString *manifestJSON;
 @property (nonatomic, strong) UIViewController *presenter;
 @property (nonatomic, assign) NSUInteger shutdownGeneration;
 - (void)shutdownAndCloseInstances;
@@ -493,6 +500,13 @@ static UIViewController *IOS2GamePresenter(void)
     return controller;
 }
 
+static NSString *IOS2DisplayAccountName(NSString *name)
+{
+    NSString *value = [name isKindOfClass:[NSString class]] ? name : @"";
+    if ([value.lowercaseString hasSuffix:@".bin"]) value = [value substringToIndex:value.length - 4];
+    return value.length ? value : @"账号";
+}
+
 static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, NSString *authResponse, NSString *scriptsJSON, NSString *manifestJSON)
 {
     NSArray *scripts = nil;
@@ -556,6 +570,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 {
     if (instanceConfigs.count < 1 || instanceConfigs.count > 4) return;
     [self closeAllInstances];
+    self.scriptsJSON = scriptsJSON ?: @"[]";
+    self.manifestJSON = manifestJSON ?: @"{}";
     self.presenter = IOS2GamePresenter();
     if (!self.presenter.view) return;
     [self ensureToolbar];
@@ -596,9 +612,48 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         NSLog(@"[ios2] loading Web runtime revision=%@ account=%@", kIOS2WebRuntimeRevision, accountName);
         [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
     }
+    [self configureToolbar];
     [self layoutInstances];
     [self.presenter.view bringSubviewToFront:self.toolbar];
     NSLog(@"[ios2] started %lu Web game instances", (unsigned long)self.instances.count);
+}
+
+- (NSString *)currentSingleAccountName
+{
+    if (self.instances.count != 1) return @"";
+    NSDictionary *record = self.instances.firstObject;
+    NSString *account = [record[@"account"] isKindOfClass:[NSString class]] ? record[@"account"] : @"";
+    return account ?: @"";
+}
+
+- (UIButton *)toolbarButtonWithSystemName:(NSString *)systemName fallback:(NSString *)fallback action:(SEL)action
+{
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.tintColor = [UIColor systemBlueColor];
+    button.titleLabel.font = [UIFont systemFontOfSize:31.0 weight:UIFontWeightSemibold];
+    BOOL didSetImage = NO;
+    if (@available(iOS 13.0, *)) {
+        UIImage *image = [UIImage systemImageNamed:systemName];
+        if (image) {
+            [button setImage:image forState:UIControlStateNormal];
+            button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+            didSetImage = YES;
+        }
+    }
+    if (!didSetImage) [button setTitle:fallback forState:UIControlStateNormal];
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (void)configureToolbar
+{
+    BOOL single = self.instances.count == 1;
+    NSString *title = single ? IOS2DisplayAccountName([self currentSingleAccountName]) :
+        [NSString stringWithFormat:@"群控 %lu开", (unsigned long)self.instances.count];
+    self.toolbarTitle.text = title;
+    self.switchButton.enabled = single;
+    self.switchButton.alpha = single ? 1.0 : 0.35;
 }
 
 - (void)ensureToolbar
@@ -606,37 +661,150 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     if (self.toolbar.superview) return;
     UIView *toolbar = [UIView new];
     toolbar.translatesAutoresizingMaskIntoConstraints = NO;
-    toolbar.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.96];
+    toolbar.backgroundColor = [UIColor colorWithRed:0.937 green:0.957 blue:0.988 alpha:1.0];
     self.toolbar = toolbar;
     [self.presenter.view addSubview:toolbar];
 
-    UIButton *manager = [UIButton buttonWithType:UIButtonTypeSystem];
-    manager.translatesAutoresizingMaskIntoConstraints = NO;
-    [manager setTitle:@"账号" forState:UIControlStateNormal];
-    [manager addTarget:self action:@selector(showManager) forControlEvents:UIControlEventTouchUpInside];
-    [toolbar addSubview:manager];
+    UILabel *title = [UILabel new];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.font = [UIFont systemFontOfSize:26.0 weight:UIFontWeightBold];
+    title.textColor = [UIColor colorWithRed:0.09 green:0.11 blue:0.15 alpha:1.0];
+    title.textAlignment = NSTextAlignmentLeft;
+    title.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.toolbarTitle = title;
+    [toolbar addSubview:title];
 
-    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-    close.translatesAutoresizingMaskIntoConstraints = NO;
-    [close setTitle:@"关闭" forState:UIControlStateNormal];
-    [close addTarget:self action:@selector(closeCurrent) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *close = [self toolbarButtonWithSystemName:@"arrow.right" fallback:@"↪" action:@selector(showManager)];
     [toolbar addSubview:close];
+
+    UIButton *info = [self toolbarButtonWithSystemName:@"info.circle" fallback:@"i" action:@selector(showCurrentInfo)];
+    [toolbar addSubview:info];
+
+    UIButton *account = [self toolbarButtonWithSystemName:@"person.2.fill" fallback:@"人" action:@selector(showAccountSwitch)];
+    self.switchButton = account;
+    [toolbar addSubview:account];
+
+    UIButton *gear = [self toolbarButtonWithSystemName:@"gearshape.fill" fallback:@"⚙" action:@selector(showGameMenu)];
+    [toolbar addSubview:gear];
 
     UILayoutGuide *safeArea = self.presenter.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [toolbar.leadingAnchor constraintEqualToAnchor:self.presenter.view.leadingAnchor],
         [toolbar.trailingAnchor constraintEqualToAnchor:self.presenter.view.trailingAnchor],
         [toolbar.topAnchor constraintEqualToAnchor:self.presenter.view.topAnchor],
-        [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:42.0],
-        [manager.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:8.0],
-        [manager.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
-        [manager.widthAnchor constraintEqualToConstant:52.0],
-        [manager.heightAnchor constraintEqualToConstant:34.0],
-        [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-8.0],
-        [close.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
-        [close.widthAnchor constraintEqualToConstant:52.0],
-        [close.heightAnchor constraintEqualToConstant:34.0]
+        [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:50.0],
+        [title.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:22.0],
+        [title.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
+        [title.heightAnchor constraintEqualToConstant:42.0],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:gear.leadingAnchor constant:-12.0],
+        [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-14.0],
+        [close.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [close.widthAnchor constraintEqualToConstant:40.0],
+        [close.heightAnchor constraintEqualToConstant:40.0],
+        [info.trailingAnchor constraintEqualToAnchor:close.leadingAnchor constant:-5.0],
+        [info.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [info.widthAnchor constraintEqualToConstant:40.0],
+        [info.heightAnchor constraintEqualToConstant:40.0],
+        [account.trailingAnchor constraintEqualToAnchor:info.leadingAnchor constant:-5.0],
+        [account.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [account.widthAnchor constraintEqualToConstant:40.0],
+        [account.heightAnchor constraintEqualToConstant:40.0],
+        [gear.trailingAnchor constraintEqualToAnchor:account.leadingAnchor constant:-5.0],
+        [gear.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [gear.widthAnchor constraintEqualToConstant:40.0],
+        [gear.heightAnchor constraintEqualToConstant:40.0]
     ]];
+}
+
+- (void)presentToolbarAlert:(UIAlertController *)alert source:(UIView *)source
+{
+    UIViewController *presenter = IOS2GamePresenter();
+    if (!presenter) return;
+    UIPopoverPresentationController *popover = alert.popoverPresentationController;
+    if (popover) {
+        popover.sourceView = source ?: self.toolbar;
+        popover.sourceRect = source ? source.bounds : self.toolbar.bounds;
+        popover.permittedArrowDirections = UIPopoverArrowDirectionUp;
+    }
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)loginAccount:(NSString *)account
+{
+    if (!account.length) return;
+    IOS2LoginManagedBin(account, self.scriptsJSON ?: @"[]", self.manifestJSON ?: @"{}");
+}
+
+- (void)showGameMenu
+{
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *account = [self currentSingleAccountName];
+    UIAlertAction *relogin = [UIAlertAction actionWithTitle:@"重新登录"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(UIAlertAction *action) {
+        (void)action;
+        [self loginAccount:account];
+    }];
+    relogin.enabled = account.length > 0;
+    [menu addAction:relogin];
+    [menu addAction:[UIAlertAction actionWithTitle:@"关闭"
+                                             style:UIAlertActionStyleDestructive
+                                           handler:^(UIAlertAction *action) {
+        (void)action;
+        [self closeCurrent];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentToolbarAlert:menu source:self.toolbar];
+}
+
+- (void)showCurrentInfo
+{
+    NSString *message = self.instances.count == 1 ?
+        [NSString stringWithFormat:@"当前账号：%@", IOS2DisplayAccountName([self currentSingleAccountName])] :
+        [NSString stringWithFormat:@"当前群控实例：%lu 个", (unsigned long)self.instances.count];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"账号信息"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentToolbarAlert:alert source:self.toolbar];
+}
+
+- (void)showAccountSwitch
+{
+    NSString *current = [self currentSingleAccountName];
+    NSArray<NSDictionary *> *records = IOS2ManagedBinRecords() ?: @[];
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray arrayWithCapacity:records.count];
+    for (NSDictionary *record in records) {
+        NSString *name = [record[@"name"] isKindOfClass:[NSString class]] ? record[@"name"] : @"";
+        if (!name.length || [name isEqualToString:current]) continue;
+        [candidates addObject:record];
+    }
+    if (!candidates.count) {
+        UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"切换 bin"
+                                                                       message:@"没有其他可切换的 bin 文件"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [empty addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentToolbarAlert:empty source:self.switchButton];
+        return;
+    }
+
+    UIAlertController *list = [UIAlertController alertControllerWithTitle:@"切换 bin"
+                                                                  message:nil
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *record in candidates) {
+        NSString *name = [record[@"name"] isKindOfClass:[NSString class]] ? record[@"name"] : @"";
+        NSString *title = IOS2DisplayAccountName(name);
+        [list addAction:[UIAlertAction actionWithTitle:title
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(UIAlertAction *action) {
+            (void)action;
+            [self loginAccount:name];
+        }]];
+    }
+    [list addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentToolbarAlert:list source:self.switchButton];
 }
 
 - (void)layoutInstances
