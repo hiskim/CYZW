@@ -14,6 +14,7 @@
         danger: cc.color(205, 61, 61, 255),
         warning: cc.color(174, 101, 26, 255)
     };
+    var FONT_FAMILY = 'PingFang SC';
 
     function graph(width, height, fill, radius, border) {
         var item = new fgui.GGraph();
@@ -26,6 +27,7 @@
         var item = new fgui.GTextField();
         item.autoSize = fgui.AutoSizeType.None;
         item.setSize(width, height);
+        item.font = FONT_FAMILY;
         item.fontSize = fontSize;
         item.color = color;
         item.align = align === undefined ? fgui.AlignType.Left : align;
@@ -40,7 +42,7 @@
         item.setSize(width, height);
         item.opaque = true;
         item.addChild(graph(width, height, fill, radius || 8));
-        item.addChild(text(caption, 17, color, width, height, fgui.AlignType.Center));
+        item.addChild(text(caption, 18, color, width, height, fgui.AlignType.Center));
         item.onClick(function () {
             if (item.enabled && typeof callback === 'function') callback();
         });
@@ -167,15 +169,16 @@
 
         var top = 40 + this.layoutSafeTop;
         var compact = width < 360;
-        var toolbarSize = compact ? 38 : 46;
-        var toolbarGap = compact ? 5 : 9;
-        var title = text('账号管理', compact ? 26 : 31, COLORS.text,
-            Math.max(112, width - (toolbarSize * 4 + toolbarGap * 3 + 48)), 48);
-        title.bold = true;
+        var toolbarSize = compact ? 32 : 34;
+        var toolbarGap = compact ? 4 : 5;
+        var toolbarRight = width - (compact ? 14 : 8);
+        var toolbarLeft = toolbarRight - toolbarSize * 4 - toolbarGap * 3;
+        var titleWidth = Math.max(80, toolbarLeft - 38);
+        var titleSize = compact ? Math.min(30, Math.max(22, Math.floor(titleWidth / 4))) : 38;
+        var title = text('账号管理', titleSize, COLORS.text, titleWidth, 52);
         title.setPosition(28, top);
         this.root.addChild(title);
 
-        var toolbarRight = width - (compact ? 14 : 22);
         var gear = iconButton('⚙', toolbarSize, this._showGearMenu.bind(this), '打开脚本与配置');
         gear.setPosition(toolbarRight - toolbarSize, top - 2);
         this.root.addChild(gear);
@@ -201,12 +204,17 @@
             this.root.addChild(multiButton);
         }
 
-        var groupTitle = text('本机账号', 20, COLORS.text, 180, 38);
-        groupTitle.bold = true;
+        var groupTitleSize = compact ? 22 : 24;
+        var groupTitle = text('本机账号', groupTitleSize, COLORS.text, 200, 42);
         groupTitle.setPosition(30, top + 74);
         this.root.addChild(groupTitle);
-        this.accountCount = text('', 14, COLORS.muted, 120, 34, fgui.AlignType.Right);
-        this.accountCount.setPosition(width - 150, top + 77);
+        var groupTitleRight = 30 + (compact ? 92 : 100);
+        var countRight = backend === 'webkit' ? width - 124 : width - 18;
+        var countWidth = backend === 'webkit' ?
+            Math.max(48, Math.min(90, countRight - groupTitleRight - 4)) : 132;
+        this.accountCount = text('', 16, COLORS.muted, countWidth, 36, fgui.AlignType.Right);
+        this.accountCount.autoSize = fgui.AutoSizeType.Shrink;
+        this.accountCount.setPosition(countRight - countWidth, top + 77);
         this.root.addChild(this.accountCount);
 
         this.list = new fgui.GComponent();
@@ -215,7 +223,7 @@
         this.list.overflow = fgui.OverflowType.Hidden;
         this.root.addChild(this.list);
 
-        this.status = text('', 14, COLORS.muted, width - 48, 32);
+        this.status = text('', 16, COLORS.muted, width - 48, 32);
         this.status.setPosition(24, height - 48);
         this.root.addChild(this.status);
         this.render();
@@ -234,12 +242,13 @@
         accountIcon.setPosition(18, 17);
         row.addChild(accountIcon);
         var displayName = String(record.name || '').replace(/\.bin$/i, '') || '未命名账号';
-        var name = text(displayName, 22, COLORS.text, Math.max(80, width - 178), 34);
-        name.bold = true;
-        name.setPosition(64, 15);
+        var name = text(displayName, 26, COLORS.text, Math.max(80, width - 178), 38);
+        name.autoSize = fgui.AutoSizeType.Shrink;
+        name.setPosition(64, 11);
         row.addChild(name);
         var details = formatDate(record.modified) || '时间未知';
-        var detail = text('◷  ' + details, 15, COLORS.muted, Math.max(80, width - 178), 28);
+        var detail = text('◷  ' + details, 17, COLORS.muted, Math.max(80, width - 178), 30);
+        detail.autoSize = fgui.AutoSizeType.Shrink;
         detail.setPosition(64, 58);
         row.addChild(detail);
         var state = button(active ? '登录中…' : '待机', 102, 38,
@@ -273,14 +282,15 @@
         var icon = userIcon();
         icon.setPosition(18, height - 54);
         card.addChild(icon);
-        var name = text(String(record.name || '').replace(/\.bin$/i, '') || '未命名账号', 19,
-            COLORS.text, width - 72, 30);
-        name.bold = true;
-        name.setPosition(60, height - 53);
+        var name = text(String(record.name || '').replace(/\.bin$/i, '') || '未命名账号', 22,
+            COLORS.text, width - 72, 34);
+        name.autoSize = fgui.AutoSizeType.Shrink;
+        name.setPosition(60, height - 55);
         card.addChild(name);
-        var detail = text('◷  ' + (formatDate(record.modified) || '时间未知'), 13, COLORS.muted,
-            width - 32, 26);
-        detail.setPosition(16, height - 91);
+        var detail = text('◷  ' + (formatDate(record.modified) || '时间未知'), 15, COLORS.muted,
+            width - 32, 28);
+        detail.autoSize = fgui.AutoSizeType.Shrink;
+        detail.setPosition(16, height - 93);
         card.addChild(detail);
         var state = button(this.busyName === record.name ? '登录中…' : '待机', width - 32, 36,
             this.busyName === record.name ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
@@ -353,8 +363,7 @@
         panel.setPosition(width - panelWidth - 18, 96 + this.layoutSafeTop);
         panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 16, COLORS.border));
         var heading = text(headingText, 18, COLORS.text, panelWidth - 32, 38);
-        heading.bold = true;
-        heading.setPosition(16, 10);
+        heading.setPosition(16, 8);
         panel.addChild(heading);
         for (var index = 0; index < items.length; index++) {
             (function (item, itemIndex) {
@@ -389,7 +398,7 @@
         var start = this.page * perPage;
         var visible = records.slice(start, start + perPage);
         if (!visible.length) {
-            var empty = text('还没有账号，点击“导入账号”添加 .bin 文件', 18, COLORS.muted,
+            var empty = text('还没有账号，点击“导入账号”添加 .bin 文件', 20, COLORS.muted,
                 width, 56, fgui.AlignType.Center);
             empty.setPosition(0, Math.max(24, this.list.height / 2 - 28));
             this.list.addChild(empty);
@@ -423,7 +432,7 @@
         previous.enabled = this.page > 0;
         previous.setPosition(width / 2 - 82, y);
         this.list.addChild(previous);
-        var count = text((this.page + 1) + ' / ' + pageCount, 15, COLORS.muted, 76, 38, fgui.AlignType.Center);
+        var count = text((this.page + 1) + ' / ' + pageCount, 16, COLORS.muted, 76, 38, fgui.AlignType.Center);
         count.setPosition(width / 2 - 38, y);
         this.list.addChild(count);
         var next = button('›', 42, 38, COLORS.surface, COLORS.accent, function () {
@@ -449,10 +458,10 @@
         panel.setPosition((width - panelWidth) / 2, (height - 190) / 2);
         panel.addChild(graph(panelWidth, 190, COLORS.surface, 8, COLORS.border));
         var heading = text('删除账号文件？', 23, COLORS.text, panelWidth - 40, 42, fgui.AlignType.Center);
-        heading.bold = true;
+        heading.fontSize = 25;
         heading.setPosition(20, 22);
         panel.addChild(heading);
-        var message = text(String(record.name || ''), 16, COLORS.muted, panelWidth - 40, 32, fgui.AlignType.Center);
+        var message = text(String(record.name || ''), 18, COLORS.muted, panelWidth - 40, 34, fgui.AlignType.Center);
         message.setPosition(20, 68);
         panel.addChild(message);
         var close = function () { overlay.dispose(); };
@@ -485,7 +494,7 @@
         panel.setPosition((width - panelWidth) / 2, (height - panelHeight) / 2);
         panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 8, COLORS.border));
         var heading = text('选择 2 到 4 个账号', 23, COLORS.text, panelWidth - 40, 42, fgui.AlignType.Center);
-        heading.bold = true;
+        heading.fontSize = 25;
         heading.setPosition(20, 16);
         panel.addChild(heading);
         var selected = [];
