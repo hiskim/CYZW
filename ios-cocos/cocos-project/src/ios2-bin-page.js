@@ -595,8 +595,9 @@
 
         _loginBin: function (name) {
             if (!(global.jsb && jsb.reflection && jsb.reflection.callStaticMethod)) return;
-            if (global.__ios2ScriptRuntime) global.__ios2ScriptRuntime.install();
-            this._setStatus('正在认证 ' + name + '，登录成功后启动已启用脚本…', COLORS.accent);
+            var backend = typeof this._runtimeBackend === 'function' ? this._runtimeBackend() : 'native';
+            if (backend === 'webkit' && global.__ios2ScriptRuntime) global.__ios2ScriptRuntime.install();
+            this._setStatus('正在认证 ' + name + (backend === 'webkit' ? '，登录成功后启动已启用脚本…' : '…'), COLORS.accent);
             try { jsb.reflection.callStaticMethod('IOS2Native', 'loginBinFile:', name); }
             catch (error) { this._setStatus('认证启动失败', COLORS.warning); }
         },

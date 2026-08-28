@@ -791,6 +791,11 @@ static void IOS2Authenticate(NSData *binData)
 
 + (void)showScripts:(NSString *)json
 {
+    if (![[self runtimeBackend] isEqualToString:@"webkit"]) {
+        NSLog(@"[ios2] ignored script WebView request outside WebKit mode");
+        [IOS2ScriptWebView hide];
+        return;
+    }
     NSLog(@"[ios2] showing %lu enabled script(s) in WKWebView", (unsigned long)[[NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] count]);
     [IOS2ScriptWebView showScriptsJSON:json];
 }
@@ -839,6 +844,10 @@ static void IOS2Authenticate(NSData *binData)
 
 + (void)loginBinFiles:(NSString *)namesJSON scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON
 {
+    if (![[self runtimeBackend] isEqualToString:@"webkit"]) {
+        IOS2CallJavaScript(@"__ios2MultiLoginFailed", @"多开仅支持 WebKit 模式");
+        return;
+    }
     NSData *jsonData = [namesJSON dataUsingEncoding:NSUTF8StringEncoding];
     id object = jsonData ? [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil] : nil;
     if (![object isKindOfClass:[NSArray class]] || [(NSArray *)object count] < 1 || [(NSArray *)object count] > 4) {
@@ -1024,6 +1033,10 @@ static void IOS2Authenticate(NSData *binData)
 + (void)selectScriptFile
 {
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (![[self runtimeBackend] isEqualToString:@"webkit"]) {
+            IOS2CallJavaScript(@"__ios2ScriptImportFailed", @"JS 脚本仅支持 WebKit 模式");
+            return;
+        }
         if (s_ios2LoginBusy) return;
         UIViewController *presenter = IOS2TopViewController();
         if (!presenter) {

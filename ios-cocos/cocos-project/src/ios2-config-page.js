@@ -72,7 +72,8 @@
                 self._showConfig();
             });
             option(firstRowY - 82, 'WebKit 游戏实例', String(webGameInstances), function () {
-                self._setStatus(webGameInstances ? '当前实例正在同屏运行。' : '请在 Bin 文件页面点击“多开”。');
+                if (runtimeBackend !== 'webkit') self._setStatus('切换到 WebKit 多开后可启动多开实例。');
+                else self._setStatus(webGameInstances ? '当前实例正在同屏运行。' : '请在 Bin 文件页面点击“多开”。');
             });
             option(firstRowY - 164, '显示 FPS', showFPS ? '开' : '关', function () {
                 if (storage) storage.setItem('ios2.showFPS', showFPS ? '0' : '1');

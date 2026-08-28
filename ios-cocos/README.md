@@ -72,10 +72,10 @@ local storage.
 The account manager can start either of two isolated game backends:
 
 - `Cocos 极速` keeps the existing Creator 2.4.9 JSB/native renderer. It is the
-   default and remains single-instance.
+   default, remains single-instance, and does not load imported JS scripts.
 - `WebKit 多开` creates one isolated `WKWebView` for every selected account.
    Each instance has its own non-persistent data store, JavaScript realm,
-   login response, and WebGL canvas.
+   login response, WebGL canvas, imported JS script support, and multi-open UI.
 
 Open `配置`, select `WebKit 多开`, then return to the account page and press
 `多开`. Select 2 to 4 bin files and confirm. Two instances use a vertical split,
@@ -122,7 +122,8 @@ The account flow is split by responsibility:
 This boundary allows a FairyGUI Editor package to replace the programmatic view
 without changing account persistence or authentication behavior.
 
-The in-app `JS 脚本` page has a `资源 JS 配置` sub-menu. It uses the bundled
+The in-app `JS 脚本` page is available only in `WebKit 多开` mode and has a
+`资源 JS 配置` sub-menu. It uses the bundled
 `src/settings.*.js` by default. Importing a Creator settings script stores it
 as `Documents/ios2/settings.js`; the next app launch evaluates that file before
 the Cocos engine and uses it in place of the bundled settings. `恢复 App 配置`

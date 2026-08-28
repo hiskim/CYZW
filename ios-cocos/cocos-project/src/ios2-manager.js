@@ -41,9 +41,24 @@
                 loginService: new global.IOS2LoginService(),
                 onOpenPage: function (page) { self.showPage(page); },
                 getEnabledScripts: function () {
+                    if (self._runtimeBackend() !== 'webkit') return [];
                     return typeof self._enabledScriptRecords === 'function' ? self._enabledScriptRecords([]) : [];
                 }
             });
+        },
+
+        _runtimeBackend: function () {
+            if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+                try { return String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
+                catch (ignored) {}
+            }
+            return 'native';
+        },
+
+        _setFairyRootActive: function (active) {
+            if (global.__ios2FairyRoot && global.__ios2FairyRoot.node) {
+                global.__ios2FairyRoot.node.active = !!active;
+            }
         },
 
         _setLegacyChromeVisible: function (visible) {
@@ -113,12 +128,18 @@
         },
 
         showPage: function (page) {
+            if (Number(page) === 1 && this._runtimeBackend() !== 'webkit') {
+                page = 2;
+                this.status = 'JS 脚本仅支持 WebKit 模式';
+            }
             this.page = Math.max(0, Math.min(2, Number(page) || 0));
             if (this.page === 0 && this.accountPresenter) {
+                this._setFairyRootActive(true);
                 this._setLegacyChromeVisible(false);
                 this.accountPresenter.show();
                 return;
             }
+            this._setFairyRootActive(false);
             if (this.accountPresenter) this.accountPresenter.hide();
             this._setLegacyChromeVisible(true);
             this._clearContent();
@@ -196,6 +217,7 @@
 
         _resumeGame: function () {
             if (!this.gameStarted) return;
+            this._setFairyRootActive(false);
             this.background.active = false;
             this.content.active = false;
         },
@@ -215,12 +237,12 @@
             this._setStatus('认证成功，正在进入游戏…', COLORS.success);
             this.gameStarted = true;
             if (this.accountPresenter) this.accountPresenter.hide();
+            this._setFairyRootActive(false);
             if (this.logoutOverlay) this.logoutOverlay.active = true;
             if (this.background) this.background.active = false;
             if (this.content) this.content.active = false;
             if (typeof global.__ios2StartGame === 'function') global.__ios2StartGame();
             else if (this.launcher && typeof this.launcher.onLoadFunc === 'function') this.launcher.onLoadFunc();
-            if (typeof this._runEnabledScriptsAfterLogin === 'function') this._runEnabledScriptsAfterLogin();
         },
 
         onLoginFailed: function (message) {

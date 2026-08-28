@@ -369,10 +369,13 @@
 
     IOS2AccountView.prototype._showGearMenu = function () {
         var self = this;
-        this._showQuickMenu('配置', [
-            { label: 'JS 脚本管理', action: this.actions.openScripts },
+        var items = [
             { label: '运行配置', action: this.actions.openConfig }
-        ]);
+        ];
+        if (this.runtimeBackend === 'webkit') {
+            items.unshift({ label: 'JS 脚本管理', action: this.actions.openScripts });
+        }
+        this._showQuickMenu('配置', items);
     };
 
     IOS2AccountView.prototype._showQuickMenu = function (headingText, items) {

@@ -86,6 +86,11 @@
 
     function IOS2LoginService() {}
 
+    function runtimeBackend() {
+        try { return String(nativeCall('runtimeBackend') || 'native'); }
+        catch (ignored) { return 'native'; }
+    }
+
     function currentManifestJSON() {
         try {
             var rawData = global.cc && cc.sys && cc.sys.manifestResult && cc.sys.manifestResult.rawData;
@@ -96,10 +101,9 @@
     }
 
     IOS2LoginService.prototype.login = function (accountName, scripts) {
-        if (global.__ios2ScriptRuntime) global.__ios2ScriptRuntime.install();
-        var backend = 'native';
-        try { backend = String(nativeCall('runtimeBackend') || 'native'); } catch (ignored) {}
+        var backend = runtimeBackend();
         if (backend === 'webkit') {
+            if (global.__ios2ScriptRuntime) global.__ios2ScriptRuntime.install();
             nativeCall('loginBinFiles:scriptsJSON:manifestJSON:', JSON.stringify([accountName]),
                 JSON.stringify(scripts || []), currentManifestJSON());
             return;
@@ -111,6 +115,8 @@
         if (!Array.isArray(accountNames) || accountNames.length < 2 || accountNames.length > 4) {
             throw new Error('请选择 2 到 4 个账号');
         }
+        if (runtimeBackend() !== 'webkit') throw new Error('多开仅支持 WebKit 模式');
+        if (global.__ios2ScriptRuntime) global.__ios2ScriptRuntime.install();
         nativeCall('loginBinFiles:scriptsJSON:manifestJSON:', JSON.stringify(accountNames),
             JSON.stringify(scripts || []), currentManifestJSON());
     };

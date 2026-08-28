@@ -6,8 +6,17 @@
     var common = parts.common;
     var COLORS = common.COLORS;
 
+    function isWebKitBackend() {
+        if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+            try { return String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native') === 'webkit'; }
+            catch (ignored) {}
+        }
+        return false;
+    }
+
     parts.scripts = {
         _refreshScripts: function () {
+            if (!isWebKitBackend()) return;
             if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
                 try { jsb.reflection.callStaticMethod('IOS2Native', 'listScriptFiles'); } catch (error) {}
             }
@@ -32,6 +41,13 @@
             this._scriptSwipeRow = null;
             this._header('JS 脚本管理', '控制本地脚本的启用状态');
             this._showScriptSubmenu('scripts');
+            if (!isWebKitBackend()) {
+                var unavailable = common.label('JS 脚本仅支持 WebKit 模式', 24, COLORS.muted);
+                unavailable.setPosition(size.width / 2, size.height / 2 + 34);
+                this.content.addChild(unavailable);
+                this._setStatus('切换到 WebKit 多开后可导入和启动脚本。', COLORS.warning);
+                return;
+            }
             var add = common.actionButton('+ 导入脚本', 18, this._importScript.bind(this), COLORS.accent, 146);
             add.setPosition(size.width - 38 - add.width / 2, this._navTop(size) - 164);
             this._menu([add]);
@@ -121,6 +137,10 @@
         },
 
         _importScript: function () {
+            if (!isWebKitBackend()) {
+                this._setStatus('JS 脚本仅支持 WebKit 模式', COLORS.warning);
+                return;
+            }
             if (!(global.jsb && jsb.reflection && jsb.reflection.callStaticMethod)) {
                 this._setStatus('当前环境不支持文件选择', COLORS.warning);
                 return;
@@ -156,6 +176,10 @@
 
         _runEnabledScripts: function (callback) {
             var errors = [];
+            if (!isWebKitBackend()) {
+                if (typeof callback === 'function') callback(errors);
+                return errors;
+            }
             var webViewScripts = this._enabledScriptRecords(errors);
             // Cocos JSB keeps access to the real game modules; WKWebView gives
             // the same untouched source a real DOM so its HTML/CSS controls
@@ -173,6 +197,7 @@
         },
 
         _enabledScriptRecords: function (errors) {
+            if (!isWebKitBackend()) return [];
             var records = [];
             errors = errors || [];
             var enabled = this.scripts.filter(function (script) { return script && script.enabled && script.name; });
