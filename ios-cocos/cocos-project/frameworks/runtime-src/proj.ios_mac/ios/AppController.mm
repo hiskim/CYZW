@@ -847,6 +847,12 @@ static void IOS2Authenticate(NSData *binData)
     }
 
     NSArray *names = [(NSArray *)object copy];
+    // WebKit games issue an HSDK login request after their web view starts.
+    // Reset the previous native login result here so that request can only
+    // reuse the account authenticated by this launch.
+    s_ios2AuthReady = NO;
+    [s_ios2AuthResponseBase64 release];
+    s_ios2AuthResponseBase64 = nil;
     NSMutableArray<NSDictionary *> *instances = [NSMutableArray arrayWithCapacity:names.count];
     dispatch_group_t group = dispatch_group_create();
     NSObject *resultLock = [NSObject new];
@@ -864,6 +870,10 @@ static void IOS2Authenticate(NSData *binData)
             failure = [NSString stringWithFormat:@"无法读取 %@", name];
             break;
         }
+        // Keep the first account as the SDK identity. Single-account WebKit
+        // login is the normal path; multi-open continues to use per-instance
+        // auth responses supplied to each WKWebView.
+        if (names.count == 1) IOS2SetAccountIDForBinData(binData);
         dispatch_group_enter(group);
         NSURL *authURL = [NSURL URLWithString:@"https://xxz-xyzw.hortorgames.com/login/authuser?_seq=1"];
         IOS2StartPOST(authURL, binData,
@@ -901,6 +911,14 @@ static void IOS2Authenticate(NSData *binData)
                     [ordered addObject:instance];
                     break;
                 }
+            }
+        }
+        if (names.count == 1) {
+            NSDictionary *instance = ordered.firstObject;
+            NSString *authResponse = [instance[@"authResponse"] isKindOfClass:[NSString class]] ? instance[@"authResponse"] : @"";
+            if (authResponse.length) {
+                s_ios2AuthResponseBase64 = [authResponse copy];
+                s_ios2AuthReady = YES;
             }
         }
         [IOS2GameWebView showInstances:ordered
