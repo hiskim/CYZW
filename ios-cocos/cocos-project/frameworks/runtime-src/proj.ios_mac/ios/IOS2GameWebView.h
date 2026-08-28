@@ -4,6 +4,7 @@
 + (void)showInstances:(NSArray<NSDictionary *> *)instances scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON;
 + (void)hide;
 + (void)closeAll;
++ (void)shutdownAndCloseAll;
 + (void)releaseUnusedAssetsForAllInstances;
 + (NSUInteger)instanceCount;
 + (void)sendHSDKMessage:(NSString *)action

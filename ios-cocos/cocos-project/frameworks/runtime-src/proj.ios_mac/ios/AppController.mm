@@ -1209,9 +1209,12 @@ static void IOS2Authenticate(NSData *binData)
         s_ios2SDKLoginInstanceID = nil;
         [s_ios2HSDKImageInstanceID release];
         s_ios2HSDKImageInstanceID = nil;
+        [s_ios2AuthResponseBase64 release];
+        s_ios2AuthResponseBase64 = nil;
         [s_ios2AccountID release];
         s_ios2AccountID = nil;
         IOS2CallHSDKMessage(@"user-logout-from-sdk", @{}, 0);
+        [IOS2GameWebView shutdownAndCloseAll];
     });
 }
 

@@ -43,6 +43,9 @@ typedef void (^IOS2WebHTTPCompletion)(NSData *data, NSHTTPURLResponse *response,
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *instances;
 @property (nonatomic, strong) UIView *toolbar;
 @property (nonatomic, strong) UIViewController *presenter;
+@property (nonatomic, assign) NSUInteger shutdownGeneration;
+- (void)shutdownAndCloseInstances;
+- (void)finishShutdownGeneration:(NSNumber *)generation;
 @end
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
@@ -673,7 +676,15 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 + (void)closeAll
 {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[self sharedInstance] closeAllInstances];
+        [[self sharedInstance] shutdownAndCloseInstances];
+    });
+}
+
++ (void)shutdownAndCloseAll
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        IOS2GameWebView *manager = [self sharedInstance];
+        [manager shutdownAndCloseInstances];
     });
 }
 
@@ -693,12 +704,49 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     });
 }
 
+- (void)shutdownAndCloseInstances
+{
+    NSUInteger generation = ++self.shutdownGeneration;
+    NSUInteger instanceCount = self.instances.count;
+    if (!instanceCount) {
+        [self closeAllInstances];
+        return;
+    }
+
+    __block NSUInteger remaining = instanceCount;
+    NSString *script = @"if (typeof window.__ios2ShutdownGame === 'function') "
+                        "window.__ios2ShutdownGame();";
+    for (NSDictionary *record in self.instances) {
+        WKWebView *webView = record[@"view"];
+        [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+            if (error) NSLog(@"[ios2] Cocos game shutdown request failed: %@", error.localizedDescription);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (generation != self.shutdownGeneration || remaining == 0) return;
+                remaining--;
+                if (remaining == 0) [self finishShutdownGeneration:@(generation)];
+            });
+        }];
+    }
+    // A stalled WebContent process must not prevent logout from completing.
+    [self performSelector:@selector(finishShutdownGeneration:)
+               withObject:@(generation)
+               afterDelay:0.5];
+}
+
+- (void)finishShutdownGeneration:(NSNumber *)generation
+{
+    if (generation.unsignedIntegerValue != self.shutdownGeneration) return;
+    [self closeAllInstances];
+}
+
 - (void)closeAllInstances
 {
+    self.shutdownGeneration++;
     for (NSDictionary *record in self.instances) {
         WKWebView *view = record[@"view"];
         [view stopLoading];
         [view.configuration.userContentController removeScriptMessageHandlerForName:@"ios2Game"];
+        [view.configuration.userContentController removeAllUserScripts];
         [view removeFromSuperview];
     }
     [self.instances removeAllObjects];

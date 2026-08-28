@@ -22,7 +22,8 @@
     // lifecycle notifications so cleanup is safe to request more than once.
     var assetReleaseState = {
         busy: false,
-        sequence: 0
+        sequence: 0,
+        shuttingDown: false
     };
 
     function managedAssetCount() {
@@ -58,6 +59,33 @@
         return true;
     }
     window.__ios2ReleaseUnusedAssets = releaseUnusedAssets;
+
+    // Logout closes the whole game instance, so it is safe to tear down the
+    // director and release every Cocos asset before the native WKWebView is
+    // removed. This is intentionally separate from normal scene cleanup.
+    function shutdownGame() {
+        var manager = window.cc && window.cc.assetManager;
+        if (!manager || assetReleaseState.shuttingDown) return !!manager;
+        assetReleaseState.shuttingDown = true;
+        try {
+            if (window.cc.game && typeof window.cc.game.pause === 'function') window.cc.game.pause();
+            var director = window.cc.director;
+            if (director && typeof director.purgeDirector === 'function') {
+                director.purgeDirector();
+            } else if (typeof manager.releaseAll === 'function') {
+                manager.releaseAll();
+            } else {
+                manager.releaseUnusedAssets();
+            }
+            console.log('[ios2-web] Cocos game instance shut down',
+                'assets=' + managedAssetCount());
+        } catch (error) {
+            console.warn('[ios2-web] Cocos game shutdown failed', error);
+            try { manager.releaseAll(); } catch (ignored) {}
+        }
+        return true;
+    }
+    window.__ios2ShutdownGame = shutdownGame;
 
     function installAssetReleaseHooks() {
         if (window.__ios2AssetReleaseHooksInstalled) return;
