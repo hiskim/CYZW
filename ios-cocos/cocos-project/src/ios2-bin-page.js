@@ -222,9 +222,9 @@
             this._binRows = [];
             this._header('Bin 文件组');
             var importButton = common.actionButton('+ 导入 bin', 18, this._importBin.bind(this), COLORS.accent, 132);
-            importButton.setPosition(size.width - 38 - importButton.width / 2, size.height - 176);
+            importButton.setPosition(size.width - 38 - importButton.width / 2, size.height - common.NAV_HEIGHT - 176);
             var newGroupButton = common.actionButton('+ 新建分组', 18, this._createGroup.bind(this), cc.color(22, 163, 154, 255), 142);
-            newGroupButton.setPosition(38 + newGroupButton.width / 2, size.height - 176);
+            newGroupButton.setPosition(38 + newGroupButton.width / 2, size.height - common.NAV_HEIGHT - 176);
             this._menu([newGroupButton, importButton]);
 
             this.background.off(cc.Node.EventType.TOUCH_END);
@@ -232,7 +232,7 @@
                 if (self._binSwipeRow) self._binSwipeRow.closeSwipe();
             });
 
-            var y = size.height - 238;
+            var y = size.height - common.NAV_HEIGHT - 238;
             var cardWidth = size.width - 64;
             var groupCardHeight = 96;
             var rowHeight = 62;

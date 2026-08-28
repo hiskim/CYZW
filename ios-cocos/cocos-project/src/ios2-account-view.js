@@ -47,6 +47,55 @@
         return item;
     }
 
+    function iconButton(label, size, callback, tooltip) {
+        var item = new fgui.GComponent();
+        item.setSize(size, size);
+        item.opaque = true;
+        item.addChild(graph(size, size, cc.Color.TRANSPARENT, size / 2));
+        item.addChild(text(label, 31, COLORS.accent, size, size, fgui.AlignType.Center));
+        item.tooltips = tooltip || '';
+        item.onClick(function () {
+            if (item.enabled && typeof callback === 'function') callback();
+        });
+        return item;
+    }
+
+    function gridIcon(size, selected) {
+        var item = new fgui.GComponent();
+        item.setSize(size, size);
+        item.opaque = true;
+        item.addChild(graph(size, size, cc.Color.TRANSPARENT, size / 2));
+        var color = selected ? COLORS.accent : COLORS.muted;
+        var cell = 6;
+        var gap = 4;
+        var start = (size - cell * 3 - gap * 2) / 2;
+        for (var row = 0; row < 3; row++) {
+            for (var column = 0; column < 3; column++) {
+                item.addChild(graph(cell, cell, color, 1)).setPosition(
+                    start + column * (cell + gap), start + row * (cell + gap));
+            }
+        }
+        return item;
+    }
+
+    function userIcon() {
+        var item = new fgui.GComponent();
+        item.setSize(34, 34);
+        item.addChild(graph(34, 34, COLORS.accentSoft, 17));
+        item.addChild(graph(9, 9, COLORS.accent, 5)).setPosition(12.5, 6);
+        item.addChild(graph(20, 10, COLORS.accent, 5)).setPosition(7, 18);
+        return item;
+    }
+
+    function trashIcon(color) {
+        var item = new fgui.GComponent();
+        item.setSize(30, 30);
+        item.addChild(graph(16, 17, color, 2)).setPosition(7, 7);
+        item.addChild(graph(20, 3, color, 1)).setPosition(5, 4);
+        item.addChild(graph(8, 3, color, 1)).setPosition(11, 1);
+        return item;
+    }
+
     function formatSize(bytes) {
         bytes = Number(bytes) || 0;
         if (bytes < 1024) return bytes + ' B';
@@ -60,9 +109,13 @@
         if (isNaN(date.getTime())) return '';
         var month = String(date.getMonth() + 1);
         var day = String(date.getDate());
+        var hours = String(date.getHours());
+        var minutes = String(date.getMinutes());
         if (month.length < 2) month = '0' + month;
         if (day.length < 2) day = '0' + day;
-        return date.getFullYear() + '-' + month + '-' + day;
+        if (hours.length < 2) hours = '0' + hours;
+        if (minutes.length < 2) minutes = '0' + minutes;
+        return date.getFullYear() + '-' + month + '-' + day + ' ' + hours + ':' + minutes;
     }
 
     function IOS2AccountView(actions) {
@@ -70,6 +123,8 @@
         this.accounts = [];
         this.page = 0;
         this.busyName = '';
+        this.viewMode = 'list';
+        this.sortMode = 'recent';
         this.root = new fgui.GComponent();
         this.root.name = 'IOS2AccountHome';
         this.root.opaque = true;
@@ -81,110 +136,234 @@
         this.root.removeChildren(0, -1, true);
         var width = fgui.GRoot.inst.width;
         var height = fgui.GRoot.inst.height;
+        this.layoutWidth = width;
+        this.layoutHeight = height;
         this.root.setSize(width, height);
         this.root.addChild(graph(width, height, COLORS.background));
 
-        var top = 44;
-        var title = text('账号管理', 34, COLORS.text, width - 48, 52);
+        var top = 40;
+        var compact = width < 360;
+        var toolbarSize = compact ? 38 : 46;
+        var toolbarGap = compact ? 5 : 9;
+        var title = text('账号管理', compact ? 26 : 31, COLORS.text,
+            Math.max(112, width - (toolbarSize * 4 + toolbarGap * 3 + 48)), 48);
         title.bold = true;
-        title.setPosition(24, top);
+        title.setPosition(28, top);
         this.root.addChild(title);
-        var subtitle = text('选择本机账号文件登录', 16, COLORS.muted, width - 48, 30);
-        subtitle.setPosition(25, top + 48);
-        this.root.addChild(subtitle);
 
-        var importButton = button('＋  导入账号', 142, 48, COLORS.accent, cc.Color.WHITE,
-            this.actions.importAccounts, 8);
-        importButton.setPosition(width - 166, top + 12);
+        var toolbarRight = width - (compact ? 14 : 22);
+        var gear = iconButton('⚙', toolbarSize, this._showGearMenu.bind(this), '打开脚本与配置');
+        gear.setPosition(toolbarRight - toolbarSize, top - 2);
+        this.root.addChild(gear);
+        var sort = iconButton('↕', toolbarSize, this._showSortMenu.bind(this), '排序账号');
+        sort.setPosition(toolbarRight - (toolbarSize + toolbarGap) * 2, top - 2);
+        this.root.addChild(sort);
+        var mode = gridIcon(toolbarSize, this.viewMode === 'grid');
+        mode.tooltips = this.viewMode === 'grid' ? '切换列表视图' : '切换多块视图';
+        mode.onClick(this._toggleView.bind(this));
+        mode.setPosition(toolbarRight - (toolbarSize + toolbarGap) * 3, top - 2);
+        this.root.addChild(mode);
+        var importButton = iconButton('+', toolbarSize, this.actions.importAccounts, '导入账号');
+        importButton.setPosition(toolbarRight - (toolbarSize + toolbarGap) * 4, top - 2);
         this.root.addChild(importButton);
         var backend = 'native';
         try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
         catch (ignored) {}
         this.runtimeBackend = backend;
         if (backend === 'webkit') {
-            var multiButton = button('多开', 92, 48, COLORS.success, cc.Color.WHITE,
+            var multiButton = button('多开', 82, 40, COLORS.success, cc.Color.WHITE,
                 this._showMultiOpen.bind(this), 8);
-            multiButton.setPosition(width - 274, top + 12);
+            multiButton.setPosition(width - 116, top + 56);
             this.root.addChild(multiButton);
         }
 
+        var groupTitle = text('本机账号', 20, COLORS.text, 180, 38);
+        groupTitle.bold = true;
+        groupTitle.setPosition(30, top + 74);
+        this.root.addChild(groupTitle);
+        this.accountCount = text('', 14, COLORS.muted, 120, 34, fgui.AlignType.Right);
+        this.accountCount.setPosition(width - 150, top + 77);
+        this.root.addChild(this.accountCount);
+
         this.list = new fgui.GComponent();
-        this.list.setPosition(20, top + 104);
-        this.list.setSize(width - 40, Math.max(150, height - top - 230));
+        this.list.setPosition(24, top + 116);
+        this.list.setSize(width - 48, Math.max(190, height - top - 188));
+        this.list.overflow = fgui.OverflowType.Hidden;
         this.root.addChild(this.list);
 
-        this.status = text('', 15, COLORS.muted, width - 48, 34);
-        this.status.setPosition(24, height - 105);
+        this.status = text('', 14, COLORS.muted, width - 48, 32);
+        this.status.setPosition(24, height - 48);
         this.root.addChild(this.status);
-        this._buildNavigation(width, height);
         this.render();
-    };
-
-    IOS2AccountView.prototype._buildNavigation = function (width, height) {
-        var navY = height - 68;
-        this.root.addChild(graph(width, 68, COLORS.surface, 0, COLORS.border)).setPosition(0, navY);
-        var labels = ['账号', 'JS 脚本', '配置'];
-        var actions = [null, this.actions.openScripts, this.actions.openConfig];
-        for (var index = 0; index < labels.length; index++) {
-            var color = index === 0 ? COLORS.accent : COLORS.muted;
-            var nav = button(labels[index], width / 3, 64, COLORS.surface, color, actions[index], 0);
-            nav.setPosition(index * width / 3, navY + 4);
-            this.root.addChild(nav);
-        }
-        var indicator = graph(Math.max(44, width / 3 - 76), 3, COLORS.accent, 2);
-        indicator.setPosition(38, navY);
-        this.root.addChild(indicator);
     };
 
     IOS2AccountView.prototype._row = function (record, width, y) {
         var self = this;
         var row = new fgui.GComponent();
-        var rowHeight = 82;
+        var rowHeight = 124;
         var active = this.busyName === record.name;
         row.setSize(width, rowHeight);
         row.setPosition(0, y);
-        row.addChild(graph(width, rowHeight, record.last ? cc.color(239, 249, 245, 255) : COLORS.surface,
-            8, COLORS.border));
-
-        var dot = graph(10, 10, record.last ? COLORS.success : COLORS.accent, 5);
-        dot.setPosition(18, 22);
-        row.addChild(dot);
+        row.addChild(graph(width, rowHeight, record.last ? cc.color(249, 253, 252, 255) : COLORS.surface,
+            18, cc.color(234, 237, 243, 255)));
+        var accountIcon = userIcon();
+        accountIcon.setPosition(18, 17);
+        row.addChild(accountIcon);
         var displayName = String(record.name || '').replace(/\.bin$/i, '') || '未命名账号';
-        var name = text(displayName, 20, COLORS.text, Math.max(80, width - 244), 32);
+        var name = text(displayName, 22, COLORS.text, Math.max(80, width - 178), 34);
         name.bold = true;
-        name.setPosition(40, 10);
+        name.setPosition(64, 15);
         row.addChild(name);
-        var details = [formatSize(record.size), formatDate(record.modified)].filter(Boolean).join('  ·  ');
-        var detail = text((record.last ? '最近使用  ·  ' : '') + details, 14, COLORS.muted,
-            Math.max(80, width - 244), 26);
-        detail.setPosition(40, 43);
+        var details = formatDate(record.modified) || '时间未知';
+        var detail = text('◷  ' + details, 15, COLORS.muted, Math.max(80, width - 178), 28);
+        detail.setPosition(64, 58);
         row.addChild(detail);
-
-        var login = button(active ? '登录中…' : '登录', 82, 44,
-            active ? COLORS.accentSoft : COLORS.accent,
-            active ? COLORS.accent : cc.Color.WHITE,
+        var state = button(active ? '登录中…' : '待机', 102, 38,
+            active ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
+            active ? COLORS.accent : cc.color(132, 136, 144, 255),
             function () { self.actions.login(record.name); }, 8);
-        login.enabled = !this.busyName;
-        login.setPosition(width - 144, 19);
-        row.addChild(login);
-        var remove = button('×', 44, 44, cc.color(250, 237, 237, 255), COLORS.danger,
-            function () { self._confirmDelete(record); }, 8);
+        state.enabled = !this.busyName;
+        state.setPosition(width - 128, 64);
+        row.addChild(state);
+        var remove = new fgui.GComponent();
+        remove.setSize(34, 34);
+        remove.tooltips = '删除账号';
+        remove.addChild(graph(34, 34, cc.Color.TRANSPARENT, 17));
+        remove.addChild(trashIcon(COLORS.danger)).setPosition(2, 2);
+        remove.onClick(function () {
+            if (remove.enabled) self._confirmDelete(record);
+        });
         remove.enabled = !this.busyName;
-        remove.setPosition(width - 54, 19);
+        remove.setPosition(width - 50, 14);
         row.addChild(remove);
         return row;
+    };
+
+    IOS2AccountView.prototype._gridCard = function (record, width, height, x, y) {
+        var self = this;
+        var card = new fgui.GComponent();
+        card.setSize(width, height);
+        card.setPosition(x, y);
+        card.addChild(graph(width, height, record.last ? cc.color(249, 253, 252, 255) : COLORS.surface,
+            18, cc.color(234, 237, 243, 255)));
+        var icon = userIcon();
+        icon.setPosition(18, height - 54);
+        card.addChild(icon);
+        var name = text(String(record.name || '').replace(/\.bin$/i, '') || '未命名账号', 19,
+            COLORS.text, width - 72, 30);
+        name.bold = true;
+        name.setPosition(60, height - 53);
+        card.addChild(name);
+        var detail = text('◷  ' + (formatDate(record.modified) || '时间未知'), 13, COLORS.muted,
+            width - 32, 26);
+        detail.setPosition(16, height - 91);
+        card.addChild(detail);
+        var state = button(this.busyName === record.name ? '登录中…' : '待机', width - 32, 36,
+            this.busyName === record.name ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
+            this.busyName === record.name ? COLORS.accent : cc.color(132, 136, 144, 255),
+            function () { self.actions.login(record.name); }, 8);
+        state.enabled = !this.busyName;
+        state.setPosition(16, 18);
+        card.addChild(state);
+        var remove = new fgui.GComponent();
+        remove.setSize(30, 30);
+        remove.tooltips = '删除账号';
+        remove.addChild(graph(30, 30, cc.Color.TRANSPARENT, 15));
+        remove.addChild(trashIcon(COLORS.danger)).setPosition(0, 0);
+        remove.enabled = !this.busyName;
+        remove.onClick(function () { if (remove.enabled) self._confirmDelete(record); });
+        remove.setPosition(width - 42, height - 42);
+        card.addChild(remove);
+        return card;
+    };
+
+    IOS2AccountView.prototype._orderedAccounts = function () {
+        var records = this.accounts.slice(0);
+        var mode = this.sortMode;
+        records.sort(function (left, right) {
+            if (mode === 'name') return String(left.name || '').localeCompare(String(right.name || ''));
+            var leftTime = Number(left.modified) || 0;
+            var rightTime = Number(right.modified) || 0;
+            if (mode === 'updated') return rightTime - leftTime;
+            if (!!left.last !== !!right.last) return left.last ? -1 : 1;
+            return rightTime - leftTime;
+        });
+        return records;
+    };
+
+    IOS2AccountView.prototype._toggleView = function () {
+        this.viewMode = this.viewMode === 'grid' ? 'list' : 'grid';
+        this.page = 0;
+        this._build();
+    };
+
+    IOS2AccountView.prototype._showSortMenu = function () {
+        var self = this;
+        this._showQuickMenu('账号排序', [
+            { key: 'recent', label: '最近使用', action: function () { self.sortMode = 'recent'; } },
+            { key: 'updated', label: '更新时间', action: function () { self.sortMode = 'updated'; } },
+            { key: 'name', label: '账号名称', action: function () { self.sortMode = 'name'; } }
+        ]);
+    };
+
+    IOS2AccountView.prototype._showGearMenu = function () {
+        var self = this;
+        this._showQuickMenu('配置', [
+            { label: 'JS 脚本管理', action: this.actions.openScripts },
+            { label: '运行配置', action: this.actions.openConfig }
+        ]);
+    };
+
+    IOS2AccountView.prototype._showQuickMenu = function (headingText, items) {
+        var self = this;
+        var width = this.root.width;
+        var height = this.root.height;
+        var overlay = new fgui.GComponent();
+        overlay.setSize(width, height);
+        var backdrop = graph(width, height, cc.color(17, 27, 43, 70));
+        overlay.addChild(backdrop);
+        var panelWidth = Math.min(260, width - 32);
+        var panelHeight = 58 + items.length * 52;
+        var panel = new fgui.GComponent();
+        panel.setSize(panelWidth, panelHeight);
+        panel.setPosition(width - panelWidth - 18, 96);
+        panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 16, COLORS.border));
+        var heading = text(headingText, 18, COLORS.text, panelWidth - 32, 38);
+        heading.bold = true;
+        heading.setPosition(16, 10);
+        panel.addChild(heading);
+        for (var index = 0; index < items.length; index++) {
+            (function (item, itemIndex) {
+                var choice = button(item.label, panelWidth - 24, 44,
+                    item.key && item.key === self.sortMode ? COLORS.accentSoft : COLORS.background,
+                    item.key && item.key === self.sortMode ? COLORS.accent : COLORS.text,
+                    function () {
+                        overlay.dispose();
+                        if (typeof item.action === 'function') item.action();
+                        self.render();
+                    }, 8);
+                choice.setPosition(12, 49 + itemIndex * 52);
+                panel.addChild(choice);
+            }(items[index], index));
+        }
+        backdrop.onClick(function () { overlay.dispose(); });
+        overlay.addChild(panel);
+        this.root.addChild(overlay);
     };
 
     IOS2AccountView.prototype.render = function () {
         if (!this.list) return;
         this.list.removeChildren(0, -1, true);
         var width = this.list.width;
-        var rowStep = 92;
-        var perPage = Math.max(1, Math.floor(this.list.height / rowStep));
-        var pageCount = Math.max(1, Math.ceil(this.accounts.length / perPage));
+        var records = this._orderedAccounts();
+        if (this.accountCount) this.accountCount.text = this.accounts.length + ' 个账号';
+        var rowStep = this.viewMode === 'grid' ? 172 : 136;
+        var columns = this.viewMode === 'grid' ? 2 : 1;
+        var perPage = Math.max(1, Math.floor(this.list.height / rowStep) * columns);
+        var pageCount = Math.max(1, Math.ceil(records.length / perPage));
         this.page = Math.max(0, Math.min(this.page, pageCount - 1));
         var start = this.page * perPage;
-        var visible = this.accounts.slice(start, start + perPage);
+        var visible = records.slice(start, start + perPage);
         if (!visible.length) {
             var empty = text('还没有账号，点击“导入账号”添加 .bin 文件', 18, COLORS.muted,
                 width, 56, fgui.AlignType.Center);
@@ -192,8 +371,19 @@
             this.list.addChild(empty);
             return;
         }
-        for (var index = 0; index < visible.length; index++) {
-            this.list.addChild(this._row(visible[index], width, index * rowStep));
+        if (this.viewMode === 'grid') {
+            var gap = 12;
+            var cardWidth = (width - gap) / 2;
+            for (var gridIndex = 0; gridIndex < visible.length; gridIndex++) {
+                var gridRow = Math.floor(gridIndex / 2);
+                var gridColumn = gridIndex % 2;
+                this.list.addChild(this._gridCard(visible[gridIndex], cardWidth, 158,
+                    gridColumn * (cardWidth + gap), gridRow * rowStep));
+            }
+        } else {
+            for (var index = 0; index < visible.length; index++) {
+                this.list.addChild(this._row(visible[index], width, index * rowStep));
+            }
         }
         if (pageCount > 1) this._pagination(pageCount);
     };
@@ -337,7 +527,8 @@
         var backend = 'native';
         try { backend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native'); }
         catch (ignored) {}
-        if (backend !== this.runtimeBackend) this._build();
+        if (backend !== this.runtimeBackend || this.layoutWidth !== fgui.GRoot.inst.width ||
+            this.layoutHeight !== fgui.GRoot.inst.height) this._build();
         this.root.visible = true;
     };
     IOS2AccountView.prototype.hide = function () { this.root.visible = false; };

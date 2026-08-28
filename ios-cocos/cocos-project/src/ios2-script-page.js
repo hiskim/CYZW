@@ -33,7 +33,7 @@
             this._header('JS 脚本管理', '控制本地脚本的启用状态');
             this._showScriptSubmenu('scripts');
             var add = common.actionButton('+ 导入脚本', 18, this._importScript.bind(this), COLORS.accent, 146);
-            add.setPosition(size.width - 38 - add.width / 2, size.height - 164);
+            add.setPosition(size.width - 38 - add.width / 2, size.height - common.NAV_HEIGHT - 164);
             this._menu([add]);
             this.background.off(cc.Node.EventType.TOUCH_END);
             this.background.on(cc.Node.EventType.TOUCH_END, function () {
@@ -46,7 +46,7 @@
             }
             for (var index = 0; index < this.scripts.length; index++) {
                 (function (script, rowIndex) {
-                    var y = size.height - 286 - rowIndex * 90;
+                    var y = size.height - common.NAV_HEIGHT - 286 - rowIndex * 90;
                     var row = common.swipeDeleteRow(self, '_scriptSwipeRow', {
                         width: size.width - 64,
                         height: 72,
@@ -74,7 +74,7 @@
             var size = cc.winSize;
             var self = this;
             var bar = common.surfaceNode(size.width - 64, 42, COLORS.panelAlt, 10, COLORS.border);
-            bar.setPosition(32, size.height - 202);
+            bar.setPosition(32, size.height - common.NAV_HEIGHT - 202);
             this.content.addChild(bar, 4);
             var names = [{ key: 'scripts', text: '脚本列表' }, { key: 'settings', text: '资源 JS 配置' }];
             for (var index = 0; index < names.length; index++) {
@@ -101,7 +101,7 @@
                 catch (ignored) {}
             }
             var state = common.surfaceNode(size.width - 64, 112, COLORS.panel, 14, COLORS.border);
-            state.setPosition(32, size.height - 338);
+            state.setPosition(32, size.height - common.NAV_HEIGHT - 338);
             this.content.addChild(state, 5);
             var title = common.label(activeName ? '当前使用：导入配置' : '当前使用：App 自带配置', 21,
                 activeName ? COLORS.success : COLORS.text);
@@ -113,9 +113,9 @@
             detail.setPosition(22, 38);
             state.addChild(detail);
             var importButton = common.actionButton('导入 settings.js', 17, this._importSettings.bind(this), COLORS.accent, 176);
-            importButton.setPosition(size.width / 2 - 96, size.height - 414);
+            importButton.setPosition(size.width / 2 - 96, size.height - common.NAV_HEIGHT - 414);
             var restoreButton = common.actionButton('恢复 App 配置', 17, this._deleteSettings.bind(this), COLORS.muted, 176);
-            restoreButton.setPosition(size.width / 2 + 96, size.height - 414);
+            restoreButton.setPosition(size.width / 2 + 96, size.height - common.NAV_HEIGHT - 414);
             this._menu([importButton, restoreButton]);
             this._setStatus(this.status || '导入后重启 App，新的资源版本和 CDN 配置才会加载。');
         },

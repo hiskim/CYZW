@@ -333,12 +333,12 @@
             var size = cc.winSize;
             var titleItem = parts.common.label(title, 36, parts.common.COLORS.text);
             titleItem.setAnchorPoint(0, 1);
-            titleItem.setPosition(38, size.height - 94);
+            titleItem.setPosition(38, size.height - parts.common.NAV_HEIGHT - 26);
             this.content.addChild(titleItem);
             if (subtitle) {
                 var subtitleItem = parts.common.label(subtitle, 17, parts.common.COLORS.muted);
                 subtitleItem.setAnchorPoint(0, 1);
-                subtitleItem.setPosition(40, size.height - 140);
+                subtitleItem.setPosition(40, size.height - parts.common.NAV_HEIGHT - 70);
                 this.content.addChild(subtitleItem);
             }
         },
@@ -371,7 +371,7 @@
             if (!message) return;
             this.statusItem = parts.common.label(message, 16, color || parts.common.COLORS.muted);
             this.statusItem.setAnchorPoint(0, 0.5);
-            this.statusItem.setPosition(40, parts.common.NAV_HEIGHT + 24);
+            this.statusItem.setPosition(40, 24);
             this.content.addChild(this.statusItem, 10);
         }
     };
