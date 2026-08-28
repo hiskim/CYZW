@@ -241,13 +241,15 @@
             if (this.gameToolbar) this.gameToolbar.active = true;
         },
 
-        _createToolbarButton: function (caption, size, callback) {
+        _createToolbarButton: function (kind, size, callback) {
+            var owner = this;
             var button = new cc.Node();
             button.setAnchorPoint(0.5, 0.5);
             button.setContentSize(size, size);
-            var label = common.label(caption, Math.floor(size * 0.7), COLORS.accent);
-            label.setPosition(0, 0);
-            button.addChild(label);
+            var iconSize = size - 6;
+            var icon = this._createToolbarIcon(kind, iconSize);
+            icon.setPosition(-iconSize / 2, -iconSize / 2);
+            button.addChild(icon);
             var restoreScale = function () {
                 if (cc.tween) {
                     cc.Tween.stopAllByTarget(button);
@@ -263,7 +265,13 @@
             });
             button.on(cc.Node.EventType.TOUCH_END, function (event) {
                 restoreScale();
-                if (typeof callback === 'function') callback();
+                if (typeof callback === 'function') {
+                    try { callback(); }
+                    catch (error) {
+                        owner._dismissGamePopup();
+                        if (global.console && console.error) console.error('[ios2] game toolbar action failed', error);
+                    }
+                }
                 stopEvent(event);
             });
             button.on(cc.Node.EventType.TOUCH_CANCEL, function (event) {
@@ -271,6 +279,55 @@
                 stopEvent(event);
             });
             return button;
+        },
+
+        _createToolbarIcon: function (kind, size) {
+            var icon = new cc.Node();
+            icon.setAnchorPoint(0, 0);
+            icon.setContentSize(size, size);
+            var graphics = icon.addComponent(cc.Graphics);
+            var blue = cc.color(0, 122, 255, 255);
+            var center = size / 2;
+            var roundRect = function (x, y, width, height, radius) {
+                if (typeof graphics.roundRect === 'function') graphics.roundRect(x, y, width, height, radius);
+                else graphics.rect(x, y, width, height);
+            };
+            graphics.lineWidth = Math.max(2.2, size * 0.08);
+            graphics.strokeColor = blue;
+            graphics.fillColor = blue;
+            if (kind === 'gear') {
+                for (var index = 0; index < 8; index++) {
+                    var angle = Math.PI * index / 4;
+                    graphics.moveTo(center + Math.cos(angle) * size * 0.33, center + Math.sin(angle) * size * 0.33);
+                    graphics.lineTo(center + Math.cos(angle) * size * 0.44, center + Math.sin(angle) * size * 0.44);
+                }
+                graphics.circle(center, center, size * 0.26);
+                graphics.circle(center, center, size * 0.10);
+                graphics.stroke();
+            } else if (kind === 'switch') {
+                graphics.circle(center - size * 0.15, center + size * 0.15, size * 0.13);
+                graphics.circle(center + size * 0.16, center + size * 0.14, size * 0.13);
+                roundRect(size * 0.15, size * 0.18, size * 0.30, size * 0.22, size * 0.11);
+                roundRect(size * 0.46, size * 0.18, size * 0.30, size * 0.22, size * 0.11);
+                graphics.fill();
+            } else if (kind === 'info') {
+                graphics.circle(center, center, size * 0.38);
+                graphics.stroke();
+                graphics.lineWidth = Math.max(2.4, size * 0.09);
+                graphics.moveTo(center, center - size * 0.18);
+                graphics.lineTo(center, center + size * 0.10);
+                graphics.stroke();
+                graphics.circle(center, center + size * 0.24, size * 0.045);
+                graphics.fill();
+            } else {
+                graphics.moveTo(size * 0.20, center);
+                graphics.lineTo(size * 0.73, center);
+                graphics.moveTo(size * 0.56, center + size * 0.18);
+                graphics.lineTo(size * 0.74, center);
+                graphics.lineTo(size * 0.56, center - size * 0.18);
+                graphics.stroke();
+            }
+            return icon;
         },
 
         _createGameToolbar: function (size) {
@@ -300,13 +357,13 @@
 
             var right = size.width - 18;
             var icons = [
-                { key: 'close', caption: '↪', action: this._logout.bind(this) },
-                { key: 'info', caption: 'ⓘ', action: this._showGameInfo.bind(this) },
-                { key: 'switch', caption: '👥', action: this._showGameBinSwitcher.bind(this) },
-                { key: 'gear', caption: '⚙', action: this._showGameGearMenu.bind(this) }
+                { key: 'close', action: this._logout.bind(this) },
+                { key: 'info', action: this._showGameInfo.bind(this) },
+                { key: 'switch', action: this._showGameBinSwitcher.bind(this) },
+                { key: 'gear', action: this._showGameGearMenu.bind(this) }
             ];
             for (var index = 0; index < icons.length; index++) {
-                var icon = this._createToolbarButton(icons[index].caption, buttonSize, icons[index].action);
+                var icon = this._createToolbarButton(icons[index].key, buttonSize, icons[index].action);
                 icon.__ios2Key = icons[index].key;
                 icon.setPosition(right - buttonSize / 2 - index * (buttonSize + 5), controlY);
                 toolbar.addChild(icon, 3);
@@ -343,14 +400,27 @@
             layer.setAnchorPoint(0, 0);
             layer.setContentSize(size.width, size.height);
             layer.setPosition(0, 0);
-            if (cc.BlockInputEvents) layer.addComponent(cc.BlockInputEvents);
             layer.on(cc.Node.EventType.TOUCH_END, function (event) {
                 this._dismissGamePopup();
                 stopEvent(event);
             }, this);
+            var shade = common.rectNode(size.width, size.height, cc.color(0, 0, 0, 70));
+            shade.on(cc.Node.EventType.TOUCH_END, function (event) {
+                this._dismissGamePopup();
+                stopEvent(event);
+            }, this);
+            layer.addChild(shade, 0);
             this.gamePopupLayer = layer;
             this.addChild(layer, 31);
             return layer;
+        },
+
+        _protectGamePopupPanel: function (panel) {
+            var stop = function (event) { stopEvent(event); };
+            panel.on(cc.Node.EventType.TOUCH_START, stop);
+            panel.on(cc.Node.EventType.TOUCH_MOVE, stop);
+            panel.on(cc.Node.EventType.TOUCH_END, stop);
+            panel.on(cc.Node.EventType.TOUCH_CANCEL, stop);
         },
 
         _menuRow: function (labelText, width, height, callback) {
@@ -379,15 +449,17 @@
             var height = rowHeight * 2;
             var panel = common.surfaceNode(width, height, cc.color(255, 255, 255, 255), 14, COLORS.border);
             panel.setPosition(size.width - width - 16, size.height - this._gameToolbarHeight() - height - 8);
-            if (cc.BlockInputEvents) panel.addComponent(cc.BlockInputEvents);
-            layer.addChild(panel);
+            this._protectGamePopupPanel(panel);
+            layer.addChild(panel, 1);
             var self = this;
             var relogin = this._menuRow('重新登录', width, rowHeight, function () {
                 self._requestGameAccountLogin(self.currentGameAccountName);
             });
             relogin.setPosition(0, rowHeight);
             panel.addChild(relogin);
-            panel.addChild(common.rectNode(width, 1, cc.color(229, 232, 238, 255))).setPosition(0, rowHeight);
+            var separator = common.rectNode(width, 1, cc.color(229, 232, 238, 255));
+            separator.setPosition(0, rowHeight);
+            panel.addChild(separator);
             var close = this._menuRow('关闭', width, rowHeight, function () { self._logout(); });
             close.setPosition(0, 0);
             panel.addChild(close);
@@ -400,7 +472,8 @@
             var height = 74;
             var panel = common.surfaceNode(width, height, cc.color(255, 255, 255, 255), 14, COLORS.border);
             panel.setPosition((size.width - width) / 2, size.height - this._gameToolbarHeight() - height - 12);
-            layer.addChild(panel);
+            this._protectGamePopupPanel(panel);
+            layer.addChild(panel, 1);
             var label = common.label('当前账号：' + displayAccountName(this.currentGameAccountName), 19, COLORS.text);
             label.setAnchorPoint(0, 0.5);
             label.setContentSize(width - 32, height);
@@ -446,16 +519,27 @@
             var panel = common.surfaceNode(width, panelHeight, cc.color(255, 255, 255, 255), 18, COLORS.border);
             panel.setPosition((size.width - width) / 2,
                 Math.max(16, size.height - this._gameToolbarHeight() - panelHeight - 10));
-            if (cc.BlockInputEvents) panel.addComponent(cc.BlockInputEvents);
-            layer.addChild(panel);
+            this._protectGamePopupPanel(panel);
+            layer.addChild(panel, 1);
 
             var title = common.label('切换 bin', 22, COLORS.text);
             title.setAnchorPoint(0, 0.5);
-            title.setContentSize(width - 32, headerHeight);
+            title.setContentSize(width - 112, headerHeight);
             if (title.__ios2LabelComponent) title.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
             title.setPosition(16, panelHeight - headerHeight / 2);
             panel.addChild(title);
-            panel.addChild(common.rectNode(width, 1, cc.color(229, 232, 238, 255))).setPosition(0, panelHeight - headerHeight);
+            var cancel = common.label('取消', 19, cc.color(0, 122, 255, 255));
+            cancel.setAnchorPoint(0.5, 0.5);
+            cancel.setContentSize(78, headerHeight);
+            cancel.setPosition(width - 45, panelHeight - headerHeight / 2);
+            cancel.on(cc.Node.EventType.TOUCH_END, function (event) {
+                this._dismissGamePopup();
+                stopEvent(event);
+            }, this);
+            panel.addChild(cancel, 2);
+            var headerSeparator = common.rectNode(width, 1, cc.color(229, 232, 238, 255));
+            headerSeparator.setPosition(0, panelHeight - headerHeight);
+            panel.addChild(headerSeparator);
 
             var view = new cc.Node();
             view.setAnchorPoint(0, 0);
@@ -465,9 +549,9 @@
             panel.addChild(view);
 
             var content = new cc.Node();
-            content.setAnchorPoint(0, 1);
+            content.setAnchorPoint(0, 0);
             content.setContentSize(width, Math.max(listHeight, contentHeight));
-            content.setPosition(0, listHeight);
+            content.setPosition(0, Math.min(0, listHeight - contentHeight));
             view.addChild(content);
             if (cc.ScrollView) {
                 var scroll = view.addComponent(cc.ScrollView);
@@ -476,11 +560,12 @@
                 scroll.inertia = true;
                 scroll.brake = 0.78;
                 scroll.content = content;
+                if (typeof scroll.scrollToTop === 'function') scroll.scrollToTop(0);
             }
 
             if (!records.length) {
                 var empty = common.label('没有其他 bin 文件', 20, COLORS.muted);
-                empty.setPosition(width / 2, -rowHeight / 2);
+                empty.setPosition(width / 2, Math.max(rowHeight / 2, listHeight - rowHeight / 2));
                 content.addChild(empty);
                 return;
             }
@@ -489,7 +574,8 @@
             for (var rowIndex = 0; rowIndex < records.length; rowIndex++) {
                 (function (record, y) {
                     var row = new cc.Node();
-                    row.setAnchorPoint(0, 1);
+                    var touchState = { startX: 0, startY: 0, dragging: false };
+                    row.setAnchorPoint(0, 0);
                     row.setContentSize(width, rowHeight);
                     row.setPosition(0, y);
                     var label = common.label(displayAccountName(record.name), 21, COLORS.text);
@@ -501,17 +587,35 @@
                             label.__ios2LabelComponent.overflow = cc.Label.Overflow.CLAMP;
                         }
                     }
-                    label.setPosition(18, -rowHeight / 2);
+                    label.setPosition(18, rowHeight / 2);
                     row.addChild(label);
-                    row.addChild(common.rectNode(width - 18, 1, cc.color(234, 236, 240, 255)))
-                        .setPosition(18, -rowHeight);
+                    var rowSeparator = common.rectNode(width - 18, 1, cc.color(234, 236, 240, 255));
+                    rowSeparator.setPosition(18, 0);
+                    row.addChild(rowSeparator);
+                    row.on(cc.Node.EventType.TOUCH_START, function (event) {
+                        var location = event && typeof event.getLocation === 'function' ? event.getLocation() : null;
+                        touchState.startX = location ? location.x : 0;
+                        touchState.startY = location ? location.y : 0;
+                        touchState.dragging = false;
+                    });
+                    row.on(cc.Node.EventType.TOUCH_MOVE, function (event) {
+                        var location = event && typeof event.getLocation === 'function' ? event.getLocation() : null;
+                        if (!location) return;
+                        if (Math.abs(location.y - touchState.startY) > 12 || Math.abs(location.x - touchState.startX) > 12) {
+                            touchState.dragging = true;
+                        }
+                    });
                     row.on(cc.Node.EventType.TOUCH_END, function (event) {
+                        if (touchState.dragging) {
+                            stopEvent(event);
+                            return;
+                        }
                         self._dismissGamePopup();
                         self._requestGameAccountLogin(record.name);
                         stopEvent(event);
                     });
                     content.addChild(row);
-                }(records[rowIndex], -rowIndex * rowHeight));
+                }(records[rowIndex], contentHeight - (rowIndex + 1) * rowHeight));
             }
         },
 
