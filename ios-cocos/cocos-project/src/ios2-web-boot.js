@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260828-remote-bundle-route-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260828-native-platform-profile-pvr-parser-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     function showFatal(message) {
@@ -84,7 +84,21 @@
         function execute(code, url) {
             code = code.replace(/cc\.assetManager\.loadAny=function\(\)\{\},?/g, '');
             code = code.replace(/[a-zA-Z]\.PlatformManager\.instance\.isH5&&\(cc\.assetManager\.loadBundle=function\(\)\{\}\),?/g, '');
+            // Keep Cocos in its WebKit runtime, but expose the native iOS
+            // business profile to the remote game's PlatformManager.
+            var nativeProfileApplied = false;
+            code = code.replace(/get _isH5\(\)\{return [^{}]*\},get isH5\(\)\{/,
+                function () {
+                    nativeProfileApplied = true;
+                    return 'get _isH5(){return!1},get isH5(){';
+                });
+            if (nativeProfileApplied) {
+                console.log('[ios2-web] native iOS platform profile applied', url);
+            }
             (0, eval)(code + '\n//# sourceURL=' + url);
+            // launcher installs a JSB-only PVR parser while applying its ASTC
+            // patch. Restore the WebKit parser after each remote bundle runs.
+            installASTCTextureSupport();
         }
 
         downloader.register('.js', function (url, options, onComplete) {
@@ -155,18 +169,51 @@
     window.__ios2InstallEncryptedBundleLoader = installEncryptedBundleLoader;
 
     function installASTCTextureSupport() {
+        var downloader = cc.assetManager && cc.assetManager.downloader;
         var parser = cc.assetManager && cc.assetManager.parser;
         var texturePrototype = cc.Texture2D && cc.Texture2D.prototype;
-        if (!parser || !texturePrototype || parser.__ios2ASTCInstalled) return;
+        if (!parser || !texturePrototype) return;
+        if (parser.__ios2ASTCInstalled) {
+            // A remote bundle can replace this parser with a JSB variant that
+            // reads from window.fsUtils. WebKit must parse the downloaded data.
+            if (parser.__ios2ASTCPVRParser) {
+                parser.register('.pvr', parser.__ios2ASTCPVRParser);
+            }
+            return;
+        }
         parser.__ios2ASTCInstalled = true;
 
+        // Creator serializes this project's texture alternatives as "0_5@...".
+        // The supplied Web engine omits index 5, so it used PNG (index 0) even
+        // when the device can upload the ASTC payload carried by the PVR file.
+        var textureExtnames = cc.Texture2D.extnames;
+        if (textureExtnames) textureExtnames[5] = '.pvr';
+
+        if (downloader && !downloader.__ios2PVRDownloaderInstalled) {
+            downloader.__ios2PVRDownloaderInstalled = true;
+            downloader.register('.pvr', function (url, options, onComplete) {
+                var binaryOptions = Object.assign({}, options, { responseType: 'arraybuffer' });
+                downloader.downloadFile(url, binaryOptions, function (error, buffer) {
+                    if (!error) {
+                        console.log('[ios2-web] PVR texture downloaded', url,
+                            buffer && buffer.byteLength || 0, 'bytes');
+                    }
+                    onComplete(error, buffer);
+                });
+            });
+        }
+
         var originalPVRParser = parser.parsePVRTex;
-        parser.register('.pvr', function (file, options, onComplete) {
+        var astcPVRParser = function (file, options, onComplete) {
             var buffer = file instanceof ArrayBuffer ? file : file && file.buffer;
             var bytes = buffer ? new Uint8Array(buffer) : null;
             if (!bytes || bytes.length < 16 || bytes[0] !== 0x13 || bytes[1] !== 0xAB ||
                 bytes[2] !== 0xA1 || bytes[3] !== 0x5C) {
-                originalPVRParser(file, options, onComplete);
+                if (typeof originalPVRParser === 'function') {
+                    originalPVRParser(file, options, onComplete);
+                } else {
+                    onComplete(new Error('Unsupported PVR texture header'));
+                }
                 return;
             }
             var blockX = bytes[4];
@@ -198,7 +245,9 @@
                 height: height,
                 __ios2ASTCFormat: internalFormat
             });
-        });
+        };
+        parser.__ios2ASTCPVRParser = astcPVRParser;
+        parser.register('.pvr', astcPVRParser);
 
         var descriptor = Object.getOwnPropertyDescriptor(texturePrototype, '_nativeAsset');
         if (!descriptor || typeof descriptor.set !== 'function') return;
@@ -278,8 +327,8 @@
                 settings.remoteBundles.indexOf(name) < 0) settings.remoteBundles.push(name);
         });
         var canvas = document.getElementById('GameCanvas');
-        cc.macro.SUPPORT_TEXTURE_FORMATS = ['.pvr'];
         installASTCTextureSupport();
+        cc.macro.SUPPORT_TEXTURE_FORMATS = ['.pvr'];
         var option = {
             id: canvas,
             debugMode: cc.debug.DebugMode.ERROR,
@@ -329,6 +378,11 @@
             pending--;
             if (!pending) {
                 cc.game.run(option, function () {
+                    // The launcher registers its JSB-only ASTC parser from
+                    // EVENT_ENGINE_INITED. Restore the WebKit parser after
+                    // that event has completed and before loading the scene.
+                    installASTCTextureSupport();
+                    console.log('[ios2-web] WebKit PVR parser restored after engine init');
                     var device = cc.renderer && cc.renderer.device;
                     var gl = device && device._gl;
                     var pvrtc = device && device.ext('WEBGL_compressed_texture_pvrtc');
@@ -337,7 +391,13 @@
                     if (!pvrtc && !astc) {
                         throw new Error('PVRTC or ASTC is required; PNG/WebP fallback is disabled');
                     }
-                    if (!pvrtc && astc) device._extensions.WEBGL_compressed_texture_pvrtc = astc;
+                    // Cocos 2.4.9 only considers .pvr when it sees the PVRTC
+                    // extension. This project's .pvr files contain ASTC data,
+                    // parsed and uploaded by installASTCTextureSupport above.
+                    if (!pvrtc && astc) {
+                        device._extensions.WEBGL_compressed_texture_pvrtc = astc;
+                        console.log('[ios2-web] ASTC enabled for PVR texture selection');
+                    }
                     cc.view.enableRetina(true);
                     cc.view.resizeWithBrowserSize(true);
                     cc.director.loadScene(settings.launchScene, function (sceneError) {
