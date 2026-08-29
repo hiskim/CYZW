@@ -143,6 +143,9 @@
                 page = 2;
                 this.status = 'JS 脚本仅支持 WebKit 模式';
             }
+            if (!this.gameStarted && typeof global.__ios2ApplyLauncherIdlePerformance === 'function') {
+                global.__ios2ApplyLauncherIdlePerformance('show page');
+            }
             this._dismissGamePopup();
             if (this.gameToolbar) this.gameToolbar.active = false;
             this.page = Math.max(0, Math.min(2, Number(page) || 0));
@@ -657,6 +660,9 @@
             if (this.gameStarted) return;
             this._setStatus('认证成功，正在进入游戏…', COLORS.success);
             this.gameStarted = true;
+            if (typeof global.__ios2RestorePerformancePreferences === 'function') {
+                global.__ios2RestorePerformancePreferences('login ready');
+            }
             this.pendingLoginAfterRestart = '';
             this._updateGameToolbar(this.accountPresenter && this.accountPresenter.currentAccountName ?
                 this.accountPresenter.currentAccountName() : this.currentGameAccountName);
