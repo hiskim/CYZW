@@ -269,7 +269,9 @@
             for (var item = 0; item < records.length; item++) {
                 var record = records[item];
                 if (!record || !record.name) continue;
-                this.scripts.push({ name: record.name, enabled: previous[record.name] ? previous[record.name].enabled : true, size: record.size });
+                // Imported scripts are opt-in. A multi-open launch evaluates
+                // each enabled script in every WebKit instance.
+                this.scripts.push({ name: record.name, enabled: previous[record.name] ? previous[record.name].enabled : false, size: record.size });
             }
             this._saveScripts();
             if (this.page === 1) this.showPage(1);

@@ -48,6 +48,9 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, strong) UIView *toolbar;
 @property (nonatomic, strong) UILabel *toolbarTitle;
 @property (nonatomic, strong) UIButton *switchButton;
+@property (nonatomic, strong) UIButton *groupControlButton;
+@property (nonatomic, strong) NSLayoutConstraint *groupControlCenterXConstraint;
+@property (nonatomic, assign) BOOL groupControlCentered;
 @property (nonatomic, copy) NSString *scriptsJSON;
 @property (nonatomic, copy) NSString *manifestJSON;
 @property (nonatomic, strong) UIViewController *presenter;
@@ -61,6 +64,11 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 - (void)startupTimeout:(NSDictionary *)token;
 - (void)installBootstrapForRecord:(NSDictionary *)record;
 - (void)releaseStartupPayloadForInstanceID:(NSString *)instanceID;
+- (void)groupControlTapped;
+- (void)tuckGroupControlButton;
+- (void)showGroupControlButton;
++ (NSString *)layoutMode;
++ (void)setLayoutMode:(NSString *)mode;
 @end
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
@@ -72,9 +80,11 @@ static NSString * const kIOS2WebVerboseLoggingDefaultsKey = @"ios2.hsdkVerboseDe
 static NSString * const kIOS2WebStartupModeDefaultsKey = @"ios2.webStartupMode";
 static NSString * const kIOS2WebRenderQualitySingleDefaultsKey = @"ios2.renderQuality.single";
 static NSString * const kIOS2WebRenderQualityMultiDefaultsKey = @"ios2.renderQuality.multi";
+static NSString * const kIOS2WebLayoutModeDefaultsKey = @"ios2.webLayoutMode";
 static NSTimeInterval const kIOS2WebParallelStartupDelay = 0.75;
 static NSTimeInterval const kIOS2WebStartupPayloadCleanupDelay = 0.75;
 static NSTimeInterval const kIOS2WebStartupTimeout = 60.0;
+static NSTimeInterval const kIOS2WebGroupControlIdleDelay = 3.5;
 
 static WKProcessPool *IOS2SharedWebProcessPool(void)
 {
@@ -706,6 +716,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         webView.navigationDelegate = self;
         webView.translatesAutoresizingMaskIntoConstraints = NO;
         webView.scrollView.bounces = NO;
+        webView.layer.cornerRadius = 12.0;
+        webView.layer.masksToBounds = YES;
         [self.presenter.view addSubview:webView];
         NSString *accountID = [item[@"accountID"] isKindOfClass:[NSString class]] ? item[@"accountID"] : @"";
         NSMutableDictionary *record = [@{ @"id": instanceID,
@@ -857,6 +869,49 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.toolbarTitle.text = title;
     self.switchButton.enabled = single;
     self.switchButton.alpha = single ? 1.0 : 0.35;
+    [self showGroupControlButton];
+}
+
+- (void)showGroupControlButton
+{
+    if (!self.groupControlButton) return;
+    BOOL visible = self.instances.count > 1 && !self.toolbar.hidden;
+    self.groupControlButton.hidden = !visible;
+    if (!visible) return;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(tuckGroupControlButton)
+                                               object:nil];
+    self.groupControlCentered = NO;
+    // A positive offset moves the center to the right, leaving only half the
+    // control exposed as a discoverable edge affordance.
+    self.groupControlCenterXConstraint.constant = MAX(28.0, self.presenter.view.bounds.size.width * 0.5 + 29.0);
+    [self.presenter.view layoutIfNeeded];
+}
+
+- (void)tuckGroupControlButton
+{
+    if (!self.groupControlButton || self.groupControlButton.hidden) return;
+    self.groupControlCentered = NO;
+    self.groupControlCenterXConstraint.constant = MAX(28.0, self.presenter.view.bounds.size.width * 0.5 + 29.0);
+    [UIView animateWithDuration:0.24 animations:^{ [self.presenter.view layoutIfNeeded]; }];
+}
+
+- (void)groupControlTapped
+{
+    if (self.instances.count < 2) return;
+    self.groupControlCentered = YES;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(tuckGroupControlButton)
+                                               object:nil];
+    self.groupControlCenterXConstraint.constant = 0.0;
+    [UIView animateWithDuration:0.24 animations:^{ [self.presenter.view layoutIfNeeded]; }
+                     completion:^(BOOL finished) {
+        (void)finished;
+        [self showGameMenu];
+    }];
+    [self performSelector:@selector(tuckGroupControlButton)
+               withObject:nil
+               afterDelay:kIOS2WebGroupControlIdleDelay];
 }
 
 - (void)ensureToolbar
@@ -895,10 +950,13 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         [toolbar.leadingAnchor constraintEqualToAnchor:self.presenter.view.leadingAnchor],
         [toolbar.trailingAnchor constraintEqualToAnchor:self.presenter.view.trailingAnchor],
         [toolbar.topAnchor constraintEqualToAnchor:self.presenter.view.topAnchor],
-        [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:50.0],
+        // Keep the game viewport close to the top edge in WebKit mode. The
+        // title and controls remain inside the safe area without consuming a
+        // second, oversized status-bar band.
+        [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:38.0],
         [title.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:22.0],
         [title.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
-        [title.heightAnchor constraintEqualToConstant:42.0],
+        [title.heightAnchor constraintEqualToConstant:32.0],
         [title.trailingAnchor constraintLessThanOrEqualToAnchor:gear.leadingAnchor constant:-12.0],
         [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-14.0],
         [close.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
@@ -919,6 +977,32 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     ]];
     [title release];
     [toolbar release];
+
+    UIButton *groupButton = [self toolbarButtonWithSystemName:@"square.grid.2x2.fill"
+                                                       fallback:@"▦"
+                                                         action:@selector(groupControlTapped)];
+    groupButton.translatesAutoresizingMaskIntoConstraints = NO;
+    groupButton.tintColor = UIColor.whiteColor;
+    groupButton.backgroundColor = [UIColor colorWithRed:0.04 green:0.45 blue:0.96 alpha:1.0];
+    groupButton.layer.cornerRadius = 29.0;
+    groupButton.layer.shadowColor = UIColor.blackColor.CGColor;
+    groupButton.layer.shadowOpacity = 0.22;
+    groupButton.layer.shadowRadius = 8.0;
+    groupButton.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+    groupButton.accessibilityLabel = @"群控面板";
+    groupButton.accessibilityIdentifier = @"ios2.group-control";
+    self.groupControlButton = groupButton;
+    [self.presenter.view addSubview:groupButton];
+    NSLayoutConstraint *centerX = [groupButton.centerXAnchor constraintEqualToAnchor:self.presenter.view.centerXAnchor];
+    self.groupControlCenterXConstraint = centerX;
+    UILayoutGuide *groupSafeArea = self.presenter.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [groupButton.widthAnchor constraintEqualToConstant:58.0],
+        [groupButton.heightAnchor constraintEqualToConstant:58.0],
+        centerX,
+        [groupButton.bottomAnchor constraintEqualToAnchor:groupSafeArea.bottomAnchor constant:-96.0]
+    ]];
+    groupButton.hidden = YES;
 }
 
 - (void)presentToolbarAlert:(UIAlertController *)alert source:(UIView *)source
@@ -946,6 +1030,29 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     NSString *account = [self currentSingleAccountName];
+    if (self.instances.count > 1) {
+        NSString *layoutTitle = [NSString stringWithFormat:@"布局切换（当前：%@）",
+                                  [[[self class] layoutMode] isEqualToString:@"stacked"] ? @"堆叠布局" : @"均分布局"];
+        // Keep the menu as a small control surface. The WebKit views own
+        // their layout; this action only changes the persisted layout state.
+        [menu addAction:[UIAlertAction actionWithTitle:layoutTitle
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            [[self class] setLayoutMode:[[[self class] layoutMode] isEqualToString:@"stacked"] ? @"split" : @"stacked"];
+            [self layoutInstances];
+            [self configureToolbar];
+            self.groupControlCentered = YES;
+            self.groupControlCenterXConstraint.constant = 0.0;
+            [UIView animateWithDuration:0.2 animations:^{ [self.presenter.view layoutIfNeeded]; }];
+            [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                                     selector:@selector(tuckGroupControlButton)
+                                                       object:nil];
+            [self performSelector:@selector(tuckGroupControlButton)
+                       withObject:nil
+                       afterDelay:kIOS2WebGroupControlIdleDelay];
+        }]];
+    }
     UIAlertAction *relogin = [UIAlertAction actionWithTitle:@"重新登录"
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(UIAlertAction *action) {
@@ -961,7 +1068,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         [self closeCurrent];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentToolbarAlert:menu source:self.toolbar];
+    [self presentToolbarAlert:menu source:self.instances.count > 1 ? self.groupControlButton : self.toolbar];
 }
 
 - (void)showCurrentInfo
@@ -1015,57 +1122,56 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 - (void)layoutInstances
 {
     NSUInteger count = self.instances.count;
+    if (!count || !self.presenter.view) return;
     UIView *content = self.presenter.view;
-    WKWebView *first = self.instances[0][@"view"];
-    if (count == 1) {
-        [NSLayoutConstraint activateConstraints:@[
-            [first.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-            [first.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-            [first.topAnchor constraintEqualToAnchor:self.toolbar.bottomAnchor],
-            [first.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
-        ]];
-        return;
+    [content layoutIfNeeded];
+    CGRect bounds = content.bounds;
+    CGFloat top = CGRectGetMaxY(self.toolbar.frame);
+    if (top <= 0.0) top = content.safeAreaInsets.top + 38.0;
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = MAX(1.0, CGRectGetHeight(bounds) - top);
+    BOOL stacked = [[[self class] layoutMode] isEqualToString:@"stacked"] && count > 1;
+    CGFloat gutter = stacked ? 12.0 : 2.0;
+
+    // Frames keep both modes deterministic and avoid retaining an old
+    // constraint graph when the user switches layouts from the floating menu.
+    for (NSDictionary *record in self.instances) {
+        WKWebView *view = record[@"view"];
+        if (!view) continue;
+        NSMutableArray *owned = [NSMutableArray array];
+        for (NSLayoutConstraint *constraint in content.constraints) {
+            if (constraint.firstItem == view || constraint.secondItem == view) [owned addObject:constraint];
+        }
+        if (owned.count) [content removeConstraints:owned];
+        view.translatesAutoresizingMaskIntoConstraints = YES;
     }
-    WKWebView *second = self.instances[1][@"view"];
-    if (count == 2) {
-        [NSLayoutConstraint activateConstraints:@[
-            [first.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-            [first.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-            [first.topAnchor constraintEqualToAnchor:self.toolbar.bottomAnchor],
-            [first.bottomAnchor constraintEqualToAnchor:content.centerYAnchor],
-            [second.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-            [second.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-            [second.topAnchor constraintEqualToAnchor:first.bottomAnchor],
-            [second.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
-        ]];
-        return;
+    if (!stacked) {
+        NSUInteger columns = count == 1 ? 1 : 2;
+        NSUInteger rows = (count + columns - 1) / columns;
+        CGFloat cellWidth = (width - gutter * (columns - 1)) / columns;
+        CGFloat cellHeight = (height - gutter * (rows - 1)) / rows;
+        for (NSUInteger index = 0; index < count; index++) {
+            WKWebView *view = self.instances[index][@"view"];
+            NSUInteger column = index % columns;
+            NSUInteger row = index / columns;
+            view.frame = CGRectMake(column * (cellWidth + gutter), top + row * (cellHeight + gutter),
+                                    cellWidth, cellHeight);
+        }
+    } else {
+        CGFloat cardWidth = MIN(width - 24.0, MAX(220.0, width * 0.84));
+        CGFloat cardHeight = MIN(height - 18.0, MAX(240.0, height * 0.72));
+        CGFloat left = (width - cardWidth) * 0.5;
+        CGFloat offset = MIN(46.0, MAX(18.0, height * 0.055));
+        for (NSUInteger index = 0; index < count; index++) {
+            WKWebView *view = self.instances[index][@"view"];
+            CGFloat x = left + MIN((CGFloat)index, 2.0) * 10.0;
+            CGFloat y = top + MIN((CGFloat)index, 2.0) * offset;
+            view.frame = CGRectMake(x, y, cardWidth, cardHeight);
+            [content bringSubviewToFront:view];
+        }
     }
-    WKWebView *third = self.instances[2][@"view"];
-    [NSLayoutConstraint activateConstraints:@[
-        [first.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [first.topAnchor constraintEqualToAnchor:self.toolbar.bottomAnchor],
-        [first.bottomAnchor constraintEqualToAnchor:content.centerYAnchor],
-        [second.topAnchor constraintEqualToAnchor:self.toolbar.bottomAnchor],
-        [second.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [second.bottomAnchor constraintEqualToAnchor:content.centerYAnchor],
-        [first.trailingAnchor constraintEqualToAnchor:second.leadingAnchor],
-        [first.widthAnchor constraintEqualToAnchor:second.widthAnchor],
-        [third.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [third.topAnchor constraintEqualToAnchor:first.bottomAnchor],
-        [third.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
-    ]];
-    if (count == 3) {
-        [third.trailingAnchor constraintEqualToAnchor:content.trailingAnchor].active = YES;
-        return;
-    }
-    WKWebView *fourth = self.instances[3][@"view"];
-    [NSLayoutConstraint activateConstraints:@[
-        [fourth.topAnchor constraintEqualToAnchor:second.bottomAnchor],
-        [fourth.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [fourth.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-        [third.trailingAnchor constraintEqualToAnchor:fourth.leadingAnchor],
-        [third.widthAnchor constraintEqualToAnchor:fourth.widthAnchor]
-    ]];
+    if (self.toolbar) [content bringSubviewToFront:self.toolbar];
+    if (self.groupControlButton) [content bringSubviewToFront:self.groupControlButton];
 }
 
 - (void)showManager
@@ -1087,6 +1193,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     dispatch_async(dispatch_get_main_queue(), ^{
         IOS2GameWebView *manager = [self sharedInstance];
         manager.toolbar.hidden = YES;
+        manager.groupControlButton.hidden = YES;
         for (NSDictionary *record in manager.instances) ((WKWebView *)record[@"view"]).hidden = YES;
         [self releaseUnusedAssetsForAllInstances];
     });
@@ -1180,6 +1287,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [self.instances removeAllObjects];
     [self.toolbar removeFromSuperview];
     self.toolbar = nil;
+    [self.groupControlButton removeFromSuperview];
+    self.groupControlButton = nil;
+    self.groupControlCenterXConstraint = nil;
     self.toolbarTitle = nil;
     self.switchButton = nil;
     self.presenter = nil;
@@ -1204,6 +1314,20 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2WebStartupModeDefaultsKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
     NSLog(@"[ios2] WebKit startup mode selected: %@", value);
+}
+
++ (NSString *)layoutMode
+{
+    NSString *mode = [[NSUserDefaults standardUserDefaults] stringForKey:kIOS2WebLayoutModeDefaultsKey];
+    return [mode isEqualToString:@"stacked"] ? @"stacked" : @"split";
+}
+
++ (void)setLayoutMode:(NSString *)mode
+{
+    NSString *value = [mode isEqualToString:@"stacked"] ? @"stacked" : @"split";
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2WebLayoutModeDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSLog(@"[ios2] WebKit layout mode selected: %@", value);
 }
 
 + (NSString *)accountIDForInstance:(NSString *)instanceID

@@ -826,6 +826,8 @@ static void IOS2Authenticate(NSData *binData)
 + (NSInteger)webGameInstanceCount;
 + (NSString *)webGameStartupMode;
 + (void)setWebGameStartupMode:(NSString *)mode;
++ (NSString *)webGameLayoutMode;
++ (void)setWebGameLayoutMode:(NSString *)mode;
 + (void)webGameManagerRequested;
 @end
 
@@ -1018,6 +1020,16 @@ static void IOS2Authenticate(NSData *binData)
 + (void)setWebGameStartupMode:(NSString *)mode
 {
     [IOS2GameWebView setStartupMode:mode];
+}
+
++ (NSString *)webGameLayoutMode
+{
+    return [IOS2GameWebView layoutMode];
+}
+
++ (void)setWebGameLayoutMode:(NSString *)mode
+{
+    [IOS2GameWebView setLayoutMode:mode];
 }
 
 + (void)webGameManagerRequested

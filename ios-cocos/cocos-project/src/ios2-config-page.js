@@ -164,6 +164,7 @@
             var frameRate = storage ? (storage.getItem('ios2.frameRate') || '60') : '60';
             var hsdkVerboseDebug = storage ? storage.getItem('ios2.hsdkVerboseDebug') === '1' : false;
             var webStartupMode = storage ? (storage.getItem('ios2.webStartupMode') || 'serial') : 'serial';
+            var webLayoutMode = storage ? (storage.getItem('ios2.webLayoutMode') || 'split') : 'split';
             var accountNavigationMode = storage ? (storage.getItem('ios2.accountNavigationMode') || 'page') : 'page';
             var runtimeBackend = 'native';
             var webGameInstances = 0;
@@ -176,9 +177,11 @@
                     runtimeBackend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native');
                     webGameInstances = Number(jsb.reflection.callStaticMethod('IOS2Native', 'webGameInstanceCount')) || 0;
                     webStartupMode = String(jsb.reflection.callStaticMethod('IOS2Native', 'webGameStartupMode') || webStartupMode);
+                    webLayoutMode = String(jsb.reflection.callStaticMethod('IOS2Native', 'webGameLayoutMode') || webLayoutMode);
                 } catch (ignored) {}
             }
             if (webStartupMode !== 'parallel') webStartupMode = 'serial';
+            if (webLayoutMode !== 'stacked') webLayoutMode = 'split';
             if (accountNavigationMode !== 'scroll') accountNavigationMode = 'page';
             var self = this;
             function option(y, text, value, onClick) {
@@ -262,7 +265,7 @@
                 self.content.addChild(item, 5);
             }
             var firstRowY = this._navTop(size) - 260;
-            var rowGap = Math.max(36, Math.min(82, Math.floor((firstRowY - 70) / 9)));
+            var rowGap = Math.max(32, Math.min(70, Math.floor((firstRowY - 70) / 11)));
             var singleQuality = readQuality(storage, 'renderQualitySingle', QUALITY_SINGLE_KEY, 'high');
             var multiQuality = readQuality(storage, 'renderQualityMulti', QUALITY_MULTI_KEY, 'medium');
             option(firstRowY, '游戏运行模式', runtimeBackend === 'webkit' ? 'WebKit 多开' : 'Cocos 极速', function () {
@@ -283,30 +286,37 @@
                 if (runtimeBackend !== 'webkit') self._setStatus('切换到 WebKit 多开后可启动多开实例。');
                 else self._setStatus(webGameInstances ? '当前实例正在同屏运行。' : '请在 Bin 文件页面点击“多开”。');
             });
-            option(firstRowY - rowGap * 5, 'WebKit 启动方式', webStartupMode === 'parallel' ? '并行启动' : '串行启动', function () {
+            option(firstRowY - rowGap * 5, 'WebKit 多开布局', webLayoutMode === 'stacked' ? '堆叠布局' : '均分布局', function () {
+                var next = webLayoutMode === 'stacked' ? 'split' : 'stacked';
+                if (storage) storage.setItem('ios2.webLayoutMode', next);
+                try { jsb.reflection.callStaticMethod('IOS2Native', 'setWebGameLayoutMode:', next); }
+                catch (error) { self._setStatus('无法应用 WebKit 布局', COLORS.warning); return; }
+                self._showConfig();
+            });
+            option(firstRowY - rowGap * 6, 'WebKit 启动方式', webStartupMode === 'parallel' ? '并行启动' : '串行启动', function () {
                 var next = webStartupMode === 'parallel' ? 'serial' : 'parallel';
                 if (storage) storage.setItem('ios2.webStartupMode', next);
                 try { jsb.reflection.callStaticMethod('IOS2Native', 'setWebGameStartupMode:', next); }
                 catch (error) { self._setStatus('无法应用 WebKit 启动方式', COLORS.warning); return; }
                 self._showConfig();
             });
-            option(firstRowY - rowGap * 6, '显示 FPS', showFPS ? '开' : '关', function () {
+            option(firstRowY - rowGap * 7, '显示 FPS', showFPS ? '开' : '关', function () {
                 if (storage) storage.setItem('ios2.showFPS', showFPS ? '0' : '1');
                 self._setNativePerformance('showFPS', showFPS ? 0 : 1);
                 self._showConfig();
             });
-            option(firstRowY - rowGap * 7, '登录后恢复性能设置', autoRestore ? '开' : '关', function () {
+            option(firstRowY - rowGap * 8, '登录后恢复性能设置', autoRestore ? '开' : '关', function () {
                 if (storage) storage.setItem('ios2.autoRestore', autoRestore ? '0' : '1');
                 self._showConfig();
             });
-            option(firstRowY - rowGap * 8, '目标帧率', frameRate + ' FPS', function () {
+            option(firstRowY - rowGap * 9, '目标帧率', frameRate + ' FPS', function () {
                 var values = ['30', '45', '60'];
                 var next = values[(values.indexOf(frameRate) + 1) % values.length];
                 if (storage) storage.setItem('ios2.frameRate', next);
                 self._setNativePerformance('frameRate', Number(next));
                 self._showConfig();
             });
-            option(firstRowY - rowGap * 9, 'HSDK 详细日志', hsdkVerboseDebug ? '开' : '关', function () {
+            option(firstRowY - rowGap * 10, 'HSDK 详细日志', hsdkVerboseDebug ? '开' : '关', function () {
                 var next = !hsdkVerboseDebug;
                 if (storage) storage.setItem('ios2.hsdkVerboseDebug', next ? '1' : '0');
                 self._setHSDKVerboseDebug(next);

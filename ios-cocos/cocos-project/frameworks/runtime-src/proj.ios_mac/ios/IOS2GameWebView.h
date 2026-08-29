@@ -9,6 +9,8 @@
 + (NSUInteger)instanceCount;
 + (NSString *)startupMode;
 + (void)setStartupMode:(NSString *)mode;
++ (NSString *)layoutMode;
++ (void)setLayoutMode:(NSString *)mode;
 + (void)sendHSDKMessage:(NSString *)action
                   extra:(NSDictionary *)extra
                 errCode:(NSInteger)errCode
