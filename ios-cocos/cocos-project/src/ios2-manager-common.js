@@ -376,9 +376,10 @@
 
         _navTop: function (size) {
             var viewport = size || cc.winSize;
-            var inset = Number(this.safeTopInset);
-            if (!isFinite(inset)) inset = parts.common.safeAreaTop(viewport);
-            return viewport.height - parts.common.NAV_HEIGHT - Math.max(0, inset);
+            // The native status bar is hidden and this shell is edge-to-edge.
+            // Safe-area padding here duplicates the view's own inset and
+            // shifts every top-level menu down on iPhone devices.
+            return viewport.height - parts.common.NAV_HEIGHT;
         },
 
         _panel: function (x, y, width, height, color) {

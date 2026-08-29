@@ -873,7 +873,9 @@ window.boot = function () {
 
     var onStart = function () {
 
-        ios2ApplyRenderQuality();
+        // Keep the launcher at the native Retina density. Game-only quality
+        // downsampling is applied after Cocos login, once this UI is hidden.
+        cc.view.enableRetina(true);
         cc.view.resizeWithBrowserSize(true);
 
         if (cc.sys.isBrowser) {

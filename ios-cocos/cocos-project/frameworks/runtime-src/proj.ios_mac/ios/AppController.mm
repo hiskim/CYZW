@@ -68,6 +68,7 @@ static NSString * const kIOS2HSDKVerboseDebugDefaultsKey = @"ios2.hsdkVerboseDeb
 static NSString * const kIOS2RuntimeBackendDefaultsKey = @"ios2.runtimeBackend";
 static NSString * const kIOS2RenderQualitySingleDefaultsKey = @"ios2.renderQuality.single";
 static NSString * const kIOS2RenderQualityMultiDefaultsKey = @"ios2.renderQuality.multi";
+static uint8_t s_ios2SingleRenderTextureFactor = 1;
 
 static NSInteger IOS2PreferredFrameRate(void)
 {
@@ -807,6 +808,7 @@ static void IOS2Authenticate(NSData *binData)
 + (NSString *)renderQualitySingle;
 + (void)setRenderQualitySingle:(NSString *)quality;
 + (void)applyRenderQualitySingle;
++ (void)resetRenderQualitySingle;
 + (NSString *)renderQualityMulti;
 + (void)setRenderQualityMulti:(NSString *)quality;
 + (BOOL)isSimulator;
@@ -1089,10 +1091,29 @@ static void IOS2Authenticate(NSData *binData)
     // device framebuffer, while 2 and 3 provide medium and low quality.
     uint8_t factor = [quality isEqualToString:@"low"] ? 3 :
                      ([quality isEqualToString:@"medium"] ? 2 : 1);
-    if (factor > 1 && !application->isDownsampleEnabled()) {
-        application->setDevicePixelRatio(factor);
+    if (factor == s_ios2SingleRenderTextureFactor) {
+        NSLog(@"[ios2] single render quality applied: %@ (downsample=%u)", quality, factor);
+        return;
     }
+    if (factor > 1) {
+        if (!application->isDownsampleEnabled()) application->setDevicePixelRatio(factor);
+        else application->getRenderTexture()->init(factor);
+    } else if (application->isDownsampleEnabled()) {
+        // The bundled Cocos engine exposes a one-way downsample flag. Rebuild
+        // its texture at the native resolution when returning to the launcher.
+        application->getRenderTexture()->init(1);
+    }
+    s_ios2SingleRenderTextureFactor = factor;
     NSLog(@"[ios2] single render quality applied: %@ (downsample=%u)", quality, factor);
+}
+
++ (void)resetRenderQualitySingle
+{
+    cocos2d::Application *application = cocos2d::Application::getInstance();
+    if (!application || !application->isDownsampleEnabled()) return;
+    application->getRenderTexture()->init(1);
+    s_ios2SingleRenderTextureFactor = 1;
+    NSLog(@"[ios2] single render quality reset for launcher (downsample=1)");
 }
 
 + (NSString *)renderQualityMulti
@@ -1692,11 +1713,6 @@ Application* app = nullptr;
     
     [[UIApplication sharedApplication] setStatusBarHidden:YES];
 
-    // Apply the Cocos downsample factor before JSB computes its logical view
-    // and touch coordinate scale. Applying it from main.js after cc.game.run
-    // would leave the management UI laid out for the old coordinate system.
-    [IOS2Native applyRenderQualitySingle];
-    
     //run the cocos2d-x game scene
     app->start();
 

@@ -217,6 +217,9 @@
                 self.logoutPending = false;
                 self.gameStarted = false;
                 if (typeof self._resetScriptRuntime === 'function') self._resetScriptRuntime();
+                if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+                    try { jsb.reflection.callStaticMethod('IOS2Native', 'resetRenderQualitySingle'); } catch (ignored) {}
+                }
                 self._dismissGamePopup();
                 if (self.gameToolbar) self.gameToolbar.active = false;
                 self.background.active = true;
@@ -681,6 +684,9 @@
             if (this.gameToolbar) this.gameToolbar.active = true;
             if (this.background) this.background.active = false;
             if (this.content) this.content.active = false;
+            if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+                try { jsb.reflection.callStaticMethod('IOS2Native', 'applyRenderQualitySingle'); } catch (ignored) {}
+            }
             if (typeof global.__ios2StartGame === 'function') global.__ios2StartGame();
             else if (this.launcher && typeof this.launcher.onLoadFunc === 'function') this.launcher.onLoadFunc();
         },

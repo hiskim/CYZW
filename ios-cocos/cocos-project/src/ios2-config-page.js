@@ -39,29 +39,32 @@
     function qualitySlider(width, height, value, onValue, onCommit) {
         if (!global.fgui || !global.fgui.GSlider) return null;
         var slider = new global.fgui.GSlider();
-        var trackHeight = 6;
-        var gripSize = 28;
+        var trackHeight = 8;
+        var gripSize = 34;
+        var gripInset = gripSize / 2;
+        var travelWidth = Math.max(1, width - gripSize);
+        var trackColor = cc.color(181, 207, 245, 255);
         slider.name = 'IOS2RenderQualitySlider';
         slider.setSize(width, height);
         slider.node.setAnchorPoint(0, 0);
 
         var track = new global.fgui.GGraph();
-        track.setSize(width, trackHeight);
+        track.setSize(travelWidth, trackHeight);
         track.node.setAnchorPoint(0, 0);
-        track.drawRect(0, cc.Color.TRANSPARENT, COLORS.border, 3);
-        track.node.setPosition(0, Math.floor((height - trackHeight) / 2));
+        track.drawRect(0, cc.Color.TRANSPARENT, trackColor, 3);
+        track.node.setPosition(gripInset, Math.floor((height - trackHeight) / 2));
 
         var fill = new global.fgui.GGraph();
-        fill.setSize(width, trackHeight);
+        fill.setSize(travelWidth, trackHeight);
         fill.node.setAnchorPoint(0, 0);
         fill.drawRect(0, cc.Color.TRANSPARENT, COLORS.accent, 3);
-        fill.node.setPosition(0, Math.floor((height - trackHeight) / 2));
+        fill.node.setPosition(gripInset, Math.floor((height - trackHeight) / 2));
 
         var grip = new global.fgui.GGraph();
         grip.setSize(gripSize, gripSize);
         grip.node.setAnchorPoint(0, 0);
         grip.drawEllipse(2, COLORS.accent, cc.Color.WHITE);
-        grip.node.setPosition(-gripSize / 2, (height - gripSize) / 2);
+        grip.node.setPosition(0, (height - gripSize) / 2);
 
         slider.addChild(track);
         slider.addChild(fill);
@@ -71,7 +74,7 @@
         // applied twice when the custom scale below is refreshed.
         slider._barObjectH = null;
         slider._gripObject = grip;
-        slider._barMaxWidth = width;
+        slider._barMaxWidth = travelWidth;
         slider._barMaxWidthDelta = 0;
         slider._barStartX = 0;
         slider.min = 0;
@@ -82,41 +85,65 @@
             var percent = slider.max > slider.min ?
                 (slider.value - slider.min) / (slider.max - slider.min) : 0;
             percent = Math.max(0, Math.min(1, percent));
-            fill.node.setScale(percent, 1);
-            grip.node.setPosition(width * percent - gripSize / 2, (height - gripSize) / 2);
+            // Resize the graph instead of scaling it horizontally. Scaling a
+            // stroked GGraph makes the fill look thick at the low end and
+            // thin at the high end.
+            fill.node.setScale(1, 1);
+            fill.setSize(Math.max(0, travelWidth * percent), trackHeight);
+            grip.node.setPosition(gripInset + travelWidth * percent - gripSize / 2,
+                (height - gripSize) / 2);
         };
         slider.update = render;
         slider.value = QUALITY_LEVELS.indexOf(normalizeQuality(value, 'high'));
         render();
+        var lastCommittedQuality = normalizeQuality(value, 'high');
+        var commitQuality = function (quality) {
+            quality = QUALITY_LEVELS.indexOf(quality) >= 0 ? quality : 'high';
+            if (quality === lastCommittedQuality) return;
+            var committed = typeof onCommit === 'function' ? onCommit(quality) : true;
+            if (committed !== false) lastCommittedQuality = quality;
+        };
         slider.on(global.fgui.Event.STATUS_CHANGED, function () {
             var quality = QUALITY_LEVELS[Math.round(slider.value)] || 'high';
             if (typeof onValue === 'function') onValue(quality);
+            // Persist on the discrete value change itself. On iOS, the end
+            // event can be cancelled when the finger leaves the enlarged
+            // touch target, which used to lose the final high-quality choice.
+            commitQuality(quality);
         });
+
+        // A transparent Cocos touch target gives the FairyGUI slider a stable
+        // hit area even when the knob is between the three small tick labels.
+        var touchTarget = new cc.Node();
+        touchTarget.name = 'IOS2RenderQualityTouchTarget';
+        touchTarget.setAnchorPoint(0, 0);
+        touchTarget.setContentSize(width + 40, height + 24);
+        touchTarget.setPosition(-20, -12);
+        slider.node.addChild(touchTarget, 10);
 
         var dragging = false;
         var updateFromTouch = function (event) {
             var location = event && event.getLocation ? event.getLocation() : null;
             if (!location) return;
             var point = slider.node.convertToNodeSpaceAR(location);
-            slider.updateWithPercent(point.x / width, true);
+            slider.updateWithPercent((point.x - gripInset) / travelWidth, true);
             render();
             if (event.stopPropagation) event.stopPropagation();
         };
-        slider.node.on(cc.Node.EventType.TOUCH_START, function (event) {
+        touchTarget.on(cc.Node.EventType.TOUCH_START, function (event) {
             dragging = true;
+            if (event.captureTouch) event.captureTouch();
             updateFromTouch(event);
         });
-        slider.node.on(cc.Node.EventType.TOUCH_MOVE, function (event) {
+        touchTarget.on(cc.Node.EventType.TOUCH_MOVE, function (event) {
             if (dragging) updateFromTouch(event);
         });
-        slider.node.on(cc.Node.EventType.TOUCH_END, function (event) {
-            if (dragging && typeof onCommit === 'function') {
-                onCommit(QUALITY_LEVELS[Math.round(slider.value)] || 'high');
-            }
+        touchTarget.on(cc.Node.EventType.TOUCH_END, function (event) {
+            if (dragging) commitQuality(QUALITY_LEVELS[Math.round(slider.value)] || 'high');
             dragging = false;
             if (event.stopPropagation) event.stopPropagation();
         });
-        slider.node.on(cc.Node.EventType.TOUCH_CANCEL, function (event) {
+        touchTarget.on(cc.Node.EventType.TOUCH_CANCEL, function (event) {
             dragging = false;
             if (event.stopPropagation) event.stopPropagation();
         });
@@ -201,24 +228,29 @@
                 current.setAnchorPoint(1, 0.5);
                 current.setPosition(width - 24, 49);
                 item.addChild(current, 2);
-                var sliderWidth = Math.min(176, Math.max(132, width - 166));
-                var slider = qualitySlider(sliderWidth, 28, quality, function (next) {
+                var sliderWidth = Math.min(300, Math.max(160, width - 120));
+                var sliderRightInset = Math.max(24, Math.min(110, width - sliderWidth - 24));
+                var slider = qualitySlider(sliderWidth, 34, quality, function (next) {
                     current.__ios2LabelComponent.string = QUALITY_LABELS[next];
                 }, function (next) {
                     if (!writeQuality(storage, nativeMethod, storageKey, next, fallback)) {
                         self._setStatus('无法保存画质设置', COLORS.warning);
-                        return;
+                        return false;
                     }
                     self._setStatus('画质设置已保存，下次启动游戏生效。', COLORS.success);
+                    return true;
                 });
                 if (slider) {
-                    slider.node.setPosition(width - sliderWidth - 34, 10);
+                    slider.node.setPosition(width - sliderWidth - sliderRightInset, 4);
                     item.addChild(slider.node, 3);
                     var labels = ['低', '中', '高'];
+                    var sliderX = width - sliderWidth - sliderRightInset;
+                    var sliderGripInset = 17;
                     for (var index = 0; index < labels.length; index++) {
                         var mark = common.label(labels[index], 12, COLORS.muted);
                         mark.setAnchorPoint(0.5, 0.5);
-                        mark.setPosition(width - sliderWidth - 34 + sliderWidth * index / 2, 6);
+                        mark.setPosition(sliderX + sliderGripInset +
+                            (sliderWidth - sliderGripInset * 2) * index / 2, 2);
                         item.addChild(mark, 4);
                     }
                 } else {

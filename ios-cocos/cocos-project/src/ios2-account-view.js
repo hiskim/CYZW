@@ -264,6 +264,9 @@
         this.root.setSize(width, height);
         this.root.addChild(graph(width, height, COLORS.background));
 
+        // The app hides the iOS status bar and lays out the management shell
+        // edge-to-edge. Do not add the native safe-area inset again here: it
+        // pushes the whole FairyGUI toolbar noticeably below the top edge.
         var top = 40 + this.layoutSafeTop;
         var compact = width < 360;
         var toolbarSize = compact ? 32 : 34;
