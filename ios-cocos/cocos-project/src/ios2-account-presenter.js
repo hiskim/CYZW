@@ -7,6 +7,7 @@
         this.loginService = options.loginService;
         this.onOpenPage = options.onOpenPage;
         this.getEnabledScripts = options.getEnabledScripts;
+        this.wakePerformance = options.wakePerformance;
         var self = this;
         this.view = new global.IOS2AccountView({
             storage: this.repository.storage,
@@ -16,7 +17,10 @@
             multiOpen: function (names) { self.multiOpen(names); },
             remove: function (name) { self.remove(name); },
             openScripts: function () { self.onOpenPage(1); },
-            openConfig: function () { self.onOpenPage(2); }
+            openConfig: function () { self.onOpenPage(2); },
+            wakePerformance: function (reason) {
+                if (typeof self.wakePerformance === 'function') self.wakePerformance(reason);
+            }
         });
         this.view.setAccounts(this.repository.cached());
     }
@@ -38,6 +42,10 @@
     };
 
     IOS2AccountPresenter.prototype.hide = function () { this.view.hide(); };
+
+    IOS2AccountPresenter.prototype.isScrollNavigation = function () {
+        return !!(this.view && this.view.navigationMode === 'scroll');
+    };
 
     IOS2AccountPresenter.prototype.importAccounts = function () {
         this.view.setStatus('正在打开文件选择器…');

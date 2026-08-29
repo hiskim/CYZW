@@ -52,6 +52,11 @@
                 repository: this.accountRepository,
                 loginService: new global.IOS2LoginService(),
                 onOpenPage: function (page) { self.showPage(page); },
+                wakePerformance: function (reason) {
+                    if (typeof global.__ios2WakeLauncherIdlePerformance === 'function') {
+                        global.__ios2WakeLauncherIdlePerformance(reason);
+                    }
+                },
                 getEnabledScripts: function () {
                     if (self._runtimeBackend() !== 'webkit') return [];
                     return typeof self._enabledScriptRecords === 'function' ? self._enabledScriptRecords([]) : [];
@@ -153,6 +158,11 @@
                 this._setFairyRootActive(true);
                 this._setLegacyChromeVisible(false);
                 this.accountPresenter.show();
+                if (this.accountPresenter.isScrollNavigation &&
+                    this.accountPresenter.isScrollNavigation() &&
+                    typeof global.__ios2KeepLauncherActivePerformance === 'function') {
+                    global.__ios2KeepLauncherActivePerformance('account scroll page');
+                }
                 this._consumePendingSingleLogin();
                 return;
             }

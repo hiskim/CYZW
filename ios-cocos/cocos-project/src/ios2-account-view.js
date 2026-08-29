@@ -316,6 +316,8 @@
             this.list.columnGap = 12;
             this.list.scrollItemToViewOnClick = false;
             this.list.setupScroll(verticalScrollBuffer());
+            this.list.on(fgui.Event.TOUCH_BEGIN, this._onListActivity, this);
+            this.list.on(fgui.Event.SCROLL, this._onListActivity, this);
             this.list.on(fgui.Event.SCROLL_END, this._saveNavigationState, this);
         } else {
             this.list.overflow = fgui.OverflowType.Hidden;
@@ -326,6 +328,12 @@
         this.status.setPosition(24, height - 48);
         this.root.addChild(this.status);
         this.render();
+    };
+
+    IOS2AccountView.prototype._onListActivity = function () {
+        if (typeof this.actions.wakePerformance === 'function') {
+            this.actions.wakePerformance('account list scroll');
+        }
     };
 
     IOS2AccountView.prototype._row = function (record, width, y) {

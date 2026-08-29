@@ -10,6 +10,9 @@ var IOS2_HSDK_VERBOSE_DEBUG_KEY = 'ios2.hsdkVerboseDebug';
 var ios2LauncherFreezeTimer = null;
 var ios2LauncherFrozen = false;
 var ios2LauncherActivityWakeInstalled = false;
+var ios2LauncherActivePerformancePinned = false;
+var ios2LauncherActiveFrameRateCache = 0;
+var ios2LauncherActiveFrameRateCacheAt = 0;
 function ios2Trace(message) {
     try {
         if (window.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
@@ -458,10 +461,33 @@ function ios2FreezeLauncherRendering(reason) {
 
 function ios2ScheduleLauncherFreeze(reason) {
     ios2ClearLauncherFreezeTimer();
+    if (ios2LauncherActivePerformancePinned) return;
     if (!ios2CanThrottleLauncher()) return;
     ios2LauncherFreezeTimer = setTimeout(function () {
         ios2FreezeLauncherRendering(reason);
     }, IOS2_LAUNCHER_FREEZE_DELAY_MS);
+}
+
+function ios2LauncherActiveFrameRate() {
+    var now = Date.now();
+    if (ios2LauncherActiveFrameRateCache && now - ios2LauncherActiveFrameRateCacheAt < 1000) {
+        return ios2LauncherActiveFrameRateCache;
+    }
+    var preferredFrameRate = ios2PreferredFrameRate();
+    // A legacy 15 FPS preference must not make an active scroll animation
+    // unusable. The configuration page currently exposes 30/45/60 as active
+    // choices, while 15 remains the launcher's idle rate.
+    ios2LauncherActiveFrameRateCache = preferredFrameRate > IOS2_LAUNCHER_IDLE_FRAME_RATE ? preferredFrameRate :
+        IOS2_ACTIVE_DEFAULT_FRAME_RATE;
+    ios2LauncherActiveFrameRateCacheAt = now;
+    return ios2LauncherActiveFrameRateCache;
+}
+
+function ios2ShouldKeepAccountPageActive() {
+    var manager = window.__ios2Manager;
+    var presenter = manager && manager.accountPresenter;
+    return !!(manager && manager.page === 0 && presenter &&
+        typeof presenter.isScrollNavigation === 'function' && presenter.isScrollNavigation());
 }
 
 function ios2InstallLauncherActivityWake() {
@@ -472,8 +498,8 @@ function ios2InstallLauncherActivityWake() {
     var wake = function () {
         if (!ios2CanThrottleLauncher()) return;
         ios2ResumeLauncherRendering('input');
-        ios2SetFrameRate(IOS2_LAUNCHER_IDLE_FRAME_RATE, 'launcher input', true);
-        ios2ScheduleLauncherFreeze('input idle');
+        ios2SetFrameRate(ios2LauncherActiveFrameRate(), 'launcher input', true);
+        if (!ios2LauncherActivePerformancePinned) ios2ScheduleLauncherFreeze('input idle');
     };
     ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'mousedown', 'mouseup', 'mousemove'].forEach(function (type) {
         target.addEventListener(type, wake, false);
@@ -486,16 +512,18 @@ function ios2SetFrameRate(frameRate, reason, transient) {
     try {
         var game = window.cc && cc.game;
         var previousBypass = game && game.__ios2AllowTransientFrameRate;
+        var changed = true;
         if (game) game.__ios2AllowTransientFrameRate = !!transient;
         if (game && typeof game.setFrameRate === 'function') {
-            if (typeof game.getFrameRate !== 'function' || game.getFrameRate() !== frameRate) {
+            changed = typeof game.getFrameRate !== 'function' || game.getFrameRate() !== frameRate;
+            if (changed) {
                 game.setFrameRate(frameRate);
             }
         } else if (window.jsb && typeof jsb.setPreferredFramesPerSecond === 'function') {
             jsb.setPreferredFramesPerSecond(frameRate);
         }
         if (game) game.__ios2AllowTransientFrameRate = previousBypass;
-        ios2Trace('runtime frame rate=' + frameRate + ' FPS (' + reason + ')');
+        if (changed) ios2Trace('runtime frame rate=' + frameRate + ' FPS (' + reason + ')');
     } catch (error) {
         try { if (window.cc && cc.game) cc.game.__ios2AllowTransientFrameRate = false; } catch (ignored) {}
         ios2Trace('unable to set frame rate ' + frameRate + ': ' + (error.message || error));
@@ -504,19 +532,38 @@ function ios2SetFrameRate(frameRate, reason, transient) {
 
 window.__ios2ApplyLauncherIdlePerformance = function (reason) {
     if (window._hortor_launcher_started) return;
-    window.__ios2WakeLauncherIdlePerformance(reason || 'launcher idle');
+    if (ios2ShouldKeepAccountPageActive() &&
+        typeof window.__ios2KeepLauncherActivePerformance === 'function') {
+        window.__ios2KeepLauncherActivePerformance(reason || 'account scroll page');
+        return;
+    }
+    ios2LauncherActivePerformancePinned = false;
+    ios2InstallLauncherActivityWake();
+    ios2ResumeLauncherRendering(reason || 'launcher idle');
+    ios2SetFrameRate(IOS2_LAUNCHER_IDLE_FRAME_RATE, 'launcher idle ' + (reason || ''), true);
+    ios2ScheduleLauncherFreeze(reason || 'launcher idle');
 };
 
 window.__ios2WakeLauncherIdlePerformance = function (reason) {
     if (window._hortor_launcher_started) return;
     ios2InstallLauncherActivityWake();
     ios2ResumeLauncherRendering(reason);
-    ios2SetFrameRate(IOS2_LAUNCHER_IDLE_FRAME_RATE, 'launcher active ' + (reason || ''), true);
-    ios2ScheduleLauncherFreeze(reason || 'launcher idle');
+    ios2SetFrameRate(ios2LauncherActiveFrameRate(), 'launcher active ' + (reason || ''), true);
+    if (!ios2LauncherActivePerformancePinned) ios2ScheduleLauncherFreeze(reason || 'launcher idle');
+};
+
+window.__ios2KeepLauncherActivePerformance = function (reason) {
+    if (window._hortor_launcher_started) return;
+    ios2LauncherActivePerformancePinned = true;
+    ios2ClearLauncherFreezeTimer();
+    ios2InstallLauncherActivityWake();
+    ios2ResumeLauncherRendering(reason || 'launcher active');
+    ios2SetFrameRate(ios2LauncherActiveFrameRate(), 'launcher active persistent ' + (reason || ''), true);
 };
 
 window.__ios2RestorePerformancePreferences = function (reason) {
     try {
+        ios2LauncherActivePerformancePinned = false;
         ios2ClearLauncherFreezeTimer();
         ios2ResumeLauncherRendering(reason);
         var frameRate = ios2PreferredFrameRate();
