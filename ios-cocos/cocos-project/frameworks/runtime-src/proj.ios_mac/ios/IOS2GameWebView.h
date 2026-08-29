@@ -2,6 +2,9 @@
 
 @interface IOS2GameWebView : NSObject
 + (void)showInstances:(NSArray<NSDictionary *> *)instances scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON;
++ (void)appendInstanceWithAccount:(NSString *)account
+                         accountID:(NSString *)accountID
+                      authResponse:(NSString *)authResponse;
 + (void)hide;
 + (void)closeAll;
 + (void)shutdownAndCloseAll;

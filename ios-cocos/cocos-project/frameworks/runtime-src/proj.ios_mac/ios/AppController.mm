@@ -642,10 +642,32 @@ static void IOS2Authenticate(NSData *binData)
     });
 }
 
+static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
+{
+    NSURL *url = [NSURL URLWithString:@"https://xxz-xyzw.hortorgames.com/login/authuser?_seq=1"];
+    IOS2StartPOST(url, binData,
+                  @{ @"Content-Type": @"application/octet-stream",
+                     @"O4e-Encoding": @"lx",
+                     @"Connection": @"close" },
+                  ^(NSData *data, NSHTTPURLResponse *http, NSError *error) {
+        s_ios2LoginBusy = NO;
+        if (error || !http || http.statusCode < 200 || http.statusCode >= 300 || data.length <= 4) {
+            NSString *message = error.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode];
+            IOS2CallJavaScript(@"__ios2BinLoginFailed", message);
+            return;
+        }
+        NSString *authResponse = [data base64EncodedStringWithOptions:0];
+        NSString *accountID = IOS2AccountIDForBinData(binData) ?: @"";
+        [IOS2GameWebView appendInstanceWithAccount:name accountID:accountID authResponse:authResponse];
+        IOS2ListBinFiles();
+    });
+}
+
 @interface IOS2BinPickerDelegate : NSObject <UIDocumentPickerDelegate>
 @property (nonatomic, assign) BOOL importOnly;
 @property (nonatomic, assign) BOOL scriptImport;
 @property (nonatomic, assign) BOOL settingsImport;
+@property (nonatomic, assign) BOOL groupAdd;
 @end
 
 @implementation IOS2BinPickerDelegate
@@ -754,11 +776,15 @@ static void IOS2Authenticate(NSData *binData)
         return;
     }
 
-    IOS2SetAccountIDForBinData(data);
-    // Keep the selected account available for later switching without
-    // creating the unused ios2/last.bin marker file.
-    IOS2StoreBin(data, url.lastPathComponent);
-    IOS2Authenticate(data);
+    NSString *storedName = IOS2StoreBin(data, url.lastPathComponent);
+    if (self.groupAdd && [IOS2GameWebView instanceCount] > 1) {
+        IOS2AuthenticateAdditionalBin(data, storedName ?: url.lastPathComponent);
+    } else {
+        IOS2SetAccountIDForBinData(data);
+        // Keep the selected account available for later switching without
+        // creating the unused ios2/last.bin marker file.
+        IOS2Authenticate(data);
+    }
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller
@@ -1158,6 +1184,7 @@ static void IOS2Authenticate(NSData *binData)
         IOS2BinPickerDelegate *delegate = [IOS2BinPickerDelegate new];
         delegate.importOnly = NO;
         delegate.scriptImport = NO;
+        delegate.groupAdd = [IOS2GameWebView instanceCount] > 1;
         s_ios2PickerDelegate = delegate;
         picker.delegate = (id<UIDocumentPickerDelegate>)s_ios2PickerDelegate;
         picker.allowsMultipleSelection = NO;

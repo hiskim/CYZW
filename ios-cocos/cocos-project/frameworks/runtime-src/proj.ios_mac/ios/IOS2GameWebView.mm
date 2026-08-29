@@ -46,6 +46,8 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @interface IOS2GameWebView () <WKNavigationDelegate, WKScriptMessageHandler>
 @property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *instances;
 @property (nonatomic, strong) UIView *toolbar;
+@property (nonatomic, strong) UIView *groupContainer;
+@property (nonatomic, strong) UIView *emptySlot;
 @property (nonatomic, strong) UILabel *toolbarTitle;
 @property (nonatomic, strong) UIButton *switchButton;
 @property (nonatomic, strong) UIButton *groupControlButton;
@@ -67,6 +69,9 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 - (void)groupControlTapped;
 - (void)tuckGroupControlButton;
 - (void)showGroupControlButton;
+- (void)ensureGroupContainer;
+- (void)addBinToGroupTapped;
+- (void)appendInstanceWithAccount:(NSString *)account accountID:(NSString *)accountID authResponse:(NSString *)authResponse;
 + (NSString *)layoutMode;
 + (void)setLayoutMode:(NSString *)mode;
 @end
@@ -674,6 +679,52 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     });
 }
 
++ (void)appendInstanceWithAccount:(NSString *)account
+                         accountID:(NSString *)accountID
+                      authResponse:(NSString *)authResponse
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[self sharedInstance] appendInstanceWithAccount:account
+                                                 accountID:accountID
+                                              authResponse:authResponse];
+    });
+}
+
+- (void)appendInstanceWithAccount:(NSString *)account accountID:(NSString *)accountID authResponse:(NSString *)authResponse
+{
+    if (self.instances.count < 1 || self.instances.count >= 4 || !self.groupContainer || !self.presenter.view) return;
+    NSString *instanceID = NSUUID.UUID.UUIDString;
+    WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
+    configuration.processPool = IOS2SharedWebProcessPool();
+    [configuration setURLSchemeHandler:[IOS2GameSchemeHandler sharedInstance] forURLScheme:@"ios2-game"];
+    configuration.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
+    configuration.allowsInlineMediaPlayback = YES;
+    WKUserContentController *controller = configuration.userContentController;
+    [controller addScriptMessageHandler:self name:@"ios2Game"];
+    WKWebView *webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
+    [configuration release];
+    webView.navigationDelegate = self;
+    webView.translatesAutoresizingMaskIntoConstraints = YES;
+    webView.scrollView.bounces = NO;
+    webView.layer.cornerRadius = 12.0;
+    webView.layer.masksToBounds = YES;
+    [self.groupContainer addSubview:webView];
+    NSMutableDictionary *record = [@{ @"id": instanceID,
+                                      @"account": account ?: @"账号",
+                                      @"accountID": accountID ?: @"",
+                                      @"authResponse": authResponse ?: @"",
+                                      @"view": webView } mutableCopy];
+    [self.instances addObject:record];
+    [record release];
+    [webView release];
+    NSDictionary *added = self.instances.lastObject;
+    [self installBootstrapForRecord:added];
+    NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
+    [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
+    [self layoutInstances];
+    [self configureToolbar];
+}
+
 - (void)showInstances:(NSArray<NSDictionary *> *)instanceConfigs scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON
 {
     if (instanceConfigs.count < 1 || instanceConfigs.count > 4) return;
@@ -682,6 +733,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.manifestJSON = manifestJSON ?: @"{}";
     self.presenter = IOS2GamePresenter();
     if (!self.presenter.view) return;
+    [self ensureGroupContainer];
     [self ensureToolbar];
     self.toolbar.hidden = NO;
     // Four independent Cocos pages can briefly hold the encrypted bundle,
@@ -718,7 +770,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         webView.scrollView.bounces = NO;
         webView.layer.cornerRadius = 12.0;
         webView.layer.masksToBounds = YES;
-        [self.presenter.view addSubview:webView];
+        [self.groupContainer addSubview:webView];
         NSString *accountID = [item[@"accountID"] isKindOfClass:[NSString class]] ? item[@"accountID"] : @"";
         NSMutableDictionary *record = [@{ @"id": instanceID,
                                           @"account": accountName,
@@ -731,7 +783,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     }
     [self configureToolbar];
     [self layoutInstances];
-    [self.presenter.view bringSubviewToFront:self.toolbar];
+    [self.groupContainer bringSubviewToFront:self.toolbar];
     NSLog(@"[ios2] queued %lu Web game instances at %ld FPS (startup mode=%@)",
           (unsigned long)self.instances.count, (long)IOS2WebPreferredFrameRate(), startupMode);
     if ([startupMode isEqualToString:@"serial"]) {
@@ -882,18 +934,18 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
                                              selector:@selector(tuckGroupControlButton)
                                                object:nil];
     self.groupControlCentered = NO;
-    // A positive offset moves the center to the right, leaving only half the
-    // control exposed as a discoverable edge affordance.
-    self.groupControlCenterXConstraint.constant = MAX(28.0, self.presenter.view.bounds.size.width * 0.5 + 29.0);
-    [self.presenter.view layoutIfNeeded];
+    // Move the center to the right edge, leaving half the control exposed as
+    // a discoverable edge affordance.
+    self.groupControlCenterXConstraint.constant = self.groupContainer.bounds.size.width * 0.5;
+    [self.groupContainer layoutIfNeeded];
 }
 
 - (void)tuckGroupControlButton
 {
     if (!self.groupControlButton || self.groupControlButton.hidden) return;
     self.groupControlCentered = NO;
-    self.groupControlCenterXConstraint.constant = MAX(28.0, self.presenter.view.bounds.size.width * 0.5 + 29.0);
-    [UIView animateWithDuration:0.24 animations:^{ [self.presenter.view layoutIfNeeded]; }];
+    self.groupControlCenterXConstraint.constant = self.groupContainer.bounds.size.width * 0.5;
+    [UIView animateWithDuration:0.24 animations:^{ [self.groupContainer layoutIfNeeded]; }];
 }
 
 - (void)groupControlTapped
@@ -904,7 +956,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
                                              selector:@selector(tuckGroupControlButton)
                                                object:nil];
     self.groupControlCenterXConstraint.constant = 0.0;
-    [UIView animateWithDuration:0.24 animations:^{ [self.presenter.view layoutIfNeeded]; }
+    [UIView animateWithDuration:0.24 animations:^{ [self.groupContainer layoutIfNeeded]; }
                      completion:^(BOOL finished) {
         (void)finished;
         [self showGameMenu];
@@ -914,6 +966,28 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
                afterDelay:kIOS2WebGroupControlIdleDelay];
 }
 
+- (void)ensureGroupContainer
+{
+    if (self.groupContainer.superview) {
+        self.groupContainer.hidden = NO;
+        return;
+    }
+    UIView *container = [UIView new];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    container.backgroundColor = UIColor.blackColor;
+    container.clipsToBounds = YES;
+    self.groupContainer = container;
+    [self.presenter.view addSubview:container];
+    [NSLayoutConstraint activateConstraints:@[
+        [container.leadingAnchor constraintEqualToAnchor:self.presenter.view.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:self.presenter.view.trailingAnchor],
+        [container.topAnchor constraintEqualToAnchor:self.presenter.view.topAnchor],
+        [container.bottomAnchor constraintEqualToAnchor:self.presenter.view.bottomAnchor]
+    ]];
+    [self.presenter.view layoutIfNeeded];
+    [container release];
+}
+
 - (void)ensureToolbar
 {
     if (self.toolbar.superview) return;
@@ -921,7 +995,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     toolbar.translatesAutoresizingMaskIntoConstraints = NO;
     toolbar.backgroundColor = [UIColor colorWithRed:0.937 green:0.957 blue:0.988 alpha:1.0];
     self.toolbar = toolbar;
-    [self.presenter.view addSubview:toolbar];
+    [self.groupContainer addSubview:toolbar];
 
     UILabel *title = [UILabel new];
     title.translatesAutoresizingMaskIntoConstraints = NO;
@@ -945,11 +1019,11 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     UIButton *gear = [self toolbarButtonWithSystemName:@"gearshape.fill" fallback:@"⚙" action:@selector(showGameMenu)];
     [toolbar addSubview:gear];
 
-    UILayoutGuide *safeArea = self.presenter.view.safeAreaLayoutGuide;
+    UILayoutGuide *safeArea = self.groupContainer.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [toolbar.leadingAnchor constraintEqualToAnchor:self.presenter.view.leadingAnchor],
-        [toolbar.trailingAnchor constraintEqualToAnchor:self.presenter.view.trailingAnchor],
-        [toolbar.topAnchor constraintEqualToAnchor:self.presenter.view.topAnchor],
+        [toolbar.leadingAnchor constraintEqualToAnchor:self.groupContainer.leadingAnchor],
+        [toolbar.trailingAnchor constraintEqualToAnchor:self.groupContainer.trailingAnchor],
+        [toolbar.topAnchor constraintEqualToAnchor:self.groupContainer.topAnchor],
         // Keep the game viewport close to the top edge in WebKit mode. The
         // title and controls remain inside the safe area without consuming a
         // second, oversized status-bar band.
@@ -992,10 +1066,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     groupButton.accessibilityLabel = @"群控面板";
     groupButton.accessibilityIdentifier = @"ios2.group-control";
     self.groupControlButton = groupButton;
-    [self.presenter.view addSubview:groupButton];
-    NSLayoutConstraint *centerX = [groupButton.centerXAnchor constraintEqualToAnchor:self.presenter.view.centerXAnchor];
+    [self.groupContainer addSubview:groupButton];
+    NSLayoutConstraint *centerX = [groupButton.centerXAnchor constraintEqualToAnchor:self.groupContainer.centerXAnchor];
     self.groupControlCenterXConstraint = centerX;
-    UILayoutGuide *groupSafeArea = self.presenter.view.safeAreaLayoutGuide;
+    UILayoutGuide *groupSafeArea = self.groupContainer.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [groupButton.widthAnchor constraintEqualToConstant:58.0],
         [groupButton.heightAnchor constraintEqualToConstant:58.0],
@@ -1044,7 +1118,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             [self configureToolbar];
             self.groupControlCentered = YES;
             self.groupControlCenterXConstraint.constant = 0.0;
-            [UIView animateWithDuration:0.2 animations:^{ [self.presenter.view layoutIfNeeded]; }];
+            [UIView animateWithDuration:0.2 animations:^{ [self.groupContainer layoutIfNeeded]; }];
             [NSObject cancelPreviousPerformRequestsWithTarget:self
                                                      selector:@selector(tuckGroupControlButton)
                                                        object:nil];
@@ -1119,11 +1193,20 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [self presentToolbarAlert:list source:self.switchButton];
 }
 
+- (void)addBinToGroupTapped
+{
+    // The empty grid slot authenticates and appends a new child WebView while
+    // keeping the existing group container alive.
+    Class nativeClass = NSClassFromString(@"IOS2Native");
+    SEL selector = NSSelectorFromString(@"selectLoginBin");
+    if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector];
+}
+
 - (void)layoutInstances
 {
     NSUInteger count = self.instances.count;
-    if (!count || !self.presenter.view) return;
-    UIView *content = self.presenter.view;
+    if (!count || !self.groupContainer) return;
+    UIView *content = self.groupContainer;
     [content layoutIfNeeded];
     CGRect bounds = content.bounds;
     CGFloat top = CGRectGetMaxY(self.toolbar.frame);
@@ -1132,6 +1215,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     CGFloat height = MAX(1.0, CGRectGetHeight(bounds) - top);
     BOOL stacked = [[[self class] layoutMode] isEqualToString:@"stacked"] && count > 1;
     CGFloat gutter = stacked ? 12.0 : 2.0;
+    [self.emptySlot removeFromSuperview];
+    self.emptySlot = nil;
 
     // Frames keep both modes deterministic and avoid retaining an old
     // constraint graph when the user switches layouts from the floating menu.
@@ -1147,7 +1232,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     }
     if (!stacked) {
         NSUInteger columns = count == 1 ? 1 : 2;
-        NSUInteger rows = (count + columns - 1) / columns;
+        // Keep two instances in the same 2x2 geometry as four instances.
+        // The third cell is a real, interactive empty slot.
+        NSUInteger slotCount = count == 2 ? 3 : count;
+        NSUInteger rows = (slotCount + columns - 1) / columns;
         CGFloat cellWidth = (width - gutter * (columns - 1)) / columns;
         CGFloat cellHeight = (height - gutter * (rows - 1)) / rows;
         for (NSUInteger index = 0; index < count; index++) {
@@ -1156,6 +1244,27 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             NSUInteger row = index / columns;
             view.frame = CGRectMake(column * (cellWidth + gutter), top + row * (cellHeight + gutter),
                                     cellWidth, cellHeight);
+        }
+        if (count == 2) {
+            UIView *slot = [UIView new];
+            slot.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+            slot.layer.cornerRadius = 12.0;
+            slot.layer.borderWidth = 1.0;
+            slot.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+            slot.clipsToBounds = YES;
+            UIButton *add = [UIButton buttonWithType:UIButtonTypeSystem];
+            add.frame = CGRectMake(0.0, 0.0, cellWidth, cellHeight);
+            add.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            add.tintColor = [UIColor colorWithRed:0.36 green:0.68 blue:1.0 alpha:1.0];
+            [add setTitle:@"+  添加 Bin" forState:UIControlStateNormal];
+            add.titleLabel.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightMedium];
+            [add addTarget:self action:@selector(addBinToGroupTapped) forControlEvents:UIControlEventTouchUpInside];
+            add.accessibilityLabel = @"添加 Bin 文件";
+            [slot addSubview:add];
+            slot.frame = CGRectMake(0.0, top + (cellHeight + gutter), cellWidth, cellHeight);
+            [content addSubview:slot];
+            self.emptySlot = slot;
+            [slot release];
         }
     } else {
         CGFloat cardWidth = MIN(width - 24.0, MAX(220.0, width * 0.84));
@@ -1192,6 +1301,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         IOS2GameWebView *manager = [self sharedInstance];
+        manager.groupContainer.hidden = YES;
         manager.toolbar.hidden = YES;
         manager.groupControlButton.hidden = YES;
         for (NSDictionary *record in manager.instances) ((WKWebView *)record[@"view"]).hidden = YES;
@@ -1242,7 +1352,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     __block NSUInteger remaining = instanceCount;
     NSString *script = @"if (typeof window.__ios2ShutdownGame === 'function') "
                         "window.__ios2ShutdownGame();void 0;";
-    for (NSDictionary *record in self.instances) {
+        for (NSDictionary *record in self.instances) {
         WKWebView *webView = record[@"view"];
         [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
             if (error) NSLog(@"[ios2] Cocos game shutdown request failed: %@", error.localizedDescription);
@@ -1290,6 +1400,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [self.groupControlButton removeFromSuperview];
     self.groupControlButton = nil;
     self.groupControlCenterXConstraint = nil;
+    [self.groupContainer removeFromSuperview];
+    self.groupContainer = nil;
+    self.emptySlot = nil;
     self.toolbarTitle = nil;
     self.switchButton = nil;
     self.presenter = nil;
