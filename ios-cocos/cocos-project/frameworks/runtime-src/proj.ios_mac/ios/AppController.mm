@@ -36,6 +36,7 @@
 #import <OpenGLES/ES2/gl.h>
 #import <TargetConditionals.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <mach/mach.h>
 #include <string.h>
 
 #include "cocos/scripting/js-bindings/jswrapper/SeApi.h"
@@ -63,6 +64,7 @@ static NSString * const kIOS2GameVersion = @"0.33.0-ios";
 static NSString * const kIOS2HSDKVersion = @"1.4.0";
 static NSString * const kIOS2FrameRateDefaultsKey = @"ios2.preferredFrameRate";
 static NSString * const kIOS2ShowFPSDefaultsKey = @"ios2.showFPS";
+static NSString * const kIOS2HSDKVerboseDebugDefaultsKey = @"ios2.hsdkVerboseDebug";
 static NSString * const kIOS2RuntimeBackendDefaultsKey = @"ios2.runtimeBackend";
 
 static NSInteger IOS2PreferredFrameRate(void)
@@ -90,6 +92,20 @@ static void IOS2ApplyPerformancePreferences(void)
     NSLog(@"[ios2] restoring performance preferences: %ld FPS", (long)frameRate);
     application->setPreferredFramesPerSecond((int)frameRate);
     application->setDisplayStats([[NSUserDefaults standardUserDefaults] boolForKey:kIOS2ShowFPSDefaultsKey]);
+}
+
+static BOOL IOS2HSDKVerboseDebugEnabled(void)
+{
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kIOS2HSDKVerboseDebugDefaultsKey];
+}
+
+static double IOS2ResidentMemoryMB(void)
+{
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    kern_return_t result = task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count);
+    if (result != KERN_SUCCESS) return -1.0;
+    return (double)info.resident_size / 1024.0 / 1024.0;
 }
 
 static NSString *IOS2AccountIDForBinData(NSData *binData)
@@ -773,9 +789,12 @@ static void IOS2Authenticate(NSData *binData)
 + (void)fetchManifest:(NSString *)version;
 + (void)applyPerformancePreferences;
 + (NSInteger)preferredFrameRate;
++ (NSString *)residentMemoryMB;
 + (void)setPreferredFrameRate:(NSInteger)frameRate;
 + (BOOL)showFPS;
 + (void)setShowFPS:(BOOL)showFPS;
++ (BOOL)hsdkVerboseDebug;
++ (void)setHSDKVerboseDebug:(BOOL)enabled;
 + (BOOL)isSimulator;
 + (void)trace:(NSString *)message;
 + (void)showScripts:(NSString *)json;
@@ -806,6 +825,13 @@ static void IOS2Authenticate(NSData *binData)
 + (void)trace:(NSString *)message
 {
     NSLog(@"[ios2][js] %@", message ?: @"<empty>");
+}
+
++ (NSString *)residentMemoryMB
+{
+    double memoryMB = IOS2ResidentMemoryMB();
+    if (memoryMB < 0) return @"-1";
+    return [NSString stringWithFormat:@"%.1f", memoryMB];
 }
 
 + (void)showScripts:(NSString *)json
@@ -1001,6 +1027,18 @@ static void IOS2Authenticate(NSData *binData)
     [[NSUserDefaults standardUserDefaults] setBool:showFPS forKey:kIOS2ShowFPSDefaultsKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
     IOS2ApplyPerformancePreferences();
+}
+
++ (BOOL)hsdkVerboseDebug
+{
+    return IOS2HSDKVerboseDebugEnabled();
+}
+
++ (void)setHSDKVerboseDebug:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kIOS2HSDKVerboseDebugDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSLog(@"[ios2] HSDK verbose debug %@", enabled ? @"enabled" : @"disabled");
 }
 
 + (void)selectLoginBin
@@ -1357,7 +1395,15 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
     NSString *instanceID = [request[@"__ios2Instance"] isKindOfClass:[NSString class]] ? request[@"__ios2Instance"] : @"";
     NSString *previousTarget = s_ios2HSDKTargetInstanceID;
     s_ios2HSDKTargetInstanceID = instanceID.length ? instanceID : nil;
-    NSLog(@"[ios2] HSDK request action=%@ extra=%@", action, extra);
+    BOOL isReportLogPost = [action isEqualToString:@"report_log_post"];
+    BOOL verboseHSDK = IOS2HSDKVerboseDebugEnabled();
+    if (isReportLogPost && verboseHSDK) {
+        NSString *eventName = [extra[@"eventName"] isKindOfClass:[NSString class]] ? extra[@"eventName"] : @"";
+        NSString *eventType = [extra[@"eventType"] isKindOfClass:[NSString class]] ? extra[@"eventType"] : @"";
+        NSLog(@"[ios2] HSDK analytics action=report_log_post event=%@ type=%@", eventName, eventType);
+    } else if (!isReportLogPost && verboseHSDK) {
+        NSLog(@"[ios2] HSDK request action=%@ extra=%@", action, extra);
+    }
 
     if ([action isEqualToString:@"game-init"]) {
         UIDevice *device = UIDevice.currentDevice;
@@ -1489,6 +1535,11 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
         // the game's listener as if the event had happened. In particular,
         // game_addiction_quit would make the game close during scene loading.
         NSLog(@"[ios2] HSDK listener registered action=%@", action);
+    } else if (isReportLogPost) {
+        // HSDK sends analytics through a fire-and-forget path. It does not
+        // create a matching promise for this action, so a native reply only
+        // allocates response JSON/script strings and makes HSDK log
+        // "promiseList is empty" on every page transition.
     } else {
         // Resolve optional HSDK calls so a missing store/share/analytics
         // service cannot leave a game's promise chain pending.

@@ -6,6 +6,7 @@ window.__ios2LaunchScene = null;
 var IOS2_LAUNCHER_IDLE_FRAME_RATE = 15;
 var IOS2_ACTIVE_DEFAULT_FRAME_RATE = 60;
 var IOS2_LAUNCHER_FREEZE_DELAY_MS = 1600;
+var IOS2_HSDK_VERBOSE_DEBUG_KEY = 'ios2.hsdkVerboseDebug';
 var ios2LauncherFreezeTimer = null;
 var ios2LauncherFrozen = false;
 var ios2LauncherActivityWakeInstalled = false;
@@ -17,6 +18,50 @@ function ios2Trace(message) {
     } catch (error) {
     }
 }
+
+function ios2HSDKVerboseDebugEnabled() {
+    if (window.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+        try {
+            return !!jsb.reflection.callStaticMethod('IOS2Native', 'hsdkVerboseDebug');
+        } catch (ignored) {
+        }
+    }
+    try {
+        return window.localStorage && localStorage.getItem(IOS2_HSDK_VERBOSE_DEBUG_KEY) === '1';
+    } catch (ignored) {
+    }
+    return false;
+}
+
+function ios2ApplyHSDKVerboseDebug(enabled, reason) {
+    enabled = !!enabled;
+    try {
+        if (window.HSDK && HSDK.config) {
+            HSDK.config.isOpenDebug = enabled;
+        }
+    } catch (ignored) {
+    }
+    ios2Trace('HSDK verbose debug=' + (enabled ? 'on' : 'off') +
+        (reason ? ' (' + reason + ')' : ''));
+}
+
+window.__ios2SetHSDKVerboseDebug = function (enabled) {
+    enabled = !!enabled;
+    try {
+        if (window.localStorage) {
+            localStorage.setItem(IOS2_HSDK_VERBOSE_DEBUG_KEY, enabled ? '1' : '0');
+        }
+    } catch (ignored) {
+    }
+    if (window.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+        try {
+            jsb.reflection.callStaticMethod('IOS2Native', 'setHSDKVerboseDebug:', enabled);
+        } catch (ignored) {
+        }
+    }
+    ios2ApplyHSDKVerboseDebug(enabled, 'config');
+    return enabled;
+};
 
 // The launcher normally copies battleVersion from cc.sys.manifestResult. Keep
 // that value authoritative on the native startup path as well: older launcher
@@ -96,6 +141,251 @@ function ios2InstallBattleDownloadTrace() {
     } catch (error) {
         ios2Trace('battle download trace unavailable: ' + (error.stack || error.message || error));
     }
+}
+
+var IOS2_NATIVE_SOFT_CLEANUP_DELAY_MS = 5000;
+var IOS2_NATIVE_SOFT_CLEANUP_MIN_INTERVAL_MS = 15000;
+var IOS2_NATIVE_MEMORY_SAMPLE_MIN_INTERVAL_MS = 2500;
+var IOS2_NATIVE_MEMORY_PAGE_NAMES = {
+    Home: true,
+    MainPanel: true,
+    LegionRoomPanel: true,
+    LegionScene: true,
+    legion: true,
+    NormalLoadingPanel: true
+};
+var ios2NativeMemoryState = {
+    cleanupTimer: null,
+    sampleTimer: null,
+    lastCleanup: 0,
+    lastSample: 0,
+    pendingCleanupReason: '',
+    pendingSampleReason: '',
+    switchCount: 0,
+    cleanupBusy: false
+};
+
+function ios2ManagedAssetCount() {
+    try {
+        var assets = window.cc && cc.assetManager && cc.assetManager.assets;
+        if (!assets) return -1;
+        if (typeof assets.count === 'number') return assets.count;
+        if (assets._map) return Object.keys(assets._map).length;
+    } catch (error) {
+    }
+    return -1;
+}
+
+function ios2IsTrackedPageName(name) {
+    if (typeof name !== 'string' || !name) return false;
+    if (IOS2_NATIVE_MEMORY_PAGE_NAMES[name]) return true;
+
+    // Keep the generic fallback narrow enough that ordinary child widgets do
+    // not trigger cleanup continuously during normal gameplay.
+    return /^(Home|Main|Legion).*(Panel|Scene)$/.test(name);
+}
+
+function ios2SceneNodeCount() {
+    try {
+        var scene = cc.director && cc.director.getScene && cc.director.getScene();
+        if (!scene) return -1;
+        var count = 0;
+        var stack = [scene];
+        while (stack.length) {
+            var node = stack.pop();
+            if (!node) continue;
+            count++;
+            var children = node._children || node.children || [];
+            for (var index = 0; index < children.length; index++) stack.push(children[index]);
+        }
+        return count;
+    } catch (error) {
+        return -1;
+    }
+}
+
+function ios2NativeResidentMemoryMB() {
+    try {
+        if (!window.jsb || !jsb.reflection || !jsb.reflection.callStaticMethod) return -1;
+        var value = Number(jsb.reflection.callStaticMethod('IOS2Native', 'residentMemoryMB'));
+        return isFinite(value) ? value : -1;
+    } catch (error) {
+        return -1;
+    }
+}
+
+function ios2NativeMemorySnapshot() {
+    return {
+        rssMB: ios2NativeResidentMemoryMB(),
+        assets: ios2ManagedAssetCount(),
+        nodes: ios2SceneNodeCount()
+    };
+}
+
+function ios2FormatNativeMemorySnapshot(snapshot) {
+    var rss = snapshot.rssMB >= 0 ? snapshot.rssMB.toFixed(1) + 'MB' : 'unknown';
+    return 'rss=' + rss + ', assets=' + snapshot.assets + ', nodes=' + snapshot.nodes;
+}
+
+function ios2TraceNativeMemory(reason) {
+    ios2Trace('native memory (' + (reason || 'sample') + ') ' +
+        ios2FormatNativeMemorySnapshot(ios2NativeMemorySnapshot()));
+}
+
+function ios2RunNativeSoftCleanup(reason) {
+    if (!window._hortor_launcher_started || ios2NativeMemoryState.cleanupBusy) return false;
+    if (!window.cc) return false;
+
+    ios2NativeMemoryState.cleanupBusy = true;
+    ios2NativeMemoryState.lastCleanup = Date.now();
+    reason = reason || 'page switch';
+    var before = ios2NativeMemorySnapshot();
+
+    try {
+        if (cc.Object && typeof cc.Object._deferredDestroy === 'function') {
+            cc.Object._deferredDestroy();
+        }
+    } catch (error) {
+        ios2Trace('deferred destroy failed (' + reason + '): ' + (error.stack || error.message || error));
+    }
+
+    // Do not call cc.assetManager.releaseUnusedAssets() during live gameplay.
+    // The remote game keeps FGUI/Spine assets in package caches without normal
+    // Creator ref-count ownership; releasing them while pages are reused makes
+    // buttons disappear and can leave loaders stuck on missing skeleton data.
+
+    setTimeout(function () {
+        try {
+            if (cc.sys && typeof cc.sys.garbageCollect === 'function') {
+                cc.sys.garbageCollect();
+            }
+        } catch (error) {
+            ios2Trace('js garbageCollect failed (' + reason + '): ' + (error.stack || error.message || error));
+        }
+
+        setTimeout(function () {
+            ios2NativeMemoryState.cleanupBusy = false;
+            var after = ios2NativeMemorySnapshot();
+            ios2Trace('native soft cleanup (' + reason + ') ' +
+                ios2FormatNativeMemorySnapshot(before) + ' -> ' +
+                ios2FormatNativeMemorySnapshot(after));
+        }, 0);
+    }, 0);
+    return true;
+}
+
+function ios2ScheduleNativeSoftCleanup(reason, delayMs) {
+    if (!window._hortor_launcher_started) return false;
+    if (!window.cc) return false;
+
+    reason = reason || 'page switch';
+    ios2NativeMemoryState.pendingCleanupReason = reason;
+    if (ios2NativeMemoryState.cleanupTimer) {
+        clearTimeout(ios2NativeMemoryState.cleanupTimer);
+        ios2NativeMemoryState.cleanupTimer = null;
+    }
+
+    var delay = delayMs === undefined ? IOS2_NATIVE_SOFT_CLEANUP_DELAY_MS : Number(delayMs) || 0;
+    var elapsed = ios2NativeMemoryState.lastCleanup ? Date.now() - ios2NativeMemoryState.lastCleanup : Infinity;
+    if (elapsed < IOS2_NATIVE_SOFT_CLEANUP_MIN_INTERVAL_MS) {
+        delay = Math.max(delay, IOS2_NATIVE_SOFT_CLEANUP_MIN_INTERVAL_MS - elapsed);
+    }
+
+    ios2NativeMemoryState.cleanupTimer = setTimeout(function () {
+        ios2NativeMemoryState.cleanupTimer = null;
+        var pendingReason = ios2NativeMemoryState.pendingCleanupReason || reason;
+        ios2NativeMemoryState.pendingCleanupReason = '';
+        ios2RunNativeSoftCleanup(pendingReason);
+    }, delay);
+    return true;
+}
+
+function ios2ScheduleNativeMemorySample(reason, delayMs) {
+    if (!window._hortor_launcher_started) return false;
+    if (!window.cc) return false;
+
+    reason = reason || 'page switch';
+    ios2NativeMemoryState.pendingSampleReason = reason;
+    if (ios2NativeMemoryState.sampleTimer) return true;
+
+    var now = Date.now();
+    var elapsed = ios2NativeMemoryState.lastSample ? now - ios2NativeMemoryState.lastSample : Infinity;
+    var delay = delayMs === undefined ? 1000 : Number(delayMs) || 0;
+    if (elapsed < IOS2_NATIVE_MEMORY_SAMPLE_MIN_INTERVAL_MS) {
+        delay = Math.max(delay, IOS2_NATIVE_MEMORY_SAMPLE_MIN_INTERVAL_MS - elapsed);
+    }
+
+    ios2NativeMemoryState.sampleTimer = setTimeout(function () {
+        ios2NativeMemoryState.sampleTimer = null;
+        ios2NativeMemoryState.lastSample = Date.now();
+        var pendingReason = ios2NativeMemoryState.pendingSampleReason || reason;
+        ios2NativeMemoryState.pendingSampleReason = '';
+        ios2TraceNativeMemory(pendingReason);
+    }, delay);
+    return true;
+}
+
+function ios2InstallConsolePageMemoryHook() {
+    if (!window.console || typeof console.log !== 'function' || console.__ios2MemoryHook) return;
+    var originalLog = console.log;
+    console.__ios2MemoryHook = true;
+    console.log = function () {
+        try {
+            if (window._hortor_launcher_started && arguments && arguments.length) {
+                var parts = [];
+                for (var index = 0; index < arguments.length && index < 4; index++) {
+                    var value = arguments[index];
+                    if (typeof value === 'string' || typeof value === 'number') {
+                        parts.push(String(value));
+                    }
+                }
+                var message = parts.join(' ');
+                var pageMatch = /^(hide|show)\s+([^\s]+)/.exec(message);
+                if (pageMatch && ios2IsTrackedPageName(pageMatch[2])) {
+                    ios2NativeMemoryState.switchCount++;
+                    ios2ScheduleNativeMemorySample(pageMatch[1] + ' ' + pageMatch[2]);
+                    if (pageMatch[1] === 'hide' && ios2NativeMemoryState.switchCount >= 4) {
+                        ios2ScheduleNativeSoftCleanup('page switches=' + ios2NativeMemoryState.switchCount);
+                    }
+                } else if (/\bc_battle(Pause|Resume)\b/.test(message)) {
+                    ios2ScheduleNativeMemorySample('battle transition');
+                }
+            }
+        } catch (error) {
+        }
+        return originalLog.apply(this, arguments);
+    };
+}
+
+function ios2InstallNativeMemoryGuardHooks() {
+    if (!window.cc || window.__ios2NativeMemoryGuardInstalled) return;
+    window.__ios2NativeMemoryGuardInstalled = true;
+    window.__ios2NativeMemorySnapshot = function (reason) {
+        ios2TraceNativeMemory(reason || 'manual');
+        return ios2NativeMemorySnapshot();
+    };
+    window.__ios2NativeSoftCleanup = ios2RunNativeSoftCleanup;
+
+    ios2InstallConsolePageMemoryHook();
+
+    try {
+        if (cc.director && cc.Director && cc.Director.EVENT_AFTER_SCENE_LAUNCH &&
+            !cc.director.__ios2NativeMemoryHook) {
+            cc.director.__ios2NativeMemoryHook = true;
+            cc.director.on(cc.Director.EVENT_AFTER_SCENE_LAUNCH, function () {
+                ios2ScheduleNativeMemorySample('after scene launch', 2200);
+            });
+        }
+        if (cc.game && cc.game.EVENT_HIDE && !cc.game.__ios2NativeMemoryHideHook) {
+            cc.game.__ios2NativeMemoryHideHook = true;
+            cc.game.on(cc.game.EVENT_HIDE, function () {
+                ios2ScheduleNativeSoftCleanup('app hide', 0);
+            });
+        }
+    } catch (error) {
+        ios2Trace('native memory lifecycle hook unavailable: ' + (error.stack || error.message || error));
+    }
+    ios2Trace('native memory guard installed');
 }
 
 function ios2LoadManagerShell() {
@@ -628,6 +918,7 @@ window.boot = function () {
                     cc.game.run(option, function () {
                         ios2LoadManagerShell();
                         window.__ios2InstallPerformancePreferenceGuard();
+                        ios2InstallNativeMemoryGuardHooks();
                         onStart();
                         window.__ios2ApplyLauncherIdlePerformance('startup');
                     });
@@ -786,12 +1077,18 @@ if (window.jsb) {
     function bootstrap() {
         let start = new Date().valueOf();
         try {
+            var hsdkVerboseDebug = ios2HSDKVerboseDebugEnabled();
+            ios2ApplyHSDKVerboseDebug(hsdkVerboseDebug, 'startup');
             var init = HSDK.init({
-                isOpenDebug: true,
+                // Controlled by the configuration page. Keep the default off:
+                // HSDK serializes each analytics payload before console.log,
+                // which adds avoidable allocations during frequent page switches.
+                isOpenDebug: hsdkVerboseDebug,
                 apmPostArea: HSDK.ApmPostArea.Default,
             });
             if (init && typeof init.then === 'function') {
                 init.then(res => {
+                    ios2ApplyHSDKVerboseDebug(hsdkVerboseDebug, 'init');
                     console.log('初始化成功, 可以调用HSDK的其他接口了', JSON.stringify(res));
                     let now = new Date().valueOf();
                     console.info(

@@ -18,6 +18,7 @@
             var showFPS = storage ? storage.getItem('ios2.showFPS') === '1' : false;
             var autoRestore = storage ? storage.getItem('ios2.autoRestore') !== '0' : true;
             var frameRate = storage ? (storage.getItem('ios2.frameRate') || '60') : '60';
+            var hsdkVerboseDebug = storage ? storage.getItem('ios2.hsdkVerboseDebug') === '1' : false;
             var runtimeBackend = 'native';
             var webGameInstances = 0;
             if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
@@ -25,6 +26,7 @@
                     var nativeFrameRate = Number(jsb.reflection.callStaticMethod('IOS2Native', 'preferredFrameRate'));
                     if ([15, 24, 30, 45, 60].indexOf(nativeFrameRate) >= 0) frameRate = String(nativeFrameRate);
                     showFPS = !!jsb.reflection.callStaticMethod('IOS2Native', 'showFPS');
+                    hsdkVerboseDebug = !!jsb.reflection.callStaticMethod('IOS2Native', 'hsdkVerboseDebug');
                     runtimeBackend = String(jsb.reflection.callStaticMethod('IOS2Native', 'runtimeBackend') || 'native');
                     webGameInstances = Number(jsb.reflection.callStaticMethod('IOS2Native', 'webGameInstanceCount')) || 0;
                 } catch (ignored) {}
@@ -91,6 +93,12 @@
                 self._setNativePerformance('frameRate', Number(next));
                 self._showConfig();
             });
+            option(firstRowY - 410, 'HSDK 详细日志', hsdkVerboseDebug ? '开' : '关', function () {
+                var next = !hsdkVerboseDebug;
+                if (storage) storage.setItem('ios2.hsdkVerboseDebug', next ? '1' : '0');
+                self._setHSDKVerboseDebug(next);
+                self._showConfig();
+            });
             this._setStatus('配置保存在本机，下次启动继续生效。');
         },
 
@@ -102,6 +110,28 @@
             } catch (error) {
                 this._setStatus('无法应用性能设置', COLORS.warning);
             }
+        },
+
+        _setHSDKVerboseDebug: function (enabled) {
+            enabled = !!enabled;
+            var applied = false;
+            try {
+                if (typeof global.__ios2SetHSDKVerboseDebug === 'function') {
+                    global.__ios2SetHSDKVerboseDebug(enabled);
+                    applied = true;
+                }
+            } catch (ignored) {}
+            if (!applied && global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+                try {
+                    jsb.reflection.callStaticMethod('IOS2Native', 'setHSDKVerboseDebug:', enabled);
+                    applied = true;
+                } catch (ignored) {}
+            }
+            try {
+                if (global.HSDK && HSDK.config) HSDK.config.isOpenDebug = enabled;
+                applied = true;
+            } catch (ignored) {}
+            if (!applied) this._setStatus('无法应用 HSDK 日志设置', COLORS.warning);
         }
     };
 }(window));
