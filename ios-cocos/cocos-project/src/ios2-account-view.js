@@ -173,6 +173,21 @@
         try { storage.setItem(key, String(value)); } catch (ignored) {}
     }
 
+    function readNavigationState(storage) {
+        var fallback = { page: {}, scrollY: {} };
+        if (!storage || typeof storage.getItem !== 'function') return fallback;
+        try {
+            var raw = storage.getItem('ios2.accountNavigationState');
+            var state = raw ? JSON.parse(raw) : null;
+            if (!state || typeof state !== 'object') return fallback;
+            if (!state.page || typeof state.page !== 'object') state.page = {};
+            if (!state.scrollY || typeof state.scrollY !== 'object') state.scrollY = {};
+            return state;
+        } catch (ignored) {
+            return fallback;
+        }
+    }
+
     function safeAreaTop(width, height) {
         var common = global.__ios2ManagerParts && global.__ios2ManagerParts.common;
         var fallback = common && common.SAFE_AREA_FALLBACK_TOP || 44;
@@ -204,6 +219,10 @@
         this.busyName = '';
         this.viewMode = readPreference(this.storage, 'ios2.accountViewMode', 'list', ['list', 'grid']);
         this.sortMode = readPreference(this.storage, 'ios2.accountSortMode', 'recent', ['recent', 'updated', 'name']);
+        this.navigationMode = readPreference(this.storage, 'ios2.accountNavigationMode', 'page', ['scroll', 'page']);
+        this.navigationState = readNavigationState(this.storage);
+        this.page = this._storedPage();
+        this._hasRenderedContent = false;
         this.runtimeBackend = String(this.actions.runtimeBackend || 'native');
         this.root = new fgui.GComponent();
         this.root.name = 'IOS2AccountHome';
@@ -212,8 +231,31 @@
         fgui.GRoot.inst.addChild(this.root);
     }
 
+    IOS2AccountView.prototype._storedPage = function () {
+        var value = Number(this.navigationState.page[this.viewMode]);
+        return isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+    };
+
+    IOS2AccountView.prototype._storedScrollY = function () {
+        var value = Number(this.navigationState.scrollY[this.viewMode]);
+        return isFinite(value) && value >= 0 ? value : 0;
+    };
+
+    IOS2AccountView.prototype._saveNavigationState = function () {
+        if (!this.navigationState) this.navigationState = { page: {}, scrollY: {} };
+        if (!this.navigationState.page) this.navigationState.page = {};
+        if (!this.navigationState.scrollY) this.navigationState.scrollY = {};
+        if (this.navigationMode === 'scroll' && this.list && this.list.scrollPane) {
+            this.navigationState.scrollY[this.viewMode] = Math.max(0, Number(this.list.scrollPane.posY) || 0);
+        } else {
+            this.navigationState.page[this.viewMode] = Math.max(0, Math.floor(Number(this.page) || 0));
+        }
+        writePreference(this.storage, 'ios2.accountNavigationState', JSON.stringify(this.navigationState));
+    };
+
     IOS2AccountView.prototype._build = function () {
         this.root.removeChildren(0, -1, true);
+        this._hasRenderedContent = false;
         var width = fgui.GRoot.inst.width;
         var height = fgui.GRoot.inst.height;
         this.layoutWidth = width;
@@ -264,10 +306,20 @@
         this.accountCount.setPosition(countRight - countWidth, top + 77);
         this.root.addChild(this.accountCount);
 
-        this.list = new fgui.GComponent();
+        this.list = this.navigationMode === 'scroll' ? new fgui.GList() : new fgui.GComponent();
         this.list.setPosition(24, top + 104);
         this.list.setSize(width - 48, Math.max(190, height - top - 176));
-        this.list.overflow = fgui.OverflowType.Hidden;
+        if (this.navigationMode === 'scroll') {
+            this.list.layout = this.viewMode === 'grid' ? fgui.ListLayoutType.FlowHorizontal :
+                fgui.ListLayoutType.SingleColumn;
+            this.list.lineGap = this.viewMode === 'grid' ? 12 : 12;
+            this.list.columnGap = 12;
+            this.list.scrollItemToViewOnClick = false;
+            this.list.setupScroll(verticalScrollBuffer());
+            this.list.on(fgui.Event.SCROLL_END, this._saveNavigationState, this);
+        } else {
+            this.list.overflow = fgui.OverflowType.Hidden;
+        }
         this.root.addChild(this.list);
 
         this.status = text('', 16, COLORS.muted, width - 48, 32);
@@ -373,9 +425,10 @@
     };
 
     IOS2AccountView.prototype._toggleView = function () {
+        this._saveNavigationState();
         this.viewMode = this.viewMode === 'grid' ? 'list' : 'grid';
         writePreference(this.storage, 'ios2.accountViewMode', this.viewMode);
-        this.page = 0;
+        this.page = this._storedPage();
         this._build();
     };
 
@@ -446,22 +499,27 @@
 
     IOS2AccountView.prototype.render = function () {
         if (!this.list) return;
+        // A freshly rebuilt ScrollPane starts at zero. Keep the stored offset
+        // until the new content has been measured and can restore it below.
+        if (this._hasRenderedContent) this._saveNavigationState();
         this.list.removeChildren(0, -1, true);
         var width = this.list.width;
         var records = this._orderedAccounts();
         if (this.accountCount) this.accountCount.text = this.accounts.length + ' 个账号';
         var rowStep = this.viewMode === 'grid' ? 172 : 136;
         var columns = this.viewMode === 'grid' ? 2 : 1;
-        var perPage = Math.max(1, Math.floor(this.list.height / rowStep) * columns);
+        var availableHeight = this.navigationMode === 'page' ? this.list.height - 70 : this.list.height;
+        var perPage = Math.max(1, Math.floor(Math.max(rowStep, availableHeight) / rowStep) * columns);
         var pageCount = Math.max(1, Math.ceil(records.length / perPage));
         this.page = Math.max(0, Math.min(this.page, pageCount - 1));
         var start = this.page * perPage;
-        var visible = records.slice(start, start + perPage);
+        var visible = this.navigationMode === 'page' ? records.slice(start, start + perPage) : records;
         if (!visible.length) {
             var empty = text('还没有账号，点击“导入账号”添加 .bin 文件', 20, COLORS.muted,
                 width, 56, fgui.AlignType.Center);
             empty.setPosition(0, Math.max(24, this.list.height / 2 - 28));
             this.list.addChild(empty);
+            this._hasRenderedContent = false;
             return;
         }
         if (this.viewMode === 'grid') {
@@ -471,36 +529,53 @@
                 var gridRow = Math.floor(gridIndex / 2);
                 var gridColumn = gridIndex % 2;
                 this.list.addChild(this._gridCard(visible[gridIndex], cardWidth, 158,
-                    gridColumn * (cardWidth + gap), gridRow * rowStep));
+                    this.navigationMode === 'page' ? gridColumn * (cardWidth + gap) : 0,
+                    this.navigationMode === 'page' ? gridRow * rowStep : 0));
             }
         } else {
             for (var index = 0; index < visible.length; index++) {
-                this.list.addChild(this._row(visible[index], width, index * rowStep));
+                this.list.addChild(this._row(visible[index], width,
+                    this.navigationMode === 'page' ? index * rowStep : 0));
             }
         }
-        if (pageCount > 1) this._pagination(pageCount);
+        if (this.navigationMode === 'scroll') {
+            this.list.ensureBoundsCorrect();
+            if (this.list.scrollPane) this.list.scrollPane.setPosY(this._storedScrollY(), false);
+            this._saveNavigationState();
+        } else {
+            if (pageCount > 1) this._pagination(pageCount);
+            this._saveNavigationState();
+        }
+        this._hasRenderedContent = true;
     };
 
     IOS2AccountView.prototype._pagination = function (pageCount) {
         var self = this;
         var width = this.list.width;
-        var y = this.list.height - 46;
-        var previous = button('‹', 42, 38, COLORS.surface, COLORS.accent, function () {
+        var buttonWidth = 58;
+        var buttonHeight = 52;
+        var y = this.list.height - buttonHeight - 6;
+        var previous = button('‹', buttonWidth, buttonHeight, COLORS.surface, COLORS.accent, function () {
             self.page--;
+            self._saveNavigationState();
             self.render();
-        }, 8);
+        }, 10);
+        previous.tooltips = '上一页';
         previous.enabled = this.page > 0;
-        previous.setPosition(width / 2 - 82, y);
+        previous.setPosition(width / 2 - 112, y);
         this.list.addChild(previous);
-        var count = text((this.page + 1) + ' / ' + pageCount, 16, COLORS.muted, 76, 38, fgui.AlignType.Center);
-        count.setPosition(width / 2 - 38, y);
+        var count = text((this.page + 1) + ' / ' + pageCount, 17, COLORS.muted, 92, buttonHeight,
+            fgui.AlignType.Center);
+        count.setPosition(width / 2 - 46, y);
         this.list.addChild(count);
-        var next = button('›', 42, 38, COLORS.surface, COLORS.accent, function () {
+        var next = button('›', buttonWidth, buttonHeight, COLORS.surface, COLORS.accent, function () {
             self.page++;
+            self._saveNavigationState();
             self.render();
-        }, 8);
+        }, 10);
+        next.tooltips = '下一页';
         next.enabled = this.page < pageCount - 1;
-        next.setPosition(width / 2 + 40, y);
+        next.setPosition(width / 2 + 54, y);
         this.list.addChild(next);
     };
 
@@ -700,13 +775,24 @@
     IOS2AccountView.prototype.setRuntimeBackend = function (backend) {
         var next = String(backend || 'native');
         if (next === this.runtimeBackend) return;
+        this._saveNavigationState();
         this.runtimeBackend = next;
         this._build();
     };
 
     IOS2AccountView.prototype.show = function () {
+        var configuredMode = readPreference(this.storage, 'ios2.accountNavigationMode', 'page', ['scroll', 'page']);
+        if (configuredMode !== this.navigationMode) {
+            this._saveNavigationState();
+            this.navigationMode = configuredMode;
+            this.page = this._storedPage();
+            this._build();
+        }
         if (this.layoutWidth !== fgui.GRoot.inst.width || this.layoutHeight !== fgui.GRoot.inst.height ||
-            this.layoutSafeTop !== safeAreaTop(fgui.GRoot.inst.width, fgui.GRoot.inst.height)) this._build();
+            this.layoutSafeTop !== safeAreaTop(fgui.GRoot.inst.width, fgui.GRoot.inst.height)) {
+            this._saveNavigationState();
+            this._build();
+        }
         this.root.visible = true;
     };
     IOS2AccountView.prototype.hide = function () { this.root.visible = false; };
