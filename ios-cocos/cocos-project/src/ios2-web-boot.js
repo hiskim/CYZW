@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260828-cocos-release-manager-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-fps-preference-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     function showFatal(message) {
@@ -15,6 +15,11 @@
             document.body.appendChild(panel);
         }
         panel.textContent = String(message || 'WebKit 游戏启动失败');
+    }
+
+    function preferredFrameRate() {
+        var frameRate = Number(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.frameRate) || 60;
+        return [15, 24, 30, 45, 60].indexOf(frameRate) >= 0 ? frameRate : 60;
     }
 
     // Cocos' release manager only frees assets whose reference count has
@@ -781,11 +786,13 @@
         installTypeScriptRuntimeHelpers();
         installASTCTextureSupport();
         cc.macro.SUPPORT_TEXTURE_FORMATS = ['.pvr'];
+        var targetFrameRate = preferredFrameRate();
+        console.log('[ios2-web] target frame rate', targetFrameRate);
         var option = {
             id: canvas,
             debugMode: cc.debug.DebugMode.ERROR,
             showFPS: false,
-            frameRate: 30,
+            frameRate: targetFrameRate,
             groupList: settings.groupList,
             collisionMatrix: settings.collisionMatrix
         };

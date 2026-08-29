@@ -5,6 +5,10 @@ window._hortor_launcher_retry_count = 0;
 window.__ios2LaunchScene = null;
 var IOS2_LAUNCHER_IDLE_FRAME_RATE = 15;
 var IOS2_ACTIVE_DEFAULT_FRAME_RATE = 60;
+var IOS2_LAUNCHER_FREEZE_DELAY_MS = 1600;
+var ios2LauncherFreezeTimer = null;
+var ios2LauncherFrozen = false;
+var ios2LauncherActivityWakeInstalled = false;
 function ios2Trace(message) {
     try {
         if (window.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
@@ -127,6 +131,65 @@ function ios2PreferredFrameRate() {
     return [0, 15, 24, 30, 45, 60].indexOf(frameRate) >= 0 ? frameRate : null;
 }
 
+function ios2CanThrottleLauncher() {
+    return !window._hortor_launcher_started && window.cc && cc.game;
+}
+
+function ios2ClearLauncherFreezeTimer() {
+    if (ios2LauncherFreezeTimer) {
+        clearTimeout(ios2LauncherFreezeTimer);
+        ios2LauncherFreezeTimer = null;
+    }
+}
+
+function ios2ResumeLauncherRendering(reason) {
+    if (!window.cc || !cc.game) return;
+    if (ios2LauncherFrozen && typeof cc.game.resume === 'function') {
+        cc.game.resume();
+        ios2LauncherFrozen = false;
+        ios2Trace('launcher render resumed (' + (reason || 'activity') + ')');
+    }
+}
+
+function ios2FreezeLauncherRendering(reason) {
+    ios2LauncherFreezeTimer = null;
+    if (!ios2CanThrottleLauncher()) return;
+    try {
+        if (cc.game && typeof cc.game.pause === 'function' &&
+            (typeof cc.game.isPaused !== 'function' || !cc.game.isPaused())) {
+            cc.game.pause();
+            ios2LauncherFrozen = true;
+            ios2Trace('launcher render paused (' + (reason || 'idle') + ')');
+        }
+    } catch (error) {
+        ios2Trace('unable to pause launcher render: ' + (error.message || error));
+    }
+}
+
+function ios2ScheduleLauncherFreeze(reason) {
+    ios2ClearLauncherFreezeTimer();
+    if (!ios2CanThrottleLauncher()) return;
+    ios2LauncherFreezeTimer = setTimeout(function () {
+        ios2FreezeLauncherRendering(reason);
+    }, IOS2_LAUNCHER_FREEZE_DELAY_MS);
+}
+
+function ios2InstallLauncherActivityWake() {
+    if (ios2LauncherActivityWakeInstalled) return;
+    var target = window.__canvas || (cc.game && cc.game.canvas);
+    if (!target || typeof target.addEventListener !== 'function') return;
+    ios2LauncherActivityWakeInstalled = true;
+    var wake = function () {
+        if (!ios2CanThrottleLauncher()) return;
+        ios2ResumeLauncherRendering('input');
+        ios2SetFrameRate(IOS2_LAUNCHER_IDLE_FRAME_RATE, 'launcher input', true);
+        ios2ScheduleLauncherFreeze('input idle');
+    };
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'mousedown', 'mouseup', 'mousemove'].forEach(function (type) {
+        target.addEventListener(type, wake, false);
+    });
+}
+
 function ios2SetFrameRate(frameRate, reason, transient) {
     frameRate = Number(frameRate);
     if (!frameRate || frameRate < 1) return;
@@ -151,20 +214,32 @@ function ios2SetFrameRate(frameRate, reason, transient) {
 
 window.__ios2ApplyLauncherIdlePerformance = function (reason) {
     if (window._hortor_launcher_started) return;
-    ios2SetFrameRate(IOS2_LAUNCHER_IDLE_FRAME_RATE, 'launcher idle ' + (reason || ''), true);
+    window.__ios2WakeLauncherIdlePerformance(reason || 'launcher idle');
+};
+
+window.__ios2WakeLauncherIdlePerformance = function (reason) {
+    if (window._hortor_launcher_started) return;
+    ios2InstallLauncherActivityWake();
+    ios2ResumeLauncherRendering(reason);
+    ios2SetFrameRate(IOS2_LAUNCHER_IDLE_FRAME_RATE, 'launcher active ' + (reason || ''), true);
+    ios2ScheduleLauncherFreeze(reason || 'launcher idle');
 };
 
 window.__ios2RestorePerformancePreferences = function (reason) {
     try {
+        ios2ClearLauncherFreezeTimer();
+        ios2ResumeLauncherRendering(reason);
         var frameRate = ios2PreferredFrameRate();
         if (frameRate === null) return;
+        var activeFrameRate = frameRate > 0 ? frameRate : IOS2_ACTIVE_DEFAULT_FRAME_RATE;
 
         // Keep Cocos' JS state and the iOS CADisplayLink in agreement. If only
         // the native loop is updated, a game bundle can later reset it to 30.
-        ios2SetFrameRate(frameRate > 0 ? frameRate : IOS2_ACTIVE_DEFAULT_FRAME_RATE,
-            'active preference ' + (reason || ''), true);
-        jsb.reflection.callStaticMethod('IOS2Native', 'applyPerformancePreferences');
-        ios2Trace('restored performance=' + frameRate + ' FPS (' + reason + ')');
+        ios2SetFrameRate(activeFrameRate, 'active preference ' + (reason || ''), true);
+        if (frameRate > 0) {
+            jsb.reflection.callStaticMethod('IOS2Native', 'applyPerformancePreferences');
+        }
+        ios2Trace('restored performance=' + activeFrameRate + ' FPS (preferred=' + frameRate + ', ' + reason + ')');
     } catch (error) {
         console.warn('[ios2] unable to restore performance preferences', error);
     }
@@ -289,10 +364,14 @@ window.__ios2ResetToLauncher = function () {
         cc.director.runSceneImmediate(scene);
         if (cc.director && typeof cc.director.resume === 'function') cc.director.resume();
         if (cc.game && typeof cc.game.resume === 'function') cc.game.resume();
+        ios2LauncherFrozen = false;
         var eventManager = (cc.internal && cc.internal.eventManager) || cc.eventManager;
         if (eventManager && typeof eventManager.setEnabled === 'function') eventManager.setEnabled(true);
         ios2Trace('launcher scene reset complete');
         window._hortor_callOnLoad(scene, false);
+        if (typeof window.__ios2ApplyLauncherIdlePerformance === 'function') {
+            window.__ios2ApplyLauncherIdlePerformance('reset launcher');
+        }
     });
 };
 

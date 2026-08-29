@@ -57,7 +57,24 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
-static NSString * const kIOS2WebRuntimeRevision = @"20260828-cocos-release-manager-1";
+static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-fps-preference-1";
+static NSString * const kIOS2WebFrameRateDefaultsKey = @"ios2.preferredFrameRate";
+
+static NSInteger IOS2WebPreferredFrameRate(void)
+{
+    NSInteger frameRate = [[NSUserDefaults standardUserDefaults] integerForKey:kIOS2WebFrameRateDefaultsKey];
+    switch (frameRate) {
+        case 15:
+        case 24:
+        case 30:
+        case 45:
+        case 60:
+            return frameRate;
+        case 0:
+        default:
+            return 60;
+    }
+}
 
 static NSString *IOS2GameMIMEType(NSString *path)
 {
@@ -521,6 +538,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         @"id": instanceID ?: @"",
         @"account": accountName ?: @"",
         @"authResponse": authResponse ?: @"",
+        @"frameRate": @(IOS2WebPreferredFrameRate()),
         @"scripts": scripts ?: @[],
         @"manifest": manifest ?: @{}
     };
@@ -615,7 +633,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [self configureToolbar];
     [self layoutInstances];
     [self.presenter.view bringSubviewToFront:self.toolbar];
-    NSLog(@"[ios2] started %lu Web game instances", (unsigned long)self.instances.count);
+    NSLog(@"[ios2] started %lu Web game instances at %ld FPS", (unsigned long)self.instances.count,
+          (long)IOS2WebPreferredFrameRate());
 }
 
 - (NSString *)currentSingleAccountName

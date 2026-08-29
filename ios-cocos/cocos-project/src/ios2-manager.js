@@ -726,7 +726,13 @@
     global.__ios2ManagerSetLauncher = function (launcher) {
         if (global.__ios2Manager) global.__ios2Manager.launcher = launcher;
     };
+    function wakeLauncherIdle(reason) {
+        if (typeof global.__ios2WakeLauncherIdlePerformance === 'function') {
+            global.__ios2WakeLauncherIdlePerformance(reason);
+        }
+    }
     global.__ios2OnBinFiles = function (json) {
+        wakeLauncherIdle('bin files');
         var manager = global.__ios2Manager;
         if (!manager) return;
         if (manager.accountPresenter) {
@@ -736,6 +742,7 @@
     };
     global.__ios2BinFilesReady = global.__ios2OnBinFiles;
     global.__ios2OnBinImported = function (name) {
+        wakeLauncherIdle('bin imported');
         var manager = global.__ios2Manager;
         if (!manager) return;
         if (manager.accountPresenter) manager.accountPresenter.onImported(name);
@@ -743,6 +750,7 @@
     };
     global.__ios2BinImported = global.__ios2OnBinImported;
     global.__ios2OnBinDeleted = function (name) {
+        wakeLauncherIdle('bin deleted');
         var manager = global.__ios2Manager;
         if (!manager) return;
         if (manager.accountPresenter) manager.accountPresenter.onDeleted(name);
@@ -750,42 +758,52 @@
     };
     global.__ios2BinDeleted = global.__ios2OnBinDeleted;
     global.__ios2OnBinDeleteFailed = function (message) {
+        wakeLauncherIdle('bin delete failed');
         var manager = global.__ios2Manager;
         if (!manager) return;
         if (manager.accountPresenter) manager.accountPresenter.onDeleteFailed(message);
         else manager.onBinDeleteFailed(message);
     };
     global.__ios2BinDeleteFailed = global.__ios2OnBinDeleteFailed;
-    global.__ios2OnScriptFiles = function (json) { if (global.__ios2Manager) global.__ios2Manager.onScriptFiles(json); };
+    global.__ios2OnScriptFiles = function (json) { wakeLauncherIdle('script files'); if (global.__ios2Manager) global.__ios2Manager.onScriptFiles(json); };
     global.__ios2ScriptFilesReady = global.__ios2OnScriptFiles;
-    global.__ios2OnScriptImported = function (name) { if (global.__ios2Manager) global.__ios2Manager.onScriptImported(name); };
+    global.__ios2OnScriptImported = function (name) { wakeLauncherIdle('script imported'); if (global.__ios2Manager) global.__ios2Manager.onScriptImported(name); };
     global.__ios2ScriptImported = global.__ios2OnScriptImported;
-    global.__ios2OnScriptDeleted = function (name) { if (global.__ios2Manager) global.__ios2Manager.onScriptDeleted(name); };
+    global.__ios2OnScriptDeleted = function (name) { wakeLauncherIdle('script deleted'); if (global.__ios2Manager) global.__ios2Manager.onScriptDeleted(name); };
     global.__ios2ScriptDeleted = global.__ios2OnScriptDeleted;
-    global.__ios2OnScriptDeleteFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onScriptDeleteFailed(message); };
+    global.__ios2OnScriptDeleteFailed = function (message) { wakeLauncherIdle('script delete failed'); if (global.__ios2Manager) global.__ios2Manager.onScriptDeleteFailed(message); };
     global.__ios2ScriptDeleteFailed = global.__ios2OnScriptDeleteFailed;
-    global.__ios2OnScriptImportFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onScriptImportFailed(message); };
+    global.__ios2OnScriptImportFailed = function (message) { wakeLauncherIdle('script import failed'); if (global.__ios2Manager) global.__ios2Manager.onScriptImportFailed(message); };
     global.__ios2ScriptImportFailed = global.__ios2OnScriptImportFailed;
-    global.__ios2OnSettingsImported = function (name) { if (global.__ios2Manager) global.__ios2Manager.onSettingsImported(name); };
+    global.__ios2OnSettingsImported = function (name) { wakeLauncherIdle('settings imported'); if (global.__ios2Manager) global.__ios2Manager.onSettingsImported(name); };
     global.__ios2SettingsImported = global.__ios2OnSettingsImported;
-    global.__ios2OnSettingsImportFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onSettingsImportFailed(message); };
+    global.__ios2OnSettingsImportFailed = function (message) { wakeLauncherIdle('settings import failed'); if (global.__ios2Manager) global.__ios2Manager.onSettingsImportFailed(message); };
     global.__ios2SettingsImportFailed = global.__ios2OnSettingsImportFailed;
-    global.__ios2OnSettingsDeleted = function (name) { if (global.__ios2Manager) global.__ios2Manager.onSettingsDeleted(name); };
+    global.__ios2OnSettingsDeleted = function (name) { wakeLauncherIdle('settings deleted'); if (global.__ios2Manager) global.__ios2Manager.onSettingsDeleted(name); };
     global.__ios2SettingsDeleted = global.__ios2OnSettingsDeleted;
-    global.__ios2OnSettingsDeleteFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onSettingsDeleteFailed(message); };
+    global.__ios2OnSettingsDeleteFailed = function (message) { wakeLauncherIdle('settings delete failed'); if (global.__ios2Manager) global.__ios2Manager.onSettingsDeleteFailed(message); };
     global.__ios2SettingsDeleteFailed = global.__ios2OnSettingsDeleteFailed;
-    global.__ios2OnBinLoginReady = function () { if (global.__ios2Manager) global.__ios2Manager.onLoginReady(); };
-    global.__ios2OnBinLoginFailed = function (message) { if (global.__ios2Manager) global.__ios2Manager.onLoginFailed(message); };
+    global.__ios2OnBinLoginReady = function () { wakeLauncherIdle('login ready'); if (global.__ios2Manager) global.__ios2Manager.onLoginReady(); };
+    global.__ios2OnBinLoginFailed = function (message) { wakeLauncherIdle('login failed'); if (global.__ios2Manager) global.__ios2Manager.onLoginFailed(message); };
     global.__ios2MultiLoginReady = function () {
-        if (global.__ios2Manager && global.__ios2Manager.accountPresenter) {
-            global.__ios2Manager.accountPresenter.onMultiLoginReady();
+        global._hortor_launcher_started = true;
+        if (typeof global.__ios2RestorePerformancePreferences === 'function') {
+            global.__ios2RestorePerformancePreferences('webkit game ready');
+        }
+        if (global.__ios2Manager) {
+            global.__ios2Manager.gameStarted = true;
+            if (global.__ios2Manager.accountPresenter) {
+                global.__ios2Manager.accountPresenter.onMultiLoginReady();
+            }
         }
     };
     global.__ios2MultiLoginFailed = function (message) {
+        wakeLauncherIdle('multi login failed');
         if (global.__ios2Manager) global.__ios2Manager.onLoginFailed(message);
     };
     global.__ios2WebGameManagerRequested = function () {
         if (!global.__ios2Manager) return;
+        global._hortor_launcher_started = false;
         global.__ios2Manager.gameStarted = false;
         global.__ios2Manager.showPage(0);
     };
