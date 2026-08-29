@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-memory-release-6';
+    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-retina-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     // Keep serial startup responsive while still allowing the previous page's
@@ -1136,14 +1136,31 @@
                         device._extensions.WEBGL_compressed_texture_pvrtc = astc;
                         console.log('[ios2-web] ASTC enabled for PVR texture selection');
                     }
-                    // A multi-open layout already renders four game views on
-                    // one screen. Retina framebuffers multiply GPU/IOSurface
-                    // memory for every canvas, so use the logical resolution
-                    // when more than one instance is active.
+                    // Native Cocos uses UIScreen.scale (usually 3x on a real
+                    // iPhone), while Cocos Web defaults to a 2x pixel-ratio
+                    // cap. Match the native backing-store density for a
+                    // single WebKit game. Multi-open keeps the 1x backing
+                    // store because each extra retina canvas multiplies GPU
+                    // and IOSurface memory and can terminate the app.
+                    var devicePixelRatio = Number(window.devicePixelRatio) || 1;
+                    var webPixelRatio = multiOpen ? 1 : Math.min(3, Math.max(1, devicePixelRatio));
+                    if (typeof cc.view._maxPixelRatio === 'number') {
+                        cc.view._maxPixelRatio = webPixelRatio;
+                    }
                     cc.view.enableRetina(!multiOpen);
                     cc.view.resizeWithBrowserSize(true);
+                    console.log('[ios2-web] pixel ratio',
+                        'device=' + devicePixelRatio,
+                        'selected=' + webPixelRatio,
+                        'retina=' + cc.view.isRetinaEnabled());
                     cc.director.loadScene(settings.launchScene, function (sceneError) {
                         if (sceneError) console.error('[ios2-web] scene failed', sceneError);
+                        var gameCanvas = document.getElementById('GameCanvas');
+                        if (gameCanvas) {
+                            console.log('[ios2-web] canvas backing size',
+                                gameCanvas.width + 'x' + gameCanvas.height,
+                                'css=' + gameCanvas.clientWidth + 'x' + gameCanvas.clientHeight);
+                        }
                         notifyStartupReadyAfterSettling(sceneError);
                     });
                 });

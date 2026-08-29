@@ -66,7 +66,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
 static WKProcessPool *s_ios2WebProcessPool = nil;
-static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-memory-release-6";
+static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-retina-1";
 static NSString * const kIOS2WebFrameRateDefaultsKey = @"ios2.preferredFrameRate";
 static NSString * const kIOS2WebVerboseLoggingDefaultsKey = @"ios2.hsdkVerboseDebug";
 static NSString * const kIOS2WebStartupModeDefaultsKey = @"ios2.webStartupMode";
