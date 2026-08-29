@@ -24,7 +24,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, strong) NSURLConnection *connection;
 @property (nonatomic, strong) NSMutableData *bodyData;
 @property (nonatomic, strong) NSHTTPURLResponse *response;
-@property (nonatomic, strong) IOS2WebHTTPCompletion completion;
+@property (nonatomic, copy) IOS2WebHTTPCompletion completion;
 @property (nonatomic, copy) NSString *requestID;
 @property (nonatomic, assign) BOOL finished;
 - (instancetype)initWithRequest:(NSURLRequest *)request completion:(IOS2WebHTTPCompletion)completion;
@@ -40,6 +40,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, strong) NSMutableDictionary<NSString *, IOS2WebHTTPConnection *> *downloads;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *pendingTasks;
 @property (nonatomic, strong) dispatch_queue_t cacheQueue;
+- (void)cancelAllRequests;
 @end
 
 @interface IOS2GameWebView () <WKNavigationDelegate, WKScriptMessageHandler>
@@ -57,7 +58,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
-static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-fps-preference-1";
+static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-memory-release-1";
 static NSString * const kIOS2WebFrameRateDefaultsKey = @"ios2.preferredFrameRate";
 
 static NSInteger IOS2WebPreferredFrameRate(void)
@@ -136,12 +137,22 @@ static NSString *IOS2GameSHA256(NSString *value)
     self.connection = nil;
 }
 
+- (void)dealloc
+{
+    [self cancel];
+    self.bodyData = nil;
+    self.response = nil;
+    self.requestID = nil;
+    [super dealloc];
+}
+
 - (void)finishWithResponse:(NSHTTPURLResponse *)response error:(NSError *)error
 {
     if (self.finished) return;
     self.finished = YES;
     IOS2WebHTTPCompletion completion = self.completion;
-    if (completion) completion([self.bodyData copy], response, error);
+    NSData *body = [[self.bodyData copy] autorelease];
+    if (completion) completion(body, response, error);
     self.completion = nil;
     self.connection = nil;
 }
@@ -221,6 +232,19 @@ static NSString *IOS2GameSHA256(NSString *value)
     return s_ios2GameSchemeHandler;
 }
 
+- (void)cancelAllRequests
+{
+    NSArray<IOS2WebHTTPConnection *> *downloads = nil;
+    @synchronized (self.tasks) {
+        downloads = [[self.downloads allValues] copy];
+        [self.downloads removeAllObjects];
+        [self.pendingTasks removeAllObjects];
+        [self.tasks removeAllObjects];
+    }
+    for (IOS2WebHTTPConnection *download in downloads) [download cancel];
+    [downloads release];
+}
+
 - (void)respondToTask:(id<WKURLSchemeTask>)task data:(NSData *)data url:(NSURL *)url
 {
     // WKWebView can stop a task while a cache/CDN callback is queued on the
@@ -242,10 +266,10 @@ static NSString *IOS2GameSHA256(NSString *value)
         @"Cache-Control": @"no-store"
     };
     /* WKURLSchemeTask needs an HTTP response to expose fetch().ok/status. */
-    NSURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url
-                                                           statusCode:200
-                                                          HTTPVersion:@"HTTP/1.1"
-                                                         headerFields:headers];
+    NSURLResponse *response = [[[NSHTTPURLResponse alloc] initWithURL:url
+                                                            statusCode:200
+                                                           HTTPVersion:@"HTTP/1.1"
+                                                          headerFields:headers] autorelease];
     [task didReceiveResponse:response];
     [task didReceiveData:data];
     [task didFinish];
@@ -269,7 +293,7 @@ static NSString *IOS2GameSHA256(NSString *value)
 {
     @synchronized (self.tasks) {
         if (![self.downloads[remoteURL].requestID isEqualToString:requestID]) return @[];
-        NSArray<NSDictionary *> *pending = [self.pendingTasks[remoteURL] copy] ?: @[];
+        NSArray<NSDictionary *> *pending = [[self.pendingTasks[remoteURL] copy] autorelease] ?: @[];
         [self.downloads removeObjectForKey:remoteURL];
         [self.pendingTasks removeObjectForKey:remoteURL];
         return pending;
@@ -444,8 +468,8 @@ static NSString *IOS2GameSHA256(NSString *value)
                         return;
                     }
                     NSData *latestData = [NSData dataWithContentsOfURL:indexURL];
-                    NSMutableDictionary *latest = latestData ? [[NSJSONSerialization JSONObjectWithData:latestData options:NSJSONReadingMutableContainers error:nil] mutableCopy] : [NSMutableDictionary dictionary];
-                    NSMutableDictionary *cacheFiles = [latest[@"files"] isKindOfClass:[NSDictionary class]] ? [latest[@"files"] mutableCopy] : [NSMutableDictionary dictionary];
+                    NSMutableDictionary *latest = latestData ? [[[NSJSONSerialization JSONObjectWithData:latestData options:NSJSONReadingMutableContainers error:nil] mutableCopy] autorelease] : [NSMutableDictionary dictionary];
+                    NSMutableDictionary *cacheFiles = [latest[@"files"] isKindOfClass:[NSDictionary class]] ? [[latest[@"files"] mutableCopy] autorelease] : [NSMutableDictionary dictionary];
                     cacheFiles[remoteURL] = @{ @"url": relativePath, @"bundle": @"webkit" };
                     latest[@"files"] = cacheFiles;
                     NSData *updated = [NSJSONSerialization dataWithJSONObject:latest options:0 error:nil];
@@ -461,11 +485,15 @@ static NSString *IOS2GameSHA256(NSString *value)
                 });
             }];
             @synchronized (self.tasks) {
-                if (!self.pendingTasks[remoteURL].count || self.downloads[remoteURL]) return;
+                if (!self.pendingTasks[remoteURL].count || self.downloads[remoteURL]) {
+                    [download release];
+                    return;
+                }
                 download.requestID = downloadID;
                 self.downloads[remoteURL] = download;
             }
             [download start];
+            [download release];
         });
     });
 }
@@ -543,7 +571,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         @"manifest": manifest ?: @{}
     };
     NSData *identityData = [NSJSONSerialization dataWithJSONObject:identity options:0 error:nil];
-    NSString *identityJSON = [[NSString alloc] initWithData:identityData encoding:NSUTF8StringEncoding] ?: @"{}";
+    NSString *identityJSON = [[[NSString alloc] initWithData:identityData encoding:NSUTF8StringEncoding] autorelease] ?: @"{}";
     return [NSString stringWithFormat:
         @"(function(){'use strict';"
          "window.__IOS2_GAME_INSTANCE__=%@;"
@@ -608,12 +636,15 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         configuration.allowsInlineMediaPlayback = YES;
         WKUserContentController *controller = configuration.userContentController;
         [controller addScriptMessageHandler:self name:@"ios2Game"];
-        [controller addUserScript:[[WKUserScript alloc]
+        WKUserScript *bootstrapScript = [[WKUserScript alloc]
             initWithSource:IOS2PVRBootstrap(instanceID, accountName, authResponse, scriptsJSON, manifestJSON)
             injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-            forMainFrameOnly:YES]];
+            forMainFrameOnly:YES];
+        [controller addUserScript:bootstrapScript];
+        [bootstrapScript release];
 
         WKWebView *webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
+        [configuration release];
     #if IOS2_WEBKIT_DEBUG
         if (@available(iOS 16.4, *)) webView.inspectable = YES;
     #endif
@@ -629,6 +660,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
         NSLog(@"[ios2] loading Web runtime revision=%@ account=%@", kIOS2WebRuntimeRevision, accountName);
         [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
+        [webView release];
     }
     [self configureToolbar];
     [self layoutInstances];
@@ -733,6 +765,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         [gear.widthAnchor constraintEqualToConstant:40.0],
         [gear.heightAnchor constraintEqualToConstant:40.0]
     ]];
+    [title release];
+    [toolbar release];
 }
 
 - (void)presentToolbarAlert:(UIAlertController *)alert source:(UIView *)source
@@ -885,6 +919,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 - (void)showManager
 {
     [IOS2GameWebView hide];
+    [IOS2GameWebView closeAll];
     Class nativeClass = NSClassFromString(@"IOS2Native");
     SEL selector = NSSelectorFromString(@"webGameManagerRequested");
     if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector];
@@ -892,7 +927,6 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 
 - (void)closeCurrent
 {
-    [IOS2GameWebView closeAll];
     [self showManager];
 }
 
@@ -974,17 +1008,29 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 
 - (void)closeAllInstances
 {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
     self.shutdownGeneration++;
+    [[IOS2GameSchemeHandler sharedInstance] cancelAllRequests];
     for (NSDictionary *record in self.instances) {
         WKWebView *view = record[@"view"];
         [view stopLoading];
+        view.navigationDelegate = nil;
+        view.UIDelegate = nil;
+        view.scrollView.delegate = nil;
         [view.configuration.userContentController removeScriptMessageHandlerForName:@"ios2Game"];
         [view.configuration.userContentController removeAllUserScripts];
+        [view loadHTMLString:@"" baseURL:nil];
         [view removeFromSuperview];
     }
     [self.instances removeAllObjects];
     [self.toolbar removeFromSuperview];
     self.toolbar = nil;
+    self.toolbarTitle = nil;
+    self.switchButton = nil;
+    self.presenter = nil;
+    self.scriptsJSON = nil;
+    self.manifestJSON = nil;
+    NSLog(@"[ios2] Web game instances closed and released");
 }
 
 + (NSUInteger)instanceCount
@@ -1029,9 +1075,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             @"extra": extra ?: @{}
         };
         NSData *messageData = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
-        NSString *messageJSON = [[NSString alloc] initWithData:messageData encoding:NSUTF8StringEncoding] ?: @"{}";
+        NSString *messageJSON = [[[NSString alloc] initWithData:messageData encoding:NSUTF8StringEncoding] autorelease] ?: @"{}";
         NSData *argumentData = [NSJSONSerialization dataWithJSONObject:messageJSON options:NSJSONWritingFragmentsAllowed error:nil];
-        NSString *argumentJSON = [[NSString alloc] initWithData:argumentData encoding:NSUTF8StringEncoding] ?: @"\"{}\"";
+        NSString *argumentJSON = [[[NSString alloc] initWithData:argumentData encoding:NSUTF8StringEncoding] autorelease] ?: @"\"{}\"";
         NSString *script = [NSString stringWithFormat:
             @"if (window.HSDK && typeof window.HSDK.onMessage === 'function') window.HSDK.onMessage('sdk', %@);",
             argumentJSON];
@@ -1084,11 +1130,11 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             NSLog(@"[ios2] invalid WebKit HSDK request: %@", message);
             return;
         }
-        NSMutableDictionary *request = [(NSDictionary *)object mutableCopy];
+        NSMutableDictionary *request = [[(NSDictionary *)object mutableCopy] autorelease];
         NSString *instanceID = [body[@"instance"] isKindOfClass:[NSString class]] ? body[@"instance"] : @"";
         if (instanceID.length) request[@"__ios2Instance"] = instanceID;
         NSData *requestData = [NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
-        NSString *requestJSON = [[NSString alloc] initWithData:requestData encoding:NSUTF8StringEncoding] ?: @"{}";
+        NSString *requestJSON = [[[NSString alloc] initWithData:requestData encoding:NSUTF8StringEncoding] autorelease] ?: @"{}";
         [SDKMessager callNative:channel withMessage:requestJSON];
     }
 }

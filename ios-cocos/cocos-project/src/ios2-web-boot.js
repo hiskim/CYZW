@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-fps-preference-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-memory-release-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     function showFatal(message) {
@@ -77,7 +77,8 @@
             var director = window.cc.director;
             if (director && typeof director.purgeDirector === 'function') {
                 director.purgeDirector();
-            } else if (typeof manager.releaseAll === 'function') {
+            }
+            if (typeof manager.releaseAll === 'function') {
                 manager.releaseAll();
             } else {
                 manager.releaseUnusedAssets();
