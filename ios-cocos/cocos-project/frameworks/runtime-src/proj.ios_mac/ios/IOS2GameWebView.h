@@ -7,6 +7,8 @@
 + (void)shutdownAndCloseAll;
 + (void)releaseUnusedAssetsForAllInstances;
 + (NSUInteger)instanceCount;
++ (NSString *)startupMode;
++ (void)setStartupMode:(NSString *)mode;
 + (void)sendHSDKMessage:(NSString *)action
                   extra:(NSDictionary *)extra
                 errCode:(NSInteger)errCode

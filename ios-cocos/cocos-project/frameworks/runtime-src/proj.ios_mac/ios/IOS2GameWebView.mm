@@ -44,7 +44,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @end
 
 @interface IOS2GameWebView () <WKNavigationDelegate, WKScriptMessageHandler>
-@property (nonatomic, strong) NSMutableArray<NSDictionary *> *instances;
+@property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *instances;
 @property (nonatomic, strong) UIView *toolbar;
 @property (nonatomic, strong) UILabel *toolbarTitle;
 @property (nonatomic, strong) UIButton *switchButton;
@@ -52,14 +52,44 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, copy) NSString *manifestJSON;
 @property (nonatomic, strong) UIViewController *presenter;
 @property (nonatomic, assign) NSUInteger shutdownGeneration;
+@property (nonatomic, assign) NSUInteger startupGeneration;
+@property (nonatomic, assign) NSUInteger startupIndex;
+@property (nonatomic, copy) NSString *startupWaitingInstanceID;
 - (void)shutdownAndCloseInstances;
 - (void)finishShutdownGeneration:(NSNumber *)generation;
+- (void)startNextInstanceForGeneration:(NSNumber *)generation;
+- (void)startupTimeout:(NSDictionary *)token;
+- (void)installBootstrapForRecord:(NSDictionary *)record;
+- (void)releaseStartupPayloadForInstanceID:(NSString *)instanceID;
 @end
 
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
-static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-memory-release-1";
+static WKProcessPool *s_ios2WebProcessPool = nil;
+static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-memory-release-6";
 static NSString * const kIOS2WebFrameRateDefaultsKey = @"ios2.preferredFrameRate";
+static NSString * const kIOS2WebVerboseLoggingDefaultsKey = @"ios2.hsdkVerboseDebug";
+static NSString * const kIOS2WebStartupModeDefaultsKey = @"ios2.webStartupMode";
+static NSTimeInterval const kIOS2WebParallelStartupDelay = 0.75;
+static NSTimeInterval const kIOS2WebStartupPayloadCleanupDelay = 0.75;
+static NSTimeInterval const kIOS2WebStartupTimeout = 60.0;
+
+static WKProcessPool *IOS2SharedWebProcessPool(void)
+{
+    if (!s_ios2WebProcessPool) s_ios2WebProcessPool = [WKProcessPool new];
+    return s_ios2WebProcessPool;
+}
+
+static BOOL IOS2WebVerboseLoggingEnabled(void)
+{
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kIOS2WebVerboseLoggingDefaultsKey];
+}
+
+static NSString *IOS2WebStartupMode(void)
+{
+    NSString *mode = [[NSUserDefaults standardUserDefaults] stringForKey:kIOS2WebStartupModeDefaultsKey];
+    return [mode isEqualToString:@"parallel"] ? @"parallel" : @"serial";
+}
 
 static NSInteger IOS2WebPreferredFrameRate(void)
 {
@@ -151,7 +181,9 @@ static NSString *IOS2GameSHA256(NSString *value)
     if (self.finished) return;
     self.finished = YES;
     IOS2WebHTTPCompletion completion = self.completion;
-    NSData *body = [[self.bodyData copy] autorelease];
+    // The completion is invoked synchronously and does not retain the body.
+    // Avoid an extra full-size copy for every CDN response.
+    NSData *body = self.bodyData;
     if (completion) completion(body, response, error);
     self.completion = nil;
     self.connection = nil;
@@ -368,7 +400,9 @@ static NSString *IOS2GameSHA256(NSString *value)
         NSString *cdnPath = [url.path substringFromIndex:[@"/cdn" length]];
         if (![url.path hasPrefix:@"/cdn/"]) {
             cdnPath = [@"/remote" stringByAppendingString:url.path];
-            NSLog(@"[ios2] Web bundle resource mapped: %@ -> %@", url.absoluteString, cdnPath);
+            if (IOS2WebVerboseLoggingEnabled()) {
+                NSLog(@"[ios2] Web bundle resource mapped: %@ -> %@", url.absoluteString, cdnPath);
+            }
         }
         remoteURL = [@"https://xxz-xyzw-res.hortorgames.com" stringByAppendingString:cdnPath ?: @""];
         if (url.query.length) remoteURL = [remoteURL stringByAppendingFormat:@"?%@", url.query];
@@ -392,7 +426,9 @@ static NSString *IOS2GameSHA256(NSString *value)
         NSURL *cachedURL = [self cachedFileForURL:remoteURL index:index];
         NSData *cachedData = cachedURL ? [NSData dataWithContentsOfURL:cachedURL] : nil;
         if (cachedData.length) {
-            NSLog(@"[ios2] Web CDN cache hit: %@ bytes=%lu", remoteURL, (unsigned long)cachedData.length);
+            if (IOS2WebVerboseLoggingEnabled()) {
+                NSLog(@"[ios2] Web CDN cache hit: %@ bytes=%lu", remoteURL, (unsigned long)cachedData.length);
+            }
             dispatch_async(dispatch_get_main_queue(), ^{ [self respondToTask:task data:cachedData url:url]; });
             return;
         }
@@ -409,7 +445,7 @@ static NSString *IOS2GameSHA256(NSString *value)
             self.tasks[[self keyForTask:task]] = remoteURL;
         }
         if (!shouldStartDownload) {
-            NSLog(@"[ios2] Web CDN request coalesced: %@", remoteURL);
+            if (IOS2WebVerboseLoggingEnabled()) NSLog(@"[ios2] Web CDN request coalesced: %@", remoteURL);
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -443,8 +479,10 @@ static NSString *IOS2GameSHA256(NSString *value)
                     });
                     return;
                 }
-                NSLog(@"[ios2] Web CDN request finished: %@ status=%ld bytes=%lu",
-                      remoteURL, (long)status, (unsigned long)data.length);
+                if (IOS2WebVerboseLoggingEnabled()) {
+                    NSLog(@"[ios2] Web CDN request finished: %@ status=%ld bytes=%lu",
+                          remoteURL, (long)status, (unsigned long)data.length);
+                }
                 dispatch_async(self.cacheQueue, ^{
                     NSFileManager *manager = [NSFileManager defaultManager];
                     NSURL *webDirectory = [IOS2GameCacheDirectory() URLByAppendingPathComponent:@"webkit" isDirectory:YES];
@@ -477,7 +515,7 @@ static NSString *IOS2GameSHA256(NSString *value)
                     if (![updated writeToURL:indexURL options:NSDataWritingAtomic error:&indexWriteError]) {
                         NSLog(@"[ios2] Web CDN cache index write failed: %@ error=%@", remoteURL,
                               indexWriteError.localizedDescription ?: @"<none>");
-                    } else {
+                    } else if (IOS2WebVerboseLoggingEnabled()) {
                         NSLog(@"[ios2] Web CDN cache saved: %@ -> %@", remoteURL, relativePath);
                     }
                     NSArray<NSDictionary *> *pending = [self takePendingTasksForURL:remoteURL requestID:downloadID];
@@ -552,7 +590,7 @@ static NSString *IOS2DisplayAccountName(NSString *name)
     return value.length ? value : @"账号";
 }
 
-static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, NSString *authResponse, NSString *scriptsJSON, NSString *manifestJSON)
+static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, NSString *authResponse, NSString *scriptsJSON, NSString *manifestJSON, BOOL verboseLogging, BOOL multiOpen, NSString *startupMode)
 {
     NSArray *scripts = nil;
     NSData *scriptsData = [scriptsJSON dataUsingEncoding:NSUTF8StringEncoding];
@@ -567,6 +605,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         @"account": accountName ?: @"",
         @"authResponse": authResponse ?: @"",
         @"frameRate": @(IOS2WebPreferredFrameRate()),
+        @"verboseLogging": @(verboseLogging),
+        @"multiOpen": @(multiOpen),
+        @"startupMode": startupMode ?: @"serial",
         @"scripts": scripts ?: @[],
         @"manifest": manifest ?: @{}
     };
@@ -574,10 +615,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     NSString *identityJSON = [[[NSString alloc] initWithData:identityData encoding:NSUTF8StringEncoding] autorelease] ?: @"{}";
     return [NSString stringWithFormat:
         @"(function(){'use strict';"
-         "window.__IOS2_GAME_INSTANCE__=%@;"
+         "window.__IOS2_GAME_INSTANCE__=%@;var __ios2VerboseLogging=!!window.__IOS2_GAME_INSTANCE__.verboseLogging;"
          "window.jsb=window.jsb||{};window.jsb.reflection=window.jsb.reflection||{};"
          "window.jsb.reflection.callStaticMethod=function(){var args=Array.prototype.slice.call(arguments),klass=args.shift(),method=args.shift();if(klass==='SDKMessager'&&method==='callNative:withMessage:'){var channel=args[0]||'sdk',message=args[1]||'{}';try{window.webkit.messageHandlers.ios2Game.postMessage({type:'hsdk',instance:window.__IOS2_GAME_INSTANCE__.id,channel:channel,message:String(message)});}catch(error){console.error('[ios2-web] HSDK bridge failed',error);}}return null;};"
-         "function authBytes(){var value=window.__IOS2_GAME_INSTANCE__.authResponse||'',binary=atob(value),bytes=new Uint8Array(binary.length);for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);return bytes.buffer;}"
+         "var __ios2AuthBuffer=null;function authBytes(){if(__ios2AuthBuffer)return __ios2AuthBuffer.slice(0);var value=window.__IOS2_GAME_INSTANCE__.authResponse||'',binary=atob(value),bytes=new Uint8Array(binary.length);for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);__ios2AuthBuffer=bytes.buffer;window.__IOS2_GAME_INSTANCE__.authResponse='';return __ios2AuthBuffer.slice(0);}"
          "var NativeXHR=window.XMLHttpRequest;function IOS2XHR(){this._native=new NativeXHR();this._fake=false;this._listeners={};this._readyState=0;this._status=0;this._response=null;this._responseType='';var self=this;['readystatechange','load','error','timeout','abort','loadend','progress'].forEach(function(type){self._native['on'+type]=function(event){var handler=self['on'+type];if(typeof handler==='function')handler.call(self,event);var list=self._listeners[type]||[];for(var i=0;i<list.length;i++)list[i].call(self,event);};});}"
          "IOS2XHR.prototype.open=function(method,url){this._fake=/\\/login\\/authuser(?:\\?|$)/.test(String(url||''));if(this._fake){this._readyState=1;this._emit('readystatechange');}else this._native.open.apply(this._native,arguments);};"
          "IOS2XHR.prototype.send=function(body){if(!this._fake){this._native.send(body);return;}var self=this;setTimeout(function(){self._status=200;self._response=authBytes();self._readyState=4;self._emit('readystatechange');self._emit('load');self._emit('loadend');},0);};"
@@ -587,10 +628,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
          "function parse(buffer){var view=new DataView(buffer),magic=view.getUint32(0,true);if(magic!==0x03525650)throw new Error('Only PVR v3 textures are supported');var low=view.getUint32(8,true),high=view.getUint32(12,true);if(high!==0||low>3)throw new Error('Unsupported PVR pixel format '+high+':'+low);var height=view.getUint32(24,true),width=view.getUint32(28,true),mips=Math.max(1,view.getUint32(44,true)),offset=52+view.getUint32(48,true),levels=[],w=width,h=height,bpp=(low===0||low===1)?2:4;for(var level=0;level<mips;level++){var size=bpp===2?Math.max(w,16)*Math.max(h,8)*2/8:Math.max(w,8)*Math.max(h,8)*4/8;size=Math.floor(size);if(offset+size>buffer.byteLength)throw new Error('Truncated PVR mip level '+level);levels.push({width:w,height:h,data:new Uint8Array(buffer,offset,size)});offset+=size;w=Math.max(1,w>>1);h=Math.max(1,h>>1);}return {width:width,height:height,format:low,levels:levels};}"
          "function upload(gl,buffer){var pvr=parse(buffer),ext=extensions(gl).pvrtc;if(!ext)throw new Error('PVRTC WebGL extension is unavailable');var formats=[ext.COMPRESSED_RGB_PVRTC_2BPPV1_IMG,ext.COMPRESSED_RGBA_PVRTC_2BPPV1_IMG,ext.COMPRESSED_RGB_PVRTC_4BPPV1_IMG,ext.COMPRESSED_RGBA_PVRTC_4BPPV1_IMG],texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);for(var i=0;i<pvr.levels.length;i++){var item=pvr.levels[i];gl.compressedTexImage2D(gl.TEXTURE_2D,i,formats[pvr.format],item.width,item.height,0,item.data);}gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,pvr.levels.length>1?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);return {texture:texture,width:pvr.width,height:pvr.height,format:pvr.format};}"
          "window.IOS2PVR={extensions:extensions,parse:parse,upload:upload,load:function(gl,url,options){return fetch(url,options||{}).then(function(response){if(!response.ok)throw new Error('PVR request failed: '+response.status);return response.arrayBuffer();}).then(function(buffer){return upload(gl,buffer);});}};"
-         "window.addEventListener('load',function(){setTimeout(function(){var scripts=window.__IOS2_GAME_INSTANCE__.scripts||[];for(var i=0;i<scripts.length;i++){try{(0,eval)(String(scripts[i].source||'')+'\\n//# sourceURL=ios2-game/'+String(scripts[i].name||'script.js'));}catch(error){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(error&&error.stack||error)});}}},0);});"
+         "window.addEventListener('load',function(){setTimeout(function(){var scripts=window.__IOS2_GAME_INSTANCE__.scripts||[];for(var i=0;i<scripts.length;i++){try{(0,eval)(String(scripts[i].source||'')+'\\n//# sourceURL=ios2-game/'+String(scripts[i].name||'script.js'));if(window.HSDK&&HSDK.config)HSDK.config.isOpenDebug=__ios2VerboseLogging;}catch(error){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(error&&error.stack||error)});}}window.__IOS2_GAME_INSTANCE__.scripts=null;scripts=null;},0);});"
          "window.addEventListener('error',function(event){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(event.message||'Web game error')});});"
          "window.addEventListener('unhandledrejection',function(event){window.webkit.messageHandlers.ios2Game.postMessage({type:'error',instance:window.__IOS2_GAME_INSTANCE__.id,message:String(event.reason&&event.reason.stack||event.reason||'Unhandled rejection')});});"
-         "['log','warn','error'].forEach(function(level){var original=console[level];console[level]=function(){var args=Array.prototype.slice.call(arguments);try{window.webkit.messageHandlers.ios2Game.postMessage({type:'console',level:level,instance:window.__IOS2_GAME_INSTANCE__.id,message:args.map(function(value){return String(value&&value.stack||value);}).join(' ')});}catch(ignored){}return original.apply(console,args);};});"
+         "['log','warn','error'].forEach(function(level){var original=console[level];console[level]=function(){var args=Array.prototype.slice.call(arguments);if(level==='error'||__ios2VerboseLogging)try{window.webkit.messageHandlers.ios2Game.postMessage({type:'console',level:level,instance:window.__IOS2_GAME_INSTANCE__.id,message:args.map(function(value){return String(value&&value.stack||value);}).join(' ')});}catch(ignored){}return original.apply(console,args);};});"
          "})();", identityJSON];
 }
 
@@ -622,12 +663,21 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     if (!self.presenter.view) return;
     [self ensureToolbar];
     self.toolbar.hidden = NO;
+    // Four independent Cocos pages can briefly hold the encrypted bundle,
+    // decoded source and GPU upload buffers at the same time. Keep the
+    // detailed HSDK console bridge useful for one-page debugging, but make
+    // multi-open resilient even if the launcher setting was left enabled.
+    NSString *startupMode = IOS2WebStartupMode();
+    self.startupGeneration = self.shutdownGeneration;
+    self.startupIndex = 0;
+    self.startupWaitingInstanceID = nil;
 
     for (NSDictionary *item in instanceConfigs) {
         NSString *accountName = [item[@"account"] isKindOfClass:[NSString class]] ? item[@"account"] : @"账号";
         NSString *authResponse = [item[@"authResponse"] isKindOfClass:[NSString class]] ? item[@"authResponse"] : @"";
         NSString *instanceID = NSUUID.UUID.UUIDString;
         WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
+        configuration.processPool = IOS2SharedWebProcessPool();
         [configuration setURLSchemeHandler:[IOS2GameSchemeHandler sharedInstance] forURLScheme:@"ios2-game"];
         // Game settings are commonly stored through localStorage. A
         // non-persistent store discarded those values whenever the game view
@@ -636,12 +686,6 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         configuration.allowsInlineMediaPlayback = YES;
         WKUserContentController *controller = configuration.userContentController;
         [controller addScriptMessageHandler:self name:@"ios2Game"];
-        WKUserScript *bootstrapScript = [[WKUserScript alloc]
-            initWithSource:IOS2PVRBootstrap(instanceID, accountName, authResponse, scriptsJSON, manifestJSON)
-            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-            forMainFrameOnly:YES];
-        [controller addUserScript:bootstrapScript];
-        [bootstrapScript release];
 
         WKWebView *webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
         [configuration release];
@@ -653,20 +697,117 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         webView.scrollView.bounces = NO;
         [self.presenter.view addSubview:webView];
         NSString *accountID = [item[@"accountID"] isKindOfClass:[NSString class]] ? item[@"accountID"] : @"";
-        [self.instances addObject:@{ @"id": instanceID,
-                                     @"account": accountName,
-                                     @"accountID": accountID,
-                                     @"view": webView }];
-        NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
-        NSLog(@"[ios2] loading Web runtime revision=%@ account=%@", kIOS2WebRuntimeRevision, accountName);
-        [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
+        NSMutableDictionary *record = [@{ @"id": instanceID,
+                                          @"account": accountName,
+                                          @"accountID": accountID,
+                                          @"authResponse": authResponse,
+                                          @"view": webView } mutableCopy];
+        [self.instances addObject:record];
+        [record release];
         [webView release];
     }
     [self configureToolbar];
     [self layoutInstances];
     [self.presenter.view bringSubviewToFront:self.toolbar];
-    NSLog(@"[ios2] started %lu Web game instances at %ld FPS", (unsigned long)self.instances.count,
-          (long)IOS2WebPreferredFrameRate());
+    NSLog(@"[ios2] queued %lu Web game instances at %ld FPS (startup mode=%@)",
+          (unsigned long)self.instances.count, (long)IOS2WebPreferredFrameRate(), startupMode);
+    if ([startupMode isEqualToString:@"serial"]) {
+        [self startNextInstanceForGeneration:@(self.startupGeneration)];
+    } else {
+        NSUInteger generation = self.startupGeneration;
+        NSUInteger index = 0;
+        for (NSDictionary *record in self.instances) {
+            NSTimeInterval delay = kIOS2WebParallelStartupDelay * index++;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (generation != self.shutdownGeneration || generation != self.startupGeneration) return;
+                WKWebView *webView = record[@"view"];
+                [self installBootstrapForRecord:record];
+                NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
+                NSLog(@"[ios2] loading Web runtime revision=%@ account=%@ (parallel)",
+                      kIOS2WebRuntimeRevision, record[@"account"] ?: @"账号");
+                [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
+            });
+        }
+    }
+}
+
+- (void)startNextInstanceForGeneration:(NSNumber *)generationNumber
+{
+    NSUInteger generation = generationNumber.unsignedIntegerValue;
+    if (generation != self.shutdownGeneration || generation != self.startupGeneration ||
+        self.startupWaitingInstanceID.length) return;
+    if (self.startupIndex >= self.instances.count) return;
+
+    NSDictionary *record = self.instances[self.startupIndex++];
+    NSString *instanceID = record[@"id"];
+    WKWebView *webView = record[@"view"];
+    if (!instanceID.length || !webView) {
+        [self startNextInstanceForGeneration:generationNumber];
+        return;
+    }
+    self.startupWaitingInstanceID = instanceID;
+    NSString *accountName = record[@"account"] ?: @"账号";
+    [self installBootstrapForRecord:record];
+    NSString *entry = [NSString stringWithFormat:@"ios2-game://app/index.html?revision=%@", kIOS2WebRuntimeRevision];
+    NSLog(@"[ios2] loading Web runtime revision=%@ account=%@ (%lu/%lu)",
+          kIOS2WebRuntimeRevision, accountName, (unsigned long)self.startupIndex,
+          (unsigned long)self.instances.count);
+    [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:entry]]];
+    [self performSelector:@selector(startupTimeout:)
+               withObject:@{ @"generation": @(generation), @"instance": instanceID }
+               afterDelay:kIOS2WebStartupTimeout];
+}
+
+- (void)installBootstrapForRecord:(NSDictionary *)record
+{
+    WKWebView *webView = record[@"view"];
+    if (!webView || !record[@"id"]) return;
+    WKUserContentController *controller = webView.configuration.userContentController;
+    NSString *source = IOS2PVRBootstrap(record[@"id"], record[@"account"] ?: @"账号",
+                                        record[@"authResponse"] ?: @"", self.scriptsJSON ?: @"[]",
+                                        self.manifestJSON ?: @"{}",
+                                        IOS2WebVerboseLoggingEnabled() && self.instances.count == 1,
+                                        self.instances.count > 1, IOS2WebStartupMode());
+    WKUserScript *bootstrapScript = [[WKUserScript alloc]
+        initWithSource:source
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+        forMainFrameOnly:YES];
+    [controller addUserScript:bootstrapScript];
+    [bootstrapScript release];
+}
+
+- (void)releaseStartupPayloadForInstanceID:(NSString *)instanceID
+{
+    if (!instanceID.length) return;
+    for (NSMutableDictionary *record in self.instances) {
+        if (![record[@"id"] isEqualToString:instanceID]) continue;
+        WKWebView *webView = record[@"view"];
+        // The bootstrap WKUserScript contains the complete script manifest and
+        // auth response. It is only needed for the first document load; keeping
+        // it registered makes WebKit retain a large source string per page.
+        [record removeObjectForKey:@"authResponse"];
+        // Removing user scripts can synchronously touch WebKit's main-thread
+        // state. Defer it so the next serial navigation can be queued without
+        // making the launcher appear to stall after it reports ready.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kIOS2WebStartupPayloadCleanupDelay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (webView) [webView.configuration.userContentController removeAllUserScripts];
+        });
+        return;
+    }
+}
+
+- (void)startupTimeout:(NSDictionary *)token
+{
+    NSUInteger generation = [token[@"generation"] unsignedIntegerValue];
+    NSString *instanceID = token[@"instance"];
+    if (generation != self.shutdownGeneration || generation != self.startupGeneration ||
+        ![self.startupWaitingInstanceID isEqualToString:instanceID]) return;
+    NSLog(@"[ios2] Web game startup timeout; continuing with next instance %@", instanceID);
+    [self releaseStartupPayloadForInstanceID:instanceID];
+    self.startupWaitingInstanceID = nil;
+    [self startNextInstanceForGeneration:@(generation)];
 }
 
 - (NSString *)currentSingleAccountName
@@ -961,7 +1102,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         IOS2GameWebView *manager = s_ios2GameWebView;
         if (!manager) return;
         NSString *script = @"if (typeof window.__ios2ReleaseUnusedAssets === 'function') "
-                            "window.__ios2ReleaseUnusedAssets('native-lifecycle');";
+                            "window.__ios2ReleaseUnusedAssets('native-lifecycle');void 0;";
         for (NSDictionary *record in manager.instances) {
             WKWebView *webView = record[@"view"];
             [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
@@ -982,7 +1123,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 
     __block NSUInteger remaining = instanceCount;
     NSString *script = @"if (typeof window.__ios2ShutdownGame === 'function') "
-                        "window.__ios2ShutdownGame();";
+                        "window.__ios2ShutdownGame();void 0;";
     for (NSDictionary *record in self.instances) {
         WKWebView *webView = record[@"view"];
         [webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
@@ -1010,6 +1151,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 {
     [NSObject cancelPreviousPerformRequestsWithTarget:self];
     self.shutdownGeneration++;
+    self.startupGeneration = self.shutdownGeneration;
+    self.startupIndex = 0;
+    self.startupWaitingInstanceID = nil;
     [[IOS2GameSchemeHandler sharedInstance] cancelAllRequests];
     for (NSDictionary *record in self.instances) {
         WKWebView *view = record[@"view"];
@@ -1036,6 +1180,19 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 + (NSUInteger)instanceCount
 {
     return [self sharedInstance].instances.count;
+}
+
++ (NSString *)startupMode
+{
+    return IOS2WebStartupMode();
+}
+
++ (void)setStartupMode:(NSString *)mode
+{
+    NSString *value = [mode isEqualToString:@"parallel"] ? @"parallel" : @"serial";
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2WebStartupModeDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSLog(@"[ios2] WebKit startup mode selected: %@", value);
 }
 
 + (NSString *)accountIDForInstance:(NSString *)instanceID
@@ -1115,12 +1272,36 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     (void)userContentController;
     if (![message.body isKindOfClass:[NSDictionary class]]) return;
     NSDictionary *body = message.body;
-    if ([body[@"type"] isEqualToString:@"capabilities"]) {
+    if ([body[@"type"] isEqualToString:@"ready"]) {
+        NSString *instanceID = [body[@"instance"] isKindOfClass:[NSString class]] ? body[@"instance"] : @"";
+        [self releaseStartupPayloadForInstanceID:instanceID];
+        if (instanceID.length && [instanceID isEqualToString:self.startupWaitingInstanceID]) {
+            NSUInteger generation = self.startupGeneration;
+            [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                                       selector:@selector(startupTimeout:)
+                                                         object:nil];
+            self.startupWaitingInstanceID = nil;
+            NSLog(@"[ios2] Web game %@ startup settled (stable=%@ assets=%@ pending=%@ elapsed=%@ms); starting next instance",
+                  instanceID, body[@"stable"] ?: @NO, body[@"assets"] ?: @"?",
+                  body[@"pendingDownloads"] ?: @"?", body[@"elapsedMs"] ?: @"?");
+            // Queue the next navigation immediately. The previous page's
+            // bootstrap script is released asynchronously above, after this
+            // load request has been handed to WebKit.
+            [self startNextInstanceForGeneration:@(generation)];
+            if (self.startupIndex >= self.instances.count) {
+                self.scriptsJSON = nil;
+                self.manifestJSON = nil;
+            }
+        }
+    } else if ([body[@"type"] isEqualToString:@"capabilities"]) {
         NSLog(@"[ios2] Web game %@ compressed textures: PVRTC=%@ ASTC=%@", body[@"instance"], body[@"pvrtc"], body[@"astc"]);
     } else if ([body[@"type"] isEqualToString:@"error"]) {
         NSLog(@"[ios2] Web game %@ error: %@", body[@"instance"], body[@"message"]);
     } else if ([body[@"type"] isEqualToString:@"console"]) {
-        NSLog(@"[ios2][web][%@][%@] %@", body[@"instance"], body[@"level"], body[@"message"]);
+        NSString *level = [body[@"level"] isKindOfClass:[NSString class]] ? body[@"level"] : @"log";
+        if ([level isEqualToString:@"error"] || IOS2WebVerboseLoggingEnabled()) {
+            NSLog(@"[ios2][web][%@][%@] %@", body[@"instance"], level, body[@"message"]);
+        }
     } else if ([body[@"type"] isEqualToString:@"hsdk"]) {
         NSString *channel = [body[@"channel"] isKindOfClass:[NSString class]] ? body[@"channel"] : @"sdk";
         NSString *message = [body[@"message"] isKindOfClass:[NSString class]] ? body[@"message"] : @"{}";

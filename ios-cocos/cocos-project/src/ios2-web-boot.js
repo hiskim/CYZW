@@ -1,8 +1,18 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-memory-release-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-memory-release-6';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
+
+    // Keep serial startup responsive while still allowing the previous page's
+    // final resource callbacks and GL uploads to drain before the next page.
+    // A few game requests can remain open for the whole session, so they must
+    // not hold the next account behind the full startup timeout.
+    var IOS2_STARTUP_SETTLE_INTERVAL = 100;
+    var IOS2_STARTUP_STABLE_SAMPLES = 1;
+    var IOS2_STARTUP_QUIET_MS = 250;
+    var IOS2_STARTUP_MIN_SETTLE_MS = 400;
+    var IOS2_STARTUP_MAX_SETTLE_MS = 1200;
 
     function showFatal(message) {
         var panel = document.getElementById('ios2WebError');
@@ -28,7 +38,11 @@
     var assetReleaseState = {
         busy: false,
         sequence: 0,
-        shuttingDown: false
+        shuttingDown: false,
+        startupReadySent: false,
+        startupTrackingOpen: true,
+        startupDownloadCount: 0,
+        startupLastActivityAt: 0
     };
 
     function managedAssetCount() {
@@ -64,6 +78,249 @@
         return true;
     }
     window.__ios2ReleaseUnusedAssets = releaseUnusedAssets;
+
+    function installStartupDownloadTracker() {
+        var manager = window.cc && window.cc.assetManager;
+        var downloader = manager && manager.downloader;
+        if (!downloader || downloader.__ios2StartupDownloadTrackerInstalled) return;
+        downloader.__ios2StartupDownloadTrackerInstalled = true;
+        var originalDownload = downloader.download;
+        if (typeof originalDownload !== 'function') return;
+        downloader.download = function () {
+            var args = Array.prototype.slice.call(arguments);
+            var callbackIndex = args.length - 1;
+            var callback = args[callbackIndex];
+            if (typeof callback !== 'function' || !assetReleaseState.startupTrackingOpen) {
+                return originalDownload.apply(this, args);
+            }
+            var finished = false;
+            assetReleaseState.startupLastActivityAt = Date.now();
+            assetReleaseState.startupDownloadCount++;
+            args[callbackIndex] = function () {
+                if (!finished) {
+                    finished = true;
+                    assetReleaseState.startupDownloadCount = Math.max(0,
+                        assetReleaseState.startupDownloadCount - 1);
+                    assetReleaseState.startupLastActivityAt = Date.now();
+                }
+                return callback.apply(this, arguments);
+            };
+            try {
+                return originalDownload.apply(this, args);
+            } catch (error) {
+                if (!finished) {
+                    finished = true;
+                    assetReleaseState.startupDownloadCount = Math.max(0,
+                        assetReleaseState.startupDownloadCount - 1);
+                    assetReleaseState.startupLastActivityAt = Date.now();
+                }
+                throw error;
+            }
+        };
+    }
+
+    function isTrackedStartupURL(url) {
+        return /^ios2-game:|xxz-xyzw-res\.hortorgames\.com/.test(String(url || ''));
+    }
+
+    // The encrypted bundle and PVR helpers use fetch directly in addition to
+    // Cocos' downloader/XHR. Fetch resolves before arrayBuffer() has consumed
+    // the body, so finish tracking when the body reader actually resolves.
+    // API traffic is excluded; only local WebKit resources are tracked.
+    function installStartupFetchTracker() {
+        if (window.__ios2StartupFetchTrackerInstalled || typeof window.fetch !== 'function') return;
+        window.__ios2StartupFetchTrackerInstalled = true;
+        var originalFetch = window.fetch;
+        window.fetch = function (input, init) {
+            var url = typeof input === 'string' ? input : input && input.url;
+            var tracked = assetReleaseState.startupTrackingOpen && isTrackedStartupURL(url);
+            if (!tracked) return originalFetch.call(this, input, init);
+            var finished = false;
+            assetReleaseState.startupDownloadCount++;
+            assetReleaseState.startupLastActivityAt = Date.now();
+            var finish = function () {
+                if (finished) return;
+                finished = true;
+                assetReleaseState.startupDownloadCount = Math.max(0,
+                    assetReleaseState.startupDownloadCount - 1);
+                assetReleaseState.startupLastActivityAt = Date.now();
+            };
+            var request;
+            try {
+                request = originalFetch.call(this, input, init);
+            } catch (error) {
+                finish();
+                throw error;
+            }
+            return Promise.resolve(request).then(function (response) {
+                var bodyMethods = ['arrayBuffer', 'blob', 'text', 'json', 'formData'];
+                var wrapped = false;
+                for (var i = 0; i < bodyMethods.length; i++) {
+                    var method = bodyMethods[i];
+                    if (!response || typeof response[method] !== 'function') continue;
+                    var originalBodyMethod = response[method];
+                    try {
+                        (function (bodyMethod, originalMethod) {
+                            response[bodyMethod] = function () {
+                                var body;
+                                try {
+                                    body = originalMethod.apply(this, arguments);
+                                } catch (error) {
+                                    finish();
+                                    throw error;
+                                }
+                                return Promise.resolve(body).then(function (value) {
+                                    finish();
+                                    return value;
+                                }, function (error) {
+                                    finish();
+                                    throw error;
+                                });
+                            };
+                        }(method, originalBodyMethod));
+                        wrapped = true;
+                    } catch (ignored) {}
+                }
+                if (!wrapped) finish();
+                return response;
+            }, function (error) {
+                finish();
+                throw error;
+            });
+        };
+    }
+
+    function installStartupXHRTracker() {
+        if (window.__ios2StartupXHRTrackerInstalled || !window.XMLHttpRequest) return;
+        var XHR = window.XMLHttpRequest;
+        var prototype = XHR.prototype;
+        if (!prototype || typeof prototype.open !== 'function' || typeof prototype.send !== 'function') return;
+        window.__ios2StartupXHRTrackerInstalled = true;
+        var originalOpen = prototype.open;
+        var originalSend = prototype.send;
+        prototype.open = function (method, url) {
+            this.__ios2StartupURL = String(url || '');
+            return originalOpen.apply(this, arguments);
+        };
+        prototype.send = function () {
+            var xhr = this;
+            if (!assetReleaseState.startupTrackingOpen || !isTrackedStartupURL(xhr.__ios2StartupURL)) {
+                return originalSend.apply(this, arguments);
+            }
+            var finished = false;
+            var finish = function () {
+                if (finished) return;
+                finished = true;
+                if (typeof xhr.removeEventListener === 'function') xhr.removeEventListener('loadend', finish);
+                assetReleaseState.startupDownloadCount = Math.max(0,
+                    assetReleaseState.startupDownloadCount - 1);
+                assetReleaseState.startupLastActivityAt = Date.now();
+            };
+            assetReleaseState.startupDownloadCount++;
+            assetReleaseState.startupLastActivityAt = Date.now();
+            if (typeof xhr.addEventListener === 'function') xhr.addEventListener('loadend', finish);
+            try {
+                return originalSend.apply(this, arguments);
+            } catch (error) {
+                finish();
+                throw error;
+            }
+        };
+    }
+
+    function configureMultiOpenLoading(multiOpen, startupMode) {
+        if (!multiOpen) return;
+        var manager = window.cc && window.cc.assetManager;
+        if (!manager) return;
+
+        // Cocos 2.4 defaults scene/bundle loads to eight concurrent requests
+        // and script loads to 1024. That is acceptable for one page, but four
+        // independent WebContent heaps turn those queues into a large burst of
+        // encrypted bytes, decoded source, image buffers and GPU uploads.
+        var presets = manager.presets || {};
+        function limitPreset(name, concurrency, requestsPerFrame) {
+            if (!presets[name]) return;
+            presets[name].maxConcurrency = concurrency;
+            presets[name].maxRequestsPerFrame = requestsPerFrame;
+        }
+        var serial = startupMode !== 'parallel';
+        limitPreset('preload', 1, 1);
+        limitPreset('scene', serial ? 1 : 2, 1);
+        limitPreset('bundle', serial ? 1 : 2, 1);
+        limitPreset('script', 1, 1);
+
+        var downloader = manager.downloader;
+        if (downloader) {
+            downloader.maxConcurrency = Math.min(Number(downloader.maxConcurrency) || 6, 2);
+            downloader.maxRequestsPerFrame = Math.min(Number(downloader.maxRequestsPerFrame) || 6, 1);
+        }
+        console.log('[ios2-web] multi-open loading limits applied',
+            'mode=' + (serial ? 'serial' : 'parallel'),
+            'scene=' + (serial ? 1 : 2),
+            'bundle=' + (serial ? 1 : 2), 'script=1');
+    }
+
+    function notifyStartupReadyAfterSettling(sceneError) {
+        if (assetReleaseState.startupReadySent) return;
+        // The scene callback means all scene dependencies are available. Any
+        // request that remains open after this point is background traffic and
+        // must not hold the next serial instance behind a long-lived CDN
+        // connection.
+        assetReleaseState.startupTrackingOpen = false;
+        var startedAt = Date.now();
+        var previousCount = managedAssetCount();
+        var stableSamples = 0;
+        var releaseRequested = false;
+        if (!assetReleaseState.startupLastActivityAt) {
+            assetReleaseState.startupLastActivityAt = startedAt;
+        }
+
+        function sendReady(forced) {
+            if (assetReleaseState.startupReadySent) return;
+            assetReleaseState.startupReadySent = true;
+            var elapsedMs = Date.now() - startedAt;
+            var message = {
+                type: 'ready',
+                instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                multiOpen: !!(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.multiOpen),
+                stable: !forced && !sceneError,
+                assets: managedAssetCount(),
+                pendingDownloads: assetReleaseState.startupDownloadCount,
+                elapsedMs: elapsedMs
+            };
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ios2Game) {
+                window.webkit.messageHandlers.ios2Game.postMessage(message);
+            }
+            console.log('[ios2-web] startup settled',
+                'assets=' + message.assets,
+                'pendingDownloads=' + message.pendingDownloads,
+                'elapsedMs=' + message.elapsedMs,
+                'stable=' + message.stable);
+        }
+
+        function check() {
+            var now = Date.now();
+            var count = managedAssetCount();
+            var pending = assetReleaseState.startupDownloadCount;
+            if (!releaseRequested) releaseRequested = releaseUnusedAssets('startup-ready');
+            var quiet = now - assetReleaseState.startupLastActivityAt >= IOS2_STARTUP_QUIET_MS;
+            if (pending === 0 && quiet && count >= 0 && count === previousCount) {
+                stableSamples++;
+            } else {
+                stableSamples = 0;
+            }
+            previousCount = count;
+            if ((now - startedAt >= IOS2_STARTUP_MIN_SETTLE_MS &&
+                 stableSamples >= IOS2_STARTUP_STABLE_SAMPLES) ||
+                now - startedAt >= IOS2_STARTUP_MAX_SETTLE_MS) {
+                sendReady(now - startedAt >= IOS2_STARTUP_MAX_SETTLE_MS);
+                return;
+            }
+            window.setTimeout(check, IOS2_STARTUP_SETTLE_INTERVAL);
+        }
+
+        window.setTimeout(check, IOS2_STARTUP_SETTLE_INTERVAL);
+    }
 
     // Logout closes the whole game instance, so it is safe to tear down the
     // director and release every Cocos asset before the native WKWebView is
@@ -577,6 +834,12 @@
                     execute(code, encryptedURL);
                     loaded[encryptedURL] = true;
                     console.log('[ios2-web] decrypted bundle', encryptedURL, bytes.length);
+                    // Do not keep the encrypted/decrypted copies alive after
+                    // eval. Four WebKit instances otherwise retain several
+                    // extra bundle-sized buffers during the startup burst.
+                    bytes = null;
+                    code = null;
+                    buffer = null;
                     onComplete(null);
                 })
                 .catch(function (error) { onComplete(error); });
@@ -739,7 +1002,11 @@
                 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                 device._restoreTexture(0);
                 this._texture = texture;
-                this._image = data;
+                // The compressed payload has already been uploaded to GL. Keep
+                // only dimensions as the image handle; retaining every PVR
+                // ArrayBuffer here duplicates CPU memory for every texture and
+                // every WebKit instance.
+                this._image = { width: data.width, height: data.height, __ios2Compressed: true };
                 this.width = data.width;
                 this.height = data.height;
                 this._packable = false;
@@ -783,11 +1050,17 @@
             if (name !== 'internal' && name !== 'codeVersion' && name !== 'COMMIT_ID' &&
                 settings.remoteBundles.indexOf(name) < 0) settings.remoteBundles.push(name);
         });
+        // The native bootstrap manifest is only needed to merge versions and
+        // the battle version. Drop the object before large bundle loads begin.
+        if (window.__IOS2_GAME_INSTANCE__) window.__IOS2_GAME_INSTANCE__.manifest = null;
         var canvas = document.getElementById('GameCanvas');
         installTypeScriptRuntimeHelpers();
         installASTCTextureSupport();
         cc.macro.SUPPORT_TEXTURE_FORMATS = ['.pvr'];
         var targetFrameRate = preferredFrameRate();
+        var multiOpen = !!(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.multiOpen);
+        var startupMode = String(window.__IOS2_GAME_INSTANCE__ &&
+            window.__IOS2_GAME_INSTANCE__.startupMode || 'serial');
         console.log('[ios2-web] target frame rate', targetFrameRate);
         var option = {
             id: canvas,
@@ -802,6 +1075,10 @@
             remoteBundles: settings.remoteBundles,
             server: settings.server
         });
+        configureMultiOpenLoading(multiOpen, startupMode);
+        installStartupDownloadTracker();
+        installStartupFetchTracker();
+        installStartupXHRTracker();
         installEncryptedBundleLoader();
         var bundles = [{
             name: cc.AssetManager.BuiltinBundleName.INTERNAL,
@@ -859,10 +1136,15 @@
                         device._extensions.WEBGL_compressed_texture_pvrtc = astc;
                         console.log('[ios2-web] ASTC enabled for PVR texture selection');
                     }
-                    cc.view.enableRetina(true);
+                    // A multi-open layout already renders four game views on
+                    // one screen. Retina framebuffers multiply GPU/IOSurface
+                    // memory for every canvas, so use the logical resolution
+                    // when more than one instance is active.
+                    cc.view.enableRetina(!multiOpen);
                     cc.view.resizeWithBrowserSize(true);
                     cc.director.loadScene(settings.launchScene, function (sceneError) {
                         if (sceneError) console.error('[ios2-web] scene failed', sceneError);
+                        notifyStartupReadyAfterSettling(sceneError);
                     });
                 });
             }

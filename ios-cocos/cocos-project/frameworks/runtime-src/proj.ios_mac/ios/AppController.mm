@@ -808,6 +808,8 @@ static void IOS2Authenticate(NSData *binData)
 + (void)loginBinFiles:(NSString *)namesJSON scriptsJSON:(NSString *)scriptsJSON manifestJSON:(NSString *)manifestJSON;
 + (void)hideWebGames;
 + (NSInteger)webGameInstanceCount;
++ (NSString *)webGameStartupMode;
++ (void)setWebGameStartupMode:(NSString *)mode;
 + (void)webGameManagerRequested;
 @end
 
@@ -899,7 +901,6 @@ static void IOS2Authenticate(NSData *binData)
         IOS2CallJavaScript(@"__ios2MultiLoginFailed", @"请选择 1 到 4 个账号");
         return;
     }
-
     NSArray *names = [(NSArray *)object copy];
     // WebKit games issue an HSDK login request after their web view starts.
     // Reset the previous native login result here so that request can only
@@ -991,6 +992,16 @@ static void IOS2Authenticate(NSData *binData)
 + (NSInteger)webGameInstanceCount
 {
     return (NSInteger)[IOS2GameWebView instanceCount];
+}
+
++ (NSString *)webGameStartupMode
+{
+    return [IOS2GameWebView startupMode];
+}
+
++ (void)setWebGameStartupMode:(NSString *)mode
+{
+    [IOS2GameWebView setStartupMode:mode];
 }
 
 + (void)webGameManagerRequested
