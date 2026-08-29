@@ -7,6 +7,7 @@ var IOS2_LAUNCHER_IDLE_FRAME_RATE = 15;
 var IOS2_ACTIVE_DEFAULT_FRAME_RATE = 60;
 var IOS2_LAUNCHER_FREEZE_DELAY_MS = 1600;
 var IOS2_HSDK_VERBOSE_DEBUG_KEY = 'ios2.hsdkVerboseDebug';
+var IOS2_RENDER_QUALITY_SINGLE_KEY = 'ios2.renderQuality.single';
 var ios2LauncherFreezeTimer = null;
 var ios2LauncherFrozen = false;
 var ios2LauncherActivityWakeInstalled = false;
@@ -422,6 +423,28 @@ function ios2PreferredFrameRate() {
     if (!window.jsb || !jsb.reflection || !jsb.reflection.callStaticMethod) return null;
     var frameRate = Number(jsb.reflection.callStaticMethod('IOS2Native', 'preferredFrameRate'));
     return [0, 15, 24, 30, 45, 60].indexOf(frameRate) >= 0 ? frameRate : null;
+}
+
+function ios2RenderQualitySingle() {
+    var value = '';
+    if (window.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+        try { value = String(jsb.reflection.callStaticMethod('IOS2Native', 'renderQualitySingle') || ''); }
+        catch (ignored) {}
+    }
+    if (['low', 'medium', 'high'].indexOf(value) >= 0) return value;
+    try {
+        value = window.localStorage && localStorage.getItem(IOS2_RENDER_QUALITY_SINGLE_KEY);
+    } catch (ignored2) {}
+    return ['low', 'medium', 'high'].indexOf(value) >= 0 ? value : 'high';
+}
+
+function ios2ApplyRenderQuality() {
+    var quality = ios2RenderQualitySingle();
+    var device = Math.max(1, Number(window.devicePixelRatio) || 1);
+    var pixelRatio = quality === 'low' ? 1 : quality === 'medium' ? Math.min(2, device) : Math.min(3, device);
+    if (cc.view && typeof cc.view._maxPixelRatio === 'number') cc.view._maxPixelRatio = pixelRatio;
+    if (cc.view && typeof cc.view.enableRetina === 'function') cc.view.enableRetina(pixelRatio > 1);
+    ios2Trace('single render quality=' + quality + ', pixel ratio=' + pixelRatio);
 }
 
 function ios2CanThrottleLauncher() {
@@ -850,7 +873,7 @@ window.boot = function () {
 
     var onStart = function () {
 
-        cc.view.enableRetina(true);
+        ios2ApplyRenderQuality();
         cc.view.resizeWithBrowserSize(true);
 
         if (cc.sys.isBrowser) {

@@ -32,6 +32,25 @@
         return [15, 24, 30, 45, 60].indexOf(frameRate) >= 0 ? frameRate : 60;
     }
 
+    function renderQuality() {
+        var instance = window.__IOS2_GAME_INSTANCE__ || {};
+        var value = instance.multiOpen ? instance.qualityMulti : instance.qualitySingle;
+        return value === 'low' || value === 'medium' || value === 'high' ? value :
+            (instance.multiOpen ? 'medium' : 'high');
+    }
+
+    function renderPixelRatio(quality, devicePixelRatio, multiOpen) {
+        var device = Math.max(1, Number(devicePixelRatio) || 1);
+        if (multiOpen) {
+            if (quality === 'low') return 1;
+            if (quality === 'high') return Math.min(2, device);
+            return Math.min(1.5, device);
+        }
+        if (quality === 'low') return 1;
+        if (quality === 'medium') return Math.min(2, device);
+        return Math.min(3, device);
+    }
+
     // Cocos' release manager only frees assets whose reference count has
     // reached zero. Keep this entry point shared by scene, WebKit and native
     // lifecycle notifications so cleanup is safe to request more than once.
@@ -1139,18 +1158,20 @@
                     // Native Cocos uses UIScreen.scale (usually 3x on a real
                     // iPhone), while Cocos Web defaults to a 2x pixel-ratio
                     // cap. Match the native backing-store density for a
-                    // single WebKit game. Multi-open keeps the 1x backing
-                    // store because each extra retina canvas multiplies GPU
-                    // and IOSurface memory and can terminate the app.
+                    // single WebKit game. Multi-open uses a capped scale per
+                    // quality level because each extra retina canvas
+                    // multiplies GPU and IOSurface memory.
                     var devicePixelRatio = Number(window.devicePixelRatio) || 1;
-                    var webPixelRatio = multiOpen ? 1 : Math.min(3, Math.max(1, devicePixelRatio));
+                    var quality = renderQuality();
+                    var webPixelRatio = renderPixelRatio(quality, devicePixelRatio, multiOpen);
                     if (typeof cc.view._maxPixelRatio === 'number') {
                         cc.view._maxPixelRatio = webPixelRatio;
                     }
-                    cc.view.enableRetina(!multiOpen);
+                    cc.view.enableRetina(webPixelRatio > 1);
                     cc.view.resizeWithBrowserSize(true);
                     console.log('[ios2-web] pixel ratio',
                         'device=' + devicePixelRatio,
+                        'quality=' + quality,
                         'selected=' + webPixelRatio,
                         'retina=' + cc.view.isRetinaEnabled());
                     cc.director.loadScene(settings.launchScene, function (sceneError) {

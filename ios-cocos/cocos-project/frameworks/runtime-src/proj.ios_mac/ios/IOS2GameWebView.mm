@@ -66,10 +66,12 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 static IOS2GameWebView *s_ios2GameWebView = nil;
 static IOS2GameSchemeHandler *s_ios2GameSchemeHandler = nil;
 static WKProcessPool *s_ios2WebProcessPool = nil;
-static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-retina-1";
+static NSString * const kIOS2WebRuntimeRevision = @"20260829-webkit-quality-2";
 static NSString * const kIOS2WebFrameRateDefaultsKey = @"ios2.preferredFrameRate";
 static NSString * const kIOS2WebVerboseLoggingDefaultsKey = @"ios2.hsdkVerboseDebug";
 static NSString * const kIOS2WebStartupModeDefaultsKey = @"ios2.webStartupMode";
+static NSString * const kIOS2WebRenderQualitySingleDefaultsKey = @"ios2.renderQuality.single";
+static NSString * const kIOS2WebRenderQualityMultiDefaultsKey = @"ios2.renderQuality.multi";
 static NSTimeInterval const kIOS2WebParallelStartupDelay = 0.75;
 static NSTimeInterval const kIOS2WebStartupPayloadCleanupDelay = 0.75;
 static NSTimeInterval const kIOS2WebStartupTimeout = 60.0;
@@ -89,6 +91,13 @@ static NSString *IOS2WebStartupMode(void)
 {
     NSString *mode = [[NSUserDefaults standardUserDefaults] stringForKey:kIOS2WebStartupModeDefaultsKey];
     return [mode isEqualToString:@"parallel"] ? @"parallel" : @"serial";
+}
+
+static NSString *IOS2WebRenderQuality(NSString *key, NSString *fallback)
+{
+    NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:key];
+    return ([value isEqualToString:@"low"] || [value isEqualToString:@"medium"] ||
+            [value isEqualToString:@"high"]) ? value : fallback;
 }
 
 static NSInteger IOS2WebPreferredFrameRate(void)
@@ -605,6 +614,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         @"account": accountName ?: @"",
         @"authResponse": authResponse ?: @"",
         @"frameRate": @(IOS2WebPreferredFrameRate()),
+        @"qualitySingle": IOS2WebRenderQuality(kIOS2WebRenderQualitySingleDefaultsKey, @"high"),
+        @"qualityMulti": IOS2WebRenderQuality(kIOS2WebRenderQualityMultiDefaultsKey, @"medium"),
         @"verboseLogging": @(verboseLogging),
         @"multiOpen": @(multiOpen),
         @"startupMode": startupMode ?: @"serial",

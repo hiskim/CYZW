@@ -66,6 +66,8 @@ static NSString * const kIOS2FrameRateDefaultsKey = @"ios2.preferredFrameRate";
 static NSString * const kIOS2ShowFPSDefaultsKey = @"ios2.showFPS";
 static NSString * const kIOS2HSDKVerboseDebugDefaultsKey = @"ios2.hsdkVerboseDebug";
 static NSString * const kIOS2RuntimeBackendDefaultsKey = @"ios2.runtimeBackend";
+static NSString * const kIOS2RenderQualitySingleDefaultsKey = @"ios2.renderQuality.single";
+static NSString * const kIOS2RenderQualityMultiDefaultsKey = @"ios2.renderQuality.multi";
 
 static NSInteger IOS2PreferredFrameRate(void)
 {
@@ -97,6 +99,13 @@ static void IOS2ApplyPerformancePreferences(void)
 static BOOL IOS2HSDKVerboseDebugEnabled(void)
 {
     return [[NSUserDefaults standardUserDefaults] boolForKey:kIOS2HSDKVerboseDebugDefaultsKey];
+}
+
+static NSString *IOS2RenderQualityValue(NSString *key, NSString *fallback)
+{
+    NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:key];
+    return ([value isEqualToString:@"low"] || [value isEqualToString:@"medium"] ||
+            [value isEqualToString:@"high"]) ? value : fallback;
 }
 
 static double IOS2ResidentMemoryMB(void)
@@ -795,6 +804,11 @@ static void IOS2Authenticate(NSData *binData)
 + (void)setShowFPS:(BOOL)showFPS;
 + (BOOL)hsdkVerboseDebug;
 + (void)setHSDKVerboseDebug:(BOOL)enabled;
++ (NSString *)renderQualitySingle;
++ (void)setRenderQualitySingle:(NSString *)quality;
++ (void)applyRenderQualitySingle;
++ (NSString *)renderQualityMulti;
++ (void)setRenderQualityMulti:(NSString *)quality;
 + (BOOL)isSimulator;
 + (void)trace:(NSString *)message;
 + (void)showScripts:(NSString *)json;
@@ -1050,6 +1064,49 @@ static void IOS2Authenticate(NSData *binData)
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kIOS2HSDKVerboseDebugDefaultsKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
     NSLog(@"[ios2] HSDK verbose debug %@", enabled ? @"enabled" : @"disabled");
+}
+
++ (NSString *)renderQualitySingle
+{
+    return IOS2RenderQualityValue(kIOS2RenderQualitySingleDefaultsKey, @"high");
+}
+
++ (void)setRenderQualitySingle:(NSString *)quality
+{
+    NSString *value = ([quality isEqualToString:@"low"] || [quality isEqualToString:@"medium"] ||
+                       [quality isEqualToString:@"high"]) ? quality : @"high";
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2RenderQualitySingleDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSLog(@"[ios2] single render quality selected: %@", value);
+}
+
++ (void)applyRenderQualitySingle
+{
+    cocos2d::Application *application = cocos2d::Application::getInstance();
+    if (!application) return;
+    NSString *quality = [self renderQualitySingle];
+    // Cocos' native render texture uses a downsample factor: 1 is the full
+    // device framebuffer, while 2 and 3 provide medium and low quality.
+    uint8_t factor = [quality isEqualToString:@"low"] ? 3 :
+                     ([quality isEqualToString:@"medium"] ? 2 : 1);
+    if (factor > 1 && !application->isDownsampleEnabled()) {
+        application->setDevicePixelRatio(factor);
+    }
+    NSLog(@"[ios2] single render quality applied: %@ (downsample=%u)", quality, factor);
+}
+
++ (NSString *)renderQualityMulti
+{
+    return IOS2RenderQualityValue(kIOS2RenderQualityMultiDefaultsKey, @"medium");
+}
+
++ (void)setRenderQualityMulti:(NSString *)quality
+{
+    NSString *value = ([quality isEqualToString:@"low"] || [quality isEqualToString:@"medium"] ||
+                       [quality isEqualToString:@"high"]) ? quality : @"medium";
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2RenderQualityMultiDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSLog(@"[ios2] multi render quality selected: %@", value);
 }
 
 + (void)selectLoginBin
@@ -1634,6 +1691,11 @@ Application* app = nullptr;
     }
     
     [[UIApplication sharedApplication] setStatusBarHidden:YES];
+
+    // Apply the Cocos downsample factor before JSB computes its logical view
+    // and touch coordinate scale. Applying it from main.js after cc.game.run
+    // would leave the management UI laid out for the old coordinate system.
+    [IOS2Native applyRenderQualitySingle];
     
     //run the cocos2d-x game scene
     app->start();
