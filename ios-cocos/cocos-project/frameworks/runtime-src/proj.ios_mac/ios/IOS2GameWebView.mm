@@ -53,6 +53,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, strong) UIButton *groupControlButton;
 @property (nonatomic, strong) NSLayoutConstraint *groupControlCenterXConstraint;
 @property (nonatomic, assign) BOOL groupControlCentered;
+@property (nonatomic, assign) NSUInteger primaryInstanceIndex;
 @property (nonatomic, copy) NSString *scriptsJSON;
 @property (nonatomic, copy) NSString *manifestJSON;
 @property (nonatomic, strong) UIViewController *presenter;
@@ -71,6 +72,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 - (void)showGroupControlButton;
 - (void)ensureGroupContainer;
 - (void)addBinToGroupTapped;
+- (void)instanceThumbnailTapped:(UITapGestureRecognizer *)gesture;
 - (void)appendInstanceWithAccount:(NSString *)account accountID:(NSString *)accountID authResponse:(NSString *)authResponse;
 + (NSString *)layoutMode;
 + (void)setLayoutMode:(NSString *)mode;
@@ -668,6 +670,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     if (!s_ios2GameWebView) {
         s_ios2GameWebView = [IOS2GameWebView new];
         s_ios2GameWebView.instances = [NSMutableArray array];
+        s_ios2GameWebView.primaryInstanceIndex = 0;
     }
     return s_ios2GameWebView;
 }
@@ -690,9 +693,22 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     });
 }
 
++ (void)showGroupBinPicker
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self hide];
+        Class nativeClass = NSClassFromString(@"IOS2Native");
+        SEL selector = NSSelectorFromString(@"showGroupBinPicker");
+        if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector];
+    });
+}
+
 - (void)appendInstanceWithAccount:(NSString *)account accountID:(NSString *)accountID authResponse:(NSString *)authResponse
 {
     if (self.instances.count < 1 || self.instances.count >= 4 || !self.groupContainer || !self.presenter.view) return;
+    self.groupContainer.hidden = NO;
+    self.toolbar.hidden = NO;
+    for (NSDictionary *record in self.instances) ((WKWebView *)record[@"view"]).hidden = NO;
     NSString *instanceID = NSUUID.UUID.UUIDString;
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
     configuration.processPool = IOS2SharedWebProcessPool();
@@ -1057,6 +1073,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
                                                          action:@selector(groupControlTapped)];
     groupButton.translatesAutoresizingMaskIntoConstraints = NO;
     groupButton.tintColor = UIColor.whiteColor;
+    if (@available(iOS 13.0, *)) {
+        [groupButton setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22.0 weight:UIImageSymbolWeightSemibold]
+                                             forImageInState:UIControlStateNormal];
+    }
     groupButton.backgroundColor = [UIColor colorWithRed:0.04 green:0.45 blue:0.96 alpha:1.0];
     groupButton.layer.cornerRadius = 29.0;
     groupButton.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -1195,11 +1215,19 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 
 - (void)addBinToGroupTapped
 {
-    // The empty grid slot authenticates and appends a new child WebView while
-    // keeping the existing group container alive.
+    // The FairyGUI account view owns the existing Bin list and picker UI.
     Class nativeClass = NSClassFromString(@"IOS2Native");
-    SEL selector = NSSelectorFromString(@"selectLoginBin");
+    SEL selector = NSSelectorFromString(@"showGroupBinPicker");
     if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector];
+}
+
+- (void)instanceThumbnailTapped:(UITapGestureRecognizer *)gesture
+{
+    if (gesture.state != UIGestureRecognizerStateEnded || self.instances.count < 2) return;
+    NSUInteger index = (NSUInteger)gesture.view.tag;
+    if (index >= self.instances.count || index == self.primaryInstanceIndex) return;
+    self.primaryInstanceIndex = index;
+    [self layoutInstances];
 }
 
 - (void)layoutInstances
@@ -1240,6 +1268,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         CGFloat cellHeight = (height - gutter * (rows - 1)) / rows;
         for (NSUInteger index = 0; index < count; index++) {
             WKWebView *view = self.instances[index][@"view"];
+            UITapGestureRecognizer *tap = self.instances[index][@"thumbnailGesture"];
+            tap.enabled = NO;
             NSUInteger column = index % columns;
             NSUInteger row = index / columns;
             view.frame = CGRectMake(column * (cellWidth + gutter), top + row * (cellHeight + gutter),
@@ -1256,10 +1286,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             add.frame = CGRectMake(0.0, 0.0, cellWidth, cellHeight);
             add.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
             add.tintColor = [UIColor colorWithRed:0.36 green:0.68 blue:1.0 alpha:1.0];
-            [add setTitle:@"+  添加 Bin" forState:UIControlStateNormal];
+            [add setTitle:@"+  增加多开" forState:UIControlStateNormal];
             add.titleLabel.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightMedium];
             [add addTarget:self action:@selector(addBinToGroupTapped) forControlEvents:UIControlEventTouchUpInside];
-            add.accessibilityLabel = @"添加 Bin 文件";
+            add.accessibilityLabel = @"从 Bin 列表增加多开";
             [slot addSubview:add];
             slot.frame = CGRectMake(0.0, top + (cellHeight + gutter), cellWidth, cellHeight);
             [content addSubview:slot];
@@ -1267,17 +1297,36 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             [slot release];
         }
     } else {
-        CGFloat cardWidth = MIN(width - 24.0, MAX(220.0, width * 0.84));
-        CGFloat cardHeight = MIN(height - 18.0, MAX(240.0, height * 0.72));
-        CGFloat left = (width - cardWidth) * 0.5;
-        CGFloat offset = MIN(46.0, MAX(18.0, height * 0.055));
+        if (self.primaryInstanceIndex >= count) self.primaryInstanceIndex = 0;
+        CGFloat stackGutter = 8.0;
+        NSUInteger thumbnailCount = count - 1;
+        CGFloat thumbnailHeight = MIN(96.0, MAX(68.0, height * 0.18));
+        CGFloat thumbnailWidth = (width - stackGutter * (thumbnailCount + 1)) / thumbnailCount;
+        CGFloat mainY = top + thumbnailHeight + stackGutter;
+        CGFloat mainHeight = MAX(1.0, CGRectGetMaxY(bounds) - mainY - stackGutter);
         for (NSUInteger index = 0; index < count; index++) {
             WKWebView *view = self.instances[index][@"view"];
-            CGFloat x = left + MIN((CGFloat)index, 2.0) * 10.0;
-            CGFloat y = top + MIN((CGFloat)index, 2.0) * offset;
-            view.frame = CGRectMake(x, y, cardWidth, cardHeight);
-            [content bringSubviewToFront:view];
+            view.tag = (NSInteger)index;
+            UITapGestureRecognizer *tap = self.instances[index][@"thumbnailGesture"];
+            if (!tap) {
+                tap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(instanceThumbnailTapped:)] autorelease];
+                tap.cancelsTouchesInView = YES;
+                [view addGestureRecognizer:tap];
+                self.instances[index][@"thumbnailGesture"] = tap;
+            }
+            tap.enabled = index != self.primaryInstanceIndex;
+            if (index == self.primaryInstanceIndex) {
+                view.frame = CGRectMake(stackGutter, mainY, width - stackGutter * 2.0, mainHeight);
+            } else {
+                NSUInteger thumbIndex = index < self.primaryInstanceIndex ? index : index - 1;
+                CGFloat x = stackGutter + thumbIndex * (thumbnailWidth + stackGutter);
+                view.frame = CGRectMake(x, top, thumbnailWidth, thumbnailHeight);
+            }
         }
+        for (NSUInteger index = 0; index < count; index++) {
+            if (index != self.primaryInstanceIndex) [content bringSubviewToFront:self.instances[index][@"view"]];
+        }
+        [content bringSubviewToFront:self.instances[self.primaryInstanceIndex][@"view"]];
     }
     if (self.toolbar) [content bringSubviewToFront:self.toolbar];
     if (self.groupControlButton) [content bringSubviewToFront:self.groupControlButton];
@@ -1395,6 +1444,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         [view removeFromSuperview];
     }
     [self.instances removeAllObjects];
+    self.primaryInstanceIndex = 0;
     [self.toolbar removeFromSuperview];
     self.toolbar = nil;
     [self.groupControlButton removeFromSuperview];

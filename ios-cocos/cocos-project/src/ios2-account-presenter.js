@@ -15,6 +15,7 @@
             importAccounts: function () { self.importAccounts(); },
             login: function (name) { self.login(name); },
             multiOpen: function (names) { self.multiOpen(names); },
+            selectGroupBin: function (name) { self.selectGroupBin(name); },
             remove: function (name) { self.remove(name); },
             openScripts: function () { self.onOpenPage(1); },
             openConfig: function () { self.onOpenPage(2); },
@@ -76,6 +77,23 @@
         } catch (error) {
             this.view.setBusy('');
             this.view.setStatus(error.message || '多开启动失败', 'warning');
+        }
+    };
+
+    IOS2AccountPresenter.prototype.selectGroupBin = function (name) {
+        name = String(name || '');
+        if (!name) return;
+        this.view.setStatus('正在认证 ' + name + '…');
+        try {
+            if (global.__ios2Manager && typeof global.__ios2Manager.closeGroupBinPicker === 'function') {
+                global.__ios2Manager.closeGroupBinPicker();
+            }
+            if (!(global.jsb && jsb.reflection && jsb.reflection.callStaticMethod)) {
+                throw new Error('native bridge is unavailable');
+            }
+            jsb.reflection.callStaticMethod('IOS2Native', 'appendBinToWebGroup:', name);
+        } catch (error) {
+            this.view.setStatus(error.message || '追加 Bin 失败', 'warning');
         }
     };
 

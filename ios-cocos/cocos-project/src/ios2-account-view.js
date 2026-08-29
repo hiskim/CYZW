@@ -624,6 +624,55 @@
         this.root.addChild(overlay);
     };
 
+    IOS2AccountView.prototype._showGroupBinPicker = function () {
+        var self = this;
+        var width = this.root.width;
+        var height = this.root.height;
+        var records = this._orderedAccounts();
+        var overlay = new fgui.GComponent();
+        overlay.setSize(width, height);
+        overlay.opaque = true;
+        overlay.addChild(graph(width, height, cc.color(8, 12, 18, 154)));
+        var panelWidth = Math.min(width - 32, 520);
+        var panelHeight = Math.min(height - 120, 540);
+        var panel = new fgui.GComponent();
+        panel.setSize(panelWidth, panelHeight);
+        panel.setPosition((width - panelWidth) / 2, Math.max(48, (height - panelHeight) / 2));
+        panel.addChild(graph(panelWidth, panelHeight, COLORS.surface, 16, COLORS.border));
+        var heading = text('选择 Bin 添加到群控', 24, COLORS.text, panelWidth - 96, 56);
+        heading.bold = true;
+        heading.setPosition(24, 12);
+        panel.addChild(heading);
+        var cancel = button('取消', 72, 38, COLORS.background, COLORS.muted, function () {
+            overlay.dispose();
+            self.show();
+        }, 8);
+        cancel.setPosition(panelWidth - 88, 20);
+        panel.addChild(cancel);
+        var list = new fgui.GList();
+        list.setPosition(16, 76);
+        list.setSize(panelWidth - 32, panelHeight - 92);
+        list.layout = fgui.ListLayoutType.SingleColumn;
+        list.lineGap = 6;
+        list.selectionMode = fgui.ListSelectionMode.None;
+        list.setupScroll(verticalScrollBuffer());
+        panel.addChild(list);
+        if (!records.length) {
+            list.addChild(text('暂无可用 Bin 文件', 20, COLORS.muted, list.width, 64, fgui.AlignType.Center));
+        } else {
+            records.forEach(function (record) {
+                var row = button(accountDisplayName(record), list.width, 54, COLORS.background, COLORS.text,
+                    function () {
+                        overlay.dispose();
+                        self.actions.selectGroupBin(record.name);
+                    }, 8);
+                list.addChild(row);
+            });
+        }
+        overlay.addChild(panel);
+        this.root.addChild(overlay);
+    };
+
     IOS2AccountView.prototype._showMultiOpen = function () {
         var self = this;
         var width = this.root.width;

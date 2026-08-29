@@ -653,7 +653,7 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
         s_ios2LoginBusy = NO;
         if (error || !http || http.statusCode < 200 || http.statusCode >= 300 || data.length <= 4) {
             NSString *message = error.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode];
-            IOS2CallJavaScript(@"__ios2BinLoginFailed", message);
+            IOS2CallJavaScript(@"__ios2GroupBinPickerFailed", message);
             return;
         }
         NSString *authResponse = [data base64EncodedStringWithOptions:0];
@@ -808,6 +808,8 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
 
 @interface IOS2Native : NSObject
 + (void)selectLoginBin;
++ (void)showGroupBinPicker;
++ (void)appendBinToWebGroup:(NSString *)name;
 + (void)selectBinFile;
 + (void)selectScriptFile;
 + (void)selectSettingsFile;
@@ -1166,6 +1168,28 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
     [[NSUserDefaults standardUserDefaults] setObject:value forKey:kIOS2RenderQualityMultiDefaultsKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
     NSLog(@"[ios2] multi render quality selected: %@", value);
+}
+
++ (void)showGroupBinPicker
+{
+    [IOS2GameWebView hide];
+    IOS2CallJavaScript(@"__ios2ShowGroupBinPicker", @"");
+}
+
++ (void)appendBinToWebGroup:(NSString *)name
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (s_ios2LoginBusy || [IOS2GameWebView instanceCount] < 2 || [IOS2GameWebView instanceCount] >= 4) return;
+        NSString *safeName = IOS2SafeBinName(name);
+        NSURL *url = [IOS2BinDirectory() URLByAppendingPathComponent:safeName];
+        NSData *binData = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil];
+        if (!binData.length) {
+            IOS2CallJavaScript(@"__ios2GroupBinPickerFailed", @"无法读取所选 Bin 文件");
+            return;
+        }
+        s_ios2LoginBusy = YES;
+        IOS2AuthenticateAdditionalBin(binData, name ?: safeName);
+    });
 }
 
 + (void)selectLoginBin

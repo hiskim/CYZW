@@ -5,6 +5,7 @@
 + (void)appendInstanceWithAccount:(NSString *)account
                          accountID:(NSString *)accountID
                       authResponse:(NSString *)authResponse;
++ (void)showGroupBinPicker;
 + (void)hide;
 + (void)closeAll;
 + (void)shutdownAndCloseAll;
