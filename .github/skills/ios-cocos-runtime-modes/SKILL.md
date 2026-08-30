@@ -63,6 +63,12 @@ git diff --check
 git status --short
 ```
 
-条件允许时运行相关 iOS 构建或 Xcode target；如果无法运行，需要在最终说明中明确未做构建/真机验证。
+使用 Xcode 构建：
+
+```sh
+xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
+```
 
 手动冒烟测试应覆盖：`Cocos 极速` 单账号登录和游戏内点击响应；Cocos 模式下不显示 JS 脚本和多开入口；`WebKit 多开` 脚本导入/加载；WebKit 单账号登录；WebKit 2 到 4 账号多开。

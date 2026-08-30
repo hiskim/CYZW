@@ -58,4 +58,12 @@ shasum -a 256 ios-cocos/cocos-project/src/ios2-web-cocos2d.js
 git diff --check -- ios-cocos/.gitignore ios-cocos/scripts ios-cocos/README.md ios-cocos/cocos-project/src/ios2-web-boot.js ios-cocos/cocos-project/src/ios2-web-index.html ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj/project.pbxproj
 ```
 
+使用 Xcode 构建：
+
+```sh
+xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
+```
+
 最后必须让用户在 iOS 实机或模拟器重新登录验证。成功标准是 WebKit 实例出现 `[ios2-web] boot revision`、远端 launcher 不再报 `Can't find variable: __extends`，并且账号能进入游戏。

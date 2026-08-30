@@ -70,11 +70,12 @@ git diff --check
 python3 /Users/gg/.codex/skills/.system/skill-creator/scripts/quick_validate.py .github/skills/ios2-render-quality
 ```
 
-如果修改了 Objective-C/Objective-C++，条件允许时构建：
+使用 Xcode 构建：
 
 ```sh
 xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
-  -scheme IOS2-mobile -configuration Debug -sdk iphoneos build CODE_SIGNING_ALLOWED=NO
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
 ```
 
 真机冒烟测试至少覆盖：

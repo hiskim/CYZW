@@ -79,13 +79,15 @@ grep -En 'jsb|reflection|HSDK|loginBinFile|IOS2Native' \
 
 该命令应无输出。
 
-进行 iOS 模拟器构建：
+使用 Xcode 构建：
 
 ```sh
-./ios-cocos/scripts/build_ios2.sh app-simulator
+xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
 ```
 
-验证真正的首次启动时，应先卸载模拟器中的旧 App 再安装。普通覆盖安装会保留 Documents 和认证状态，可能直接进入游戏，造成首页未挂载的误判。
+运行验证首次启动时，应先卸载设备中的旧 App 再安装。普通覆盖安装会保留 Documents 和认证状态，可能直接进入游戏，造成首页未挂载的误判。
 
 最终检查：
 

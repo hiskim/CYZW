@@ -65,8 +65,12 @@ description: 维护 IOS2 多开选择弹窗和登录后游戏顶栏/弹窗，适
 
 - rg -n "addChild.*setPosition" ios-cocos/cocos-project/src/ios2-manager.js
 
-该命令应无输出。条件允许时运行：
+该命令应无输出。使用 Xcode 构建：
 
-- ./ios-cocos/scripts/build_ios2.sh app-simulator
+```sh
+xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
+```
 
 手动冒烟测试至少覆盖：WebKit 多开弹窗可滚动且取消可关闭；Cocos 极速单账号登录后顶栏图标与 WebKit 风格一致；点击齿轮、切换 bin、信息弹窗后都能取消关闭；关闭后游戏区域触摸恢复；选择其他 bin 后能重新登录。

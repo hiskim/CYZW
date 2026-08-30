@@ -56,9 +56,13 @@ description: 排查和优化 IOS2 Cocos/WebKit 模式的首页空闲帧率、能
     node --check ios-cocos/cocos-project/src/ios2-web-boot.js
     git diff --check
 
-如果改动 Objective-C/Objective-C++，条件允许时运行对应 Xcode 构建，例如：
+使用 Xcode 构建：
 
-    xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj -scheme IOS2-mobile -configuration Debug -sdk iphoneos build CODE_SIGNING_ALLOWED=NO
+```sh
+xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
+```
 
 手动真机验证至少覆盖：
 

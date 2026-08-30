@@ -55,6 +55,14 @@ node --check ios-cocos/cocos-project/src/ios2-login.js
 git diff --check
 ```
 
+使用 Xcode 构建：
+
+```sh
+xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
+  -scheme IOS2-mobile -sdk iphonesimulator -configuration Debug build \
+  CODE_SIGNING_ALLOWED=NO -quiet
+```
+
 真机/Xcode 调试冒烟测试：
 
 1. 设置 `runtimeBackend` 为 `webkit`，选择 2 到 4 个不同 BIN，点击启动。

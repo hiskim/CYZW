@@ -58,7 +58,7 @@ node --check ios-cocos/cocos-project/src/ios2-manager.js
 git diff --check
 ```
 
-构建：
+使用 Xcode 构建：
 
 ```sh
 xcodebuild -project ios-cocos/cocos-project/frameworks/runtime-src/proj.ios_mac/IOS2.xcodeproj \
