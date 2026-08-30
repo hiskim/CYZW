@@ -44,7 +44,9 @@
         item.setSize(width, height);
         item.opaque = true;
         item.addChild(fairyGraph(width, height, fill, 10));
-        item.addChild(fairyText(caption, 17, color, width, height, fgui.AlignType.Center));
+        var captionText = fairyText(caption, 17, color, width, height, fgui.AlignType.Center);
+        item.addChild(captionText);
+        item.__ios2Caption = captionText;
         item.onClick(function (event) {
             if (event && event.stopPropagation) event.stopPropagation();
             if (item.enabled !== false && typeof callback === 'function') callback();
@@ -56,6 +58,26 @@
             if (event && event.stopPropagation) event.stopPropagation();
             if (item.enabled !== false && typeof callback === 'function') callback();
         });
+        return item;
+    }
+
+    function fairyCheckbox(selected, callback) {
+        var item = new fgui.GComponent();
+        item.setSize(28, 28);
+        item.touchable = false;
+        var box = fairyGraph(26, 26, selected ? COLORS.accent : cc.Color.WHITE, 5,
+            selected ? COLORS.accent : cc.color(170, 180, 192, 255));
+        item.addChild(box);
+        var mark = fairyText('✓', 21, cc.Color.WHITE, 26, 26, fgui.AlignType.Center);
+        mark.visible = !!selected;
+        item.addChild(mark);
+        item.setState = function (nextSelected) {
+            selected = !!nextSelected;
+            box.drawRect(1, selected ? COLORS.accent : cc.color(170, 180, 192, 255),
+                selected ? COLORS.accent : cc.Color.WHITE, [5]);
+            mark.visible = selected;
+        };
+        if (typeof callback === 'function') callback.__ios2Checkbox = item;
         return item;
     }
 
@@ -168,6 +190,14 @@
                 }
             }
             if (this._scriptListTitle) this._scriptListTitle.text = '脚本列表  ·  已启用 ' + count + '/' + this.scripts.length;
+            var selectedCount = this._scriptSelectedNames ? Object.keys(this._scriptSelectedNames).length : 0;
+            if (this._scriptDeleteSelectedButton && this._scriptDeleteSelectedButton.__ios2Caption) {
+                this._scriptDeleteSelectedButton.__ios2Caption.text = '删除已选 (' + selectedCount + ')';
+                this._scriptDeleteSelectedButton.enabled = selectedCount > 0;
+            }
+            if (this._scriptSelectAllButton && this._scriptSelectAllButton.__ios2Caption) {
+                this._scriptSelectAllButton.__ios2Caption.text = selectedCount === this.scripts.length && this.scripts.length ? '取消全选' : '全选';
+            }
             var children = this._scriptList && this._scriptList.numChildren !== undefined ?
                 this._scriptList.numChildren : 0;
             for (var childIndex = 0; childIndex < children; childIndex++) {
@@ -175,6 +205,7 @@
                 var scriptRecord = row && row.__ios2Script;
                 if (!scriptRecord) continue;
                 if (row.__ios2Switch) row.__ios2Switch.setState(scriptRecord.enabled);
+                if (row.__ios2Checkbox) row.__ios2Checkbox.setState(!!(this._scriptSelectedNames && this._scriptSelectedNames[scriptRecord.name]));
                 if (row.__ios2Scope) {
                     row.__ios2Scope.text = scriptRecord.scope === 'multi' ? '单开 + 多开' : '仅单开';
                 }
@@ -199,7 +230,7 @@
             panel.setSize(panelWidth, 74 + rowHeight * 4);
             panel.setPosition((root.width - panelWidth) / 2, Math.max(20, (root.height - panel.height) / 2));
             panel.addChild(fairyGraph(panelWidth, panel.height, COLORS.panel, 14, COLORS.border));
-            var heading = fairyText(script.name, 21, COLORS.text, panelWidth - 32, 42);
+            var heading = fairyText(script.name, 23, COLORS.text, panelWidth - 32, 42);
             heading.setPosition(16, 10); panel.addChild(heading);
             var options = [
                 { label: '仅单开生效', action: function () { script.scope = 'single'; self._saveScripts(); self._updateScriptVisuals(); self._closeScriptFairyPopup(); } },
@@ -245,15 +276,15 @@
             root.addChild(fairyGraph(root.width, root.height, COLORS.background));
             root.node.setAnchorPoint(0, 1); root.node.setPosition(0, size.height); this.content.addChild(root.node, 10);
             var top = common.NAV_HEIGHT + common.safeAreaTop(size) + 12;
-            var title = fairyText('JS 脚本管理器', 30, COLORS.text, Math.max(120, root.width - 180), 48); title.setPosition(22, top); root.addChild(title);
+            var title = fairyText('JS 脚本管理器', 32, COLORS.text, Math.max(120, root.width - 180), 48); title.setPosition(22, top); root.addChild(title);
             var importButton = fairyButton('+ 导入脚本', 126, 40, cc.color(37, 117, 224, 255), cc.Color.WHITE, this._importScript.bind(this)); importButton.setPosition(root.width - 148, top + 2); root.addChild(importButton);
             var gap = 12, cardWidth = (root.width - 44 - gap) / 2, cardY = top + 62;
             var makeCard = function (x, cardTitle, detail, onClick, enabled) {
                 var card = new fgui.GComponent(); card.setSize(cardWidth, 112); card.setPosition(x, cardY);
                 var cardSurface = fairyGraph(cardWidth, 112, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border);
                 card.addChild(cardSurface); card.__ios2Surface = cardSurface;
-                var name = fairyText(cardTitle, 19, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 32); name.setPosition(12, 10); card.addChild(name);
-                var desc = fairyText(detail, 15, COLORS.muted, cardWidth - 24, 30); desc.setPosition(12, 43); card.addChild(desc);
+                var name = fairyText(cardTitle, 21, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 34); name.setPosition(12, 9); card.addChild(name);
+                var desc = fairyText(detail, 17, COLORS.muted, cardWidth - 24, 32); desc.setPosition(12, 43); card.addChild(desc);
                 var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 66, 72); card.addChild(toggle);
                 card.__ios2Switch = toggle;
                 return card;
@@ -273,8 +304,33 @@
             this._scriptMultiGateCard = multiGateCard;
             var listTop = cardY + 132;
             var count = this.scripts.filter(function (item) { return item.enabled; }).length;
-            var listTitle = fairyText('脚本列表  ·  已启用 ' + count + '/' + this.scripts.length, 20, COLORS.text, root.width - 44, 36); listTitle.setPosition(22, listTop); root.addChild(listTitle);
+            var headerWidth = this._scriptBatchMode ? Math.max(120, root.width - 250) : Math.max(120, root.width - 170);
+            var listTitle = fairyText('脚本列表  ·  已启用 ' + count + '/' + this.scripts.length, 22, COLORS.text, headerWidth, 38); listTitle.setPosition(22, listTop); root.addChild(listTitle);
             this._scriptListTitle = listTitle;
+            if (!this._scriptSelectedNames) this._scriptSelectedNames = {};
+            var batchToggle = fairyButton(this._scriptBatchMode ? '取消批量' : '批量删除', 104, 36,
+                this._scriptBatchMode ? COLORS.panelAlt : cc.color(224, 82, 82, 255),
+                this._scriptBatchMode ? COLORS.text : cc.Color.WHITE, function () {
+                    self._scriptBatchMode = !self._scriptBatchMode;
+                    self._scriptSelectedNames = {};
+                    self._showScripts();
+                });
+            batchToggle.setPosition(root.width - 126, listTop + 1); root.addChild(batchToggle);
+            this._scriptBatchToggle = batchToggle;
+            if (this._scriptBatchMode) {
+                var selectAll = fairyButton('全选', 72, 32, COLORS.panelAlt, COLORS.text, function () {
+                    var selected = self._scriptSelectedNames || {};
+                    var allSelected = self.scripts.length > 0 && self.scripts.every(function (item) { return selected[item.name]; });
+                    self._scriptSelectedNames = {};
+                    if (!allSelected) self.scripts.forEach(function (item) { self._scriptSelectedNames[item.name] = true; });
+                    self._updateScriptVisuals();
+                });
+                selectAll.setPosition(root.width - 206, listTop + 3); root.addChild(selectAll); this._scriptSelectAllButton = selectAll;
+                var deleteSelected = fairyButton('删除已选 (0)', 112, 32, cc.color(224, 82, 82, 255), cc.Color.WHITE, function () { self._deleteSelectedScripts(); });
+                deleteSelected.setPosition(root.width - 326, listTop + 3); root.addChild(deleteSelected); this._scriptDeleteSelectedButton = deleteSelected;
+            } else {
+                this._scriptSelectAllButton = null; this._scriptDeleteSelectedButton = null;
+            }
             var listY = listTop + 42;
             var listHeight = Math.max(148, root.height - listY - 28);
             var list = new fgui.GList();
@@ -328,11 +384,23 @@
                     var rowWidth = root.width - 44, row = new fgui.GComponent(); row.setSize(rowWidth, 76);
                     var rowSurface = fairyGraph(rowWidth, 76, self.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), 10, script.enabled ? cc.color(179, 224, 198, 255) : COLORS.border);
                     row.addChild(rowSurface); row.__ios2Surface = rowSurface; row.__ios2Script = script;
-                    var name = fairyText(script.name, 18, COLORS.text, rowWidth - 92, 30); name.setPosition(14, 7); row.addChild(name);
-                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 15, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 140, 25); scope.setPosition(14, 42); row.addChild(scope); row.__ios2Scope = scope;
-                    var state = fairySwitch(script.enabled, function () { script.enabled = !script.enabled; self._saveScripts(); self._updateScriptVisuals(); }); state.setPosition(rowWidth - 68, 22); row.addChild(state); row.__ios2Switch = state;
+                    var rowTouch = { suppress: false };
+                    var leftInset = self._scriptBatchMode ? 52 : 14;
+                    if (self._scriptBatchMode) {
+                        var checkbox = fairyCheckbox(!!(self._scriptSelectedNames && self._scriptSelectedNames[script.name]));
+                        checkbox.setPosition(14, 24); row.addChild(checkbox); row.__ios2Checkbox = checkbox;
+                    }
+                    var name = fairyText(script.name, 20, COLORS.text, rowWidth - leftInset - 92, 32); name.setPosition(leftInset, 5); row.addChild(name);
+                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 17, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 140, 26); scope.setPosition(leftInset, 42); row.addChild(scope); row.__ios2Scope = scope;
+                    var state = fairySwitch(script.enabled, function () { rowTouch.suppress = true; script.enabled = !script.enabled; self._saveScripts(); self._updateScriptVisuals(); setTimeout(function () { rowTouch.suppress = false; }, 0); }); state.setPosition(rowWidth - 68, 22); row.addChild(state); row.__ios2Switch = state;
                     row.node.on(cc.Node.EventType.TOUCH_END, function () {
-                        if (!scrollPane.isDragged) self._showScriptFairyPopup(script);
+                        if (rowTouch.suppress || scrollPane.isDragged) return;
+                        if (self._scriptBatchMode) {
+                            if (!self._scriptSelectedNames) self._scriptSelectedNames = {};
+                            if (self._scriptSelectedNames[script.name]) delete self._scriptSelectedNames[script.name];
+                            else self._scriptSelectedNames[script.name] = true;
+                            self._updateScriptVisuals();
+                        } else self._showScriptFairyPopup(script);
                     });
                     list.addChild(row);
                 }(this.scripts[index], index));
@@ -429,6 +497,24 @@
             this.status = '正在删除 ' + name + '…';
             try { jsb.reflection.callStaticMethod('IOS2Native', 'deleteScriptFile:', name); }
             catch (error) { this.status = '删除失败'; }
+        },
+
+        _deleteSelectedScripts: function () {
+            if (!(global.jsb && jsb.reflection && jsb.reflection.callStaticMethod)) return;
+            var selected = this._scriptSelectedNames || {};
+            var names = [];
+            for (var index = 0; index < this.scripts.length; index++) {
+                if (this.scripts[index] && selected[this.scripts[index].name]) names.push(this.scripts[index].name);
+            }
+            if (!names.length) return;
+            this.status = '正在删除已选脚本…';
+            this._scriptSelectedNames = {};
+            this._scriptBatchMode = false;
+            for (var item = 0; item < names.length; item++) {
+                try { jsb.reflection.callStaticMethod('IOS2Native', 'deleteScriptFile:', names[item]); }
+                catch (error) { this.status = '批量删除失败'; }
+            }
+            this._updateScriptVisuals();
         },
 
         _runEnabledScripts: function (callback) {
