@@ -254,7 +254,9 @@
     };
 
     IOS2AccountView.prototype._build = function () {
+        this._closeSwipeRow();
         this.root.removeChildren(0, -1, true);
+        this._swipeRow = null;
         this._hasRenderedContent = false;
         var width = fgui.GRoot.inst.width;
         var height = fgui.GRoot.inst.height;
@@ -263,6 +265,8 @@
         this.layoutSafeTop = safeAreaTop(width, height);
         this.root.setSize(width, height);
         this.root.addChild(graph(width, height, COLORS.background));
+        this.root.clearClick();
+        this.root.on(fgui.Event.CLICK, this._handleOutsideSwipeClick, this);
 
         // The app hides the iOS status bar and lays out the management shell
         // edge-to-edge. Do not add the native safe-area inset again here: it
@@ -339,85 +343,225 @@
         }
     };
 
+    IOS2AccountView.prototype._closeSwipeRow = function () {
+        if (this._swipeRow && typeof this._swipeRow.closeSwipe === 'function') {
+            this._swipeRow.closeSwipe(true);
+        }
+        this._swipeRow = null;
+    };
+
+    IOS2AccountView.prototype._handleOutsideSwipeClick = function (evt) {
+        var active = this._swipeRow;
+        if (!active) return;
+        var target = evt && evt.initiator;
+        if (target && active.isAncestorOf && active.isAncestorOf(target)) return;
+        this._closeSwipeRow();
+    };
+
+    IOS2AccountView.prototype._swipeDeleteItem = function (record, width, height, renderContent) {
+        var self = this;
+        var deleteWidth = Math.min(112, Math.max(92, Math.round(width * 0.25)));
+        var row = new fgui.GComponent();
+        var foreground = new fgui.GComponent();
+        var deleteArea = new fgui.GComponent();
+        var swipeState = { offset: 0 };
+        var touch = {
+            startX: 0,
+            startY: 0,
+            baseOffset: 0,
+            deltaX: 0,
+            deltaY: 0,
+            dragging: false,
+            dismissedOpenRow: false,
+            wasOpen: false,
+            startedOnDelete: false,
+            direction: 0
+        };
+
+        row.setSize(width, height);
+        row.opaque = true;
+        if (typeof row.setupOverflow === 'function') row.setupOverflow(fgui.OverflowType.Hidden);
+        deleteArea.setSize(deleteWidth, height);
+        deleteArea.setPosition(width - deleteWidth, 0);
+        deleteArea.opaque = true;
+        deleteArea.addChild(graph(deleteWidth, height, COLORS.danger, 16));
+        deleteArea.addChild(trashIcon(cc.Color.WHITE)).setPosition(14, (height - 30) / 2);
+        deleteArea.addChild(text('删除', 18, cc.Color.WHITE, deleteWidth - 54, height, fgui.AlignType.Center))
+            .setPosition(48, 0);
+        deleteArea.tooltips = '删除账号';
+        deleteArea.touchable = !self.busyName;
+
+        foreground.setSize(width, height);
+        foreground.opaque = true;
+        row.addChild(deleteArea);
+        row.addChild(foreground);
+        // The rounded card leaves its corner pixels transparent. Paint a
+        // matching full-rect base first so the hidden delete layer cannot
+        // bleed through as a red outline while the row is closed.
+        foreground.addChild(graph(width, height, COLORS.background));
+        if (typeof renderContent === 'function') renderContent(foreground);
+
+        row.setSwipeOffset = function (offset) {
+            var clamped = Math.max(-deleteWidth, Math.min(0, Number(offset) || 0));
+            foreground.setPosition(clamped, 0);
+            swipeState.offset = clamped;
+            row.__swipeOffset = clamped;
+        };
+        row.animateSwipeOffset = function (offset) {
+            var target = Math.max(-deleteWidth, Math.min(0, offset));
+            if (!cc.tween) {
+                row.setSwipeOffset(target);
+                return;
+            }
+            cc.Tween.stopAllByTarget(swipeState);
+            cc.tween(swipeState).to(0.14, { offset: target }, {
+                easing: 'sineOut',
+                onUpdate: function (state) { row.setSwipeOffset(state.offset); }
+            }).start();
+        };
+        row.closeSwipe = function (immediate) {
+            if (immediate && cc.Tween) cc.Tween.stopAllByTarget(swipeState);
+            if (immediate) row.setSwipeOffset(0);
+            else row.animateSwipeOffset(0);
+            if (self._swipeRow === row) self._swipeRow = null;
+        };
+        row.openSwipe = function () {
+            if (self._swipeRow && self._swipeRow !== row && self._swipeRow.closeSwipe) {
+                self._swipeRow.closeSwipe();
+            }
+            row.animateSwipeOffset(-deleteWidth);
+            self._swipeRow = row;
+        };
+        row.setSwipeOffset(0);
+
+        row.on(fgui.Event.TOUCH_BEGIN, function (evt) {
+            var active = self._swipeRow;
+            touch.startX = evt.pos.x;
+            touch.startY = evt.pos.y;
+            touch.baseOffset = row.__swipeOffset || 0;
+            touch.deltaX = 0;
+            touch.deltaY = 0;
+            touch.dragging = false;
+            touch.dismissedOpenRow = !!(active && active !== row);
+            touch.wasOpen = active === row;
+            touch.startedOnDelete = !!(touch.wasOpen && evt.initiator &&
+                (evt.initiator === deleteArea || deleteArea.isAncestorOf(evt.initiator)));
+            touch.direction = 0;
+            if (touch.dismissedOpenRow) active.closeSwipe();
+            if (evt.captureTouch) evt.captureTouch();
+        });
+        row.on(fgui.Event.TOUCH_MOVE, function (evt) {
+            touch.deltaX = evt.pos.x - touch.startX;
+            touch.deltaY = evt.pos.y - touch.startY;
+            if (!touch.direction) {
+                var absX = Math.abs(touch.deltaX);
+                var absY = Math.abs(touch.deltaY);
+                // Lock the gesture direction early. A deliberately larger
+                // horizontal threshold and strong axis bias keeps vertical
+                // list scrolling from exposing the delete action.
+                if (absY > 10 && absY > absX * 0.65) touch.direction = -1;
+                else if (absX > 28 && absX > absY * 1.6) touch.direction = 1;
+            }
+            if (!touch.dragging && touch.direction === 1) {
+                touch.dragging = true;
+                if (fgui.GRoot.inst.inputProcessor) {
+                    fgui.GRoot.inst.inputProcessor.cancelClick(evt.touchId);
+                }
+            }
+            if (touch.dragging) {
+                row.setSwipeOffset(touch.baseOffset + touch.deltaX);
+                if (evt.stopPropagation) evt.stopPropagation();
+            }
+        });
+        row.on(fgui.Event.TOUCH_END, function (evt) {
+            if (touch.dragging) {
+                if ((touch.baseOffset + touch.deltaX) < -deleteWidth / 2) row.openSwipe();
+                else row.closeSwipe();
+                if (evt.stopPropagation) evt.stopPropagation();
+            } else if (touch.dismissedOpenRow) {
+                if (fgui.GRoot.inst.inputProcessor) {
+                    fgui.GRoot.inst.inputProcessor.cancelClick(evt.touchId);
+                }
+                row.closeSwipe();
+            } else if (touch.wasOpen || self._swipeRow === row) {
+                if (!touch.startedOnDelete && fgui.GRoot.inst.inputProcessor) {
+                    fgui.GRoot.inst.inputProcessor.cancelClick(evt.touchId);
+                }
+                row.closeSwipe();
+            }
+        });
+        row.on(fgui.Event.TOUCH_CANCEL, function (evt) {
+            row.closeSwipe();
+            if (evt.stopPropagation) evt.stopPropagation();
+        });
+        deleteArea.onClick(function () {
+            row.closeSwipe();
+            if (!self.busyName) self._confirmDelete(record);
+        });
+        return row;
+    };
+
     IOS2AccountView.prototype._row = function (record, width, y) {
         var self = this;
-        var row = new fgui.GComponent();
         var rowHeight = 124;
         var active = this.busyName === record.name;
-        row.setSize(width, rowHeight);
-        row.setPosition(0, y);
-        row.addChild(graph(width, rowHeight, record.last ? cc.color(249, 253, 252, 255) : COLORS.surface,
-            18, cc.color(234, 237, 243, 255)));
-        var accountIcon = userIcon();
-        accountIcon.setPosition(18, 17);
-        row.addChild(accountIcon);
-        var displayName = String(record.name || '').replace(/\.bin$/i, '') || '未命名账号';
-        var name = text(displayName, 26, COLORS.text, Math.max(80, width - 178), 38);
-        name.autoSize = fgui.AutoSizeType.Shrink;
-        name.setPosition(64, 11);
-        row.addChild(name);
-        var details = formatDate(record.modified) || '时间未知';
-        var detail = text('◷  ' + details, 17, COLORS.muted, Math.max(80, width - 178), 30);
-        detail.autoSize = fgui.AutoSizeType.Shrink;
-        detail.setPosition(64, 58);
-        row.addChild(detail);
-        var state = button(active ? '登录中…' : '待机', 102, 38,
-            active ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
-            active ? COLORS.accent : cc.color(132, 136, 144, 255),
-            function () { self.actions.login(record.name); }, 8);
-        state.enabled = !this.busyName;
-        state.setPosition(width - 128, 64);
-        row.addChild(state);
-        var remove = new fgui.GComponent();
-        remove.setSize(34, 34);
-        remove.tooltips = '删除账号';
-        remove.addChild(graph(34, 34, cc.Color.TRANSPARENT, 17));
-        remove.addChild(trashIcon(COLORS.danger)).setPosition(2, 2);
-        remove.onClick(function () {
-            if (remove.enabled) self._confirmDelete(record);
+        var row = this._swipeDeleteItem(record, width, rowHeight, function (foreground) {
+            foreground.addChild(graph(width, rowHeight,
+                record.last ? cc.color(249, 253, 252, 255) : COLORS.surface,
+                18, cc.color(234, 237, 243, 255)));
+            var accountIcon = userIcon();
+            accountIcon.setPosition(18, 17);
+            foreground.addChild(accountIcon);
+            var displayName = String(record.name || '').replace(/\.bin$/i, '') || '未命名账号';
+            var name = text(displayName, 26, COLORS.text, Math.max(80, width - 178), 38);
+            name.autoSize = fgui.AutoSizeType.Shrink;
+            name.setPosition(64, 11);
+            foreground.addChild(name);
+            var details = formatDate(record.modified) || '时间未知';
+            var detail = text('◷  ' + details, 17, COLORS.muted, Math.max(80, width - 178), 30);
+            detail.autoSize = fgui.AutoSizeType.Shrink;
+            detail.setPosition(64, 58);
+            foreground.addChild(detail);
+            var state = button(active ? '登录中…' : '待机', 102, 38,
+                active ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
+                active ? COLORS.accent : cc.color(132, 136, 144, 255),
+                function () { self.actions.login(record.name); }, 8);
+            state.enabled = !self.busyName;
+            state.setPosition(width - 128, 64);
+            foreground.addChild(state);
         });
-        remove.enabled = !this.busyName;
-        remove.setPosition(width - 50, 14);
-        row.addChild(remove);
+        row.setPosition(0, y);
         return row;
     };
 
     IOS2AccountView.prototype._gridCard = function (record, width, height, x, y) {
         var self = this;
-        var card = new fgui.GComponent();
-        card.setSize(width, height);
+        var card = this._swipeDeleteItem(record, width, height, function (foreground) {
+            foreground.addChild(graph(width, height,
+                record.last ? cc.color(249, 253, 252, 255) : COLORS.surface,
+                18, cc.color(234, 237, 243, 255)));
+            var icon = userIcon();
+            icon.setPosition(18, height - 54);
+            foreground.addChild(icon);
+            var name = text(String(record.name || '').replace(/\.bin$/i, '') || '未命名账号', 22,
+                COLORS.text, width - 72, 34);
+            name.autoSize = fgui.AutoSizeType.Shrink;
+            name.setPosition(60, height - 55);
+            foreground.addChild(name);
+            var detail = text('◷  ' + (formatDate(record.modified) || '时间未知'), 15, COLORS.muted,
+                width - 32, 28);
+            detail.autoSize = fgui.AutoSizeType.Shrink;
+            detail.setPosition(16, height - 93);
+            foreground.addChild(detail);
+            var state = button(self.busyName === record.name ? '登录中…' : '待机', width - 32, 36,
+                self.busyName === record.name ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
+                self.busyName === record.name ? COLORS.accent : cc.color(132, 136, 144, 255),
+                function () { self.actions.login(record.name); }, 8);
+            state.enabled = !self.busyName;
+            state.setPosition(16, 18);
+            foreground.addChild(state);
+        });
         card.setPosition(x, y);
-        card.addChild(graph(width, height, record.last ? cc.color(249, 253, 252, 255) : COLORS.surface,
-            18, cc.color(234, 237, 243, 255)));
-        var icon = userIcon();
-        icon.setPosition(18, height - 54);
-        card.addChild(icon);
-        var name = text(String(record.name || '').replace(/\.bin$/i, '') || '未命名账号', 22,
-            COLORS.text, width - 72, 34);
-        name.autoSize = fgui.AutoSizeType.Shrink;
-        name.setPosition(60, height - 55);
-        card.addChild(name);
-        var detail = text('◷  ' + (formatDate(record.modified) || '时间未知'), 15, COLORS.muted,
-            width - 32, 28);
-        detail.autoSize = fgui.AutoSizeType.Shrink;
-        detail.setPosition(16, height - 93);
-        card.addChild(detail);
-        var state = button(this.busyName === record.name ? '登录中…' : '待机', width - 32, 36,
-            this.busyName === record.name ? COLORS.accentSoft : cc.color(229, 230, 232, 255),
-            this.busyName === record.name ? COLORS.accent : cc.color(132, 136, 144, 255),
-            function () { self.actions.login(record.name); }, 8);
-        state.enabled = !this.busyName;
-        state.setPosition(16, 18);
-        card.addChild(state);
-        var remove = new fgui.GComponent();
-        remove.setSize(30, 30);
-        remove.tooltips = '删除账号';
-        remove.addChild(graph(30, 30, cc.Color.TRANSPARENT, 15));
-        remove.addChild(trashIcon(COLORS.danger)).setPosition(0, 0);
-        remove.enabled = !this.busyName;
-        remove.onClick(function () { if (remove.enabled) self._confirmDelete(record); });
-        remove.setPosition(width - 42, height - 42);
-        card.addChild(remove);
         return card;
     };
 
@@ -513,6 +657,7 @@
         // A freshly rebuilt ScrollPane starts at zero. Keep the stored offset
         // until the new content has been measured and can restore it below.
         if (this._hasRenderedContent) this._saveNavigationState();
+        this._closeSwipeRow();
         this.list.removeChildren(0, -1, true);
         var width = this.list.width;
         var records = this._orderedAccounts();
