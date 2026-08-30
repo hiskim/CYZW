@@ -74,6 +74,9 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 - (void)addBinToGroupTapped;
 - (void)presentGroupBinPicker;
 - (void)instanceThumbnailTapped:(UITapGestureRecognizer *)gesture;
+- (void)showInstanceCloseMenu;
+- (void)closeInstanceAtIndex:(NSUInteger)index;
+- (void)updateAccountBadgeForRecord:(NSMutableDictionary *)record frame:(CGRect)frame;
 - (void)appendInstanceWithAccount:(NSString *)account accountID:(NSString *)accountID authResponse:(NSString *)authResponse;
 + (NSString *)layoutMode;
 + (void)setLayoutMode:(NSString *)mode;
@@ -1114,7 +1117,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 {
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:nil
                                                                    message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+                                                            // The floating group-control menu must remain modal on iPad. An
+                                                            // action sheet is dismissed by tapping the dimmed area, and that
+                                                            // same touch can then reach the account-manager view underneath.
+                                                            preferredStyle:UIAlertControllerStyleAlert];
     NSString *account = [self currentSingleAccountName];
     if (self.instances.count > 1) {
         NSString *layoutTitle = [NSString stringWithFormat:@"布局切换（当前：%@）",
@@ -1137,6 +1143,13 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             [self performSelector:@selector(tuckGroupControlButton)
                        withObject:nil
                        afterDelay:kIOS2WebGroupControlIdleDelay];
+        }]];
+        [menu addAction:[UIAlertAction actionWithTitle:@"退出指定窗口"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self showInstanceCloseMenu]; });
         }]];
     }
     UIAlertAction *relogin = [UIAlertAction actionWithTitle:@"重新登录"
@@ -1245,6 +1258,86 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [self presentToolbarAlert:list source:self.emptySlot];
 }
 
+- (void)showInstanceCloseMenu
+{
+    if (self.instances.count < 2) return;
+    UIAlertController *list = [UIAlertController alertControllerWithTitle:@"退出指定窗口"
+                                                                  message:@"选择要退出的窗口和账号"
+                                                           // Keep the nested group-control menu modal as well. This prevents a
+                                                           // dismissal touch from being delivered to the manager behind it.
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    for (NSUInteger index = 0; index < self.instances.count; index++) {
+        NSDictionary *record = self.instances[index];
+        NSString *name = [record[@"account"] isKindOfClass:[NSString class]] ? record[@"account"] : @"账号";
+        NSString *title = [NSString stringWithFormat:@"窗口 %lu：%@", (unsigned long)(index + 1),
+                            IOS2DisplayAccountName(name)];
+        [list addAction:[UIAlertAction actionWithTitle:title
+                                                 style:UIAlertActionStyleDestructive
+                                               handler:^(UIAlertAction *action) {
+            (void)action;
+            [self closeInstanceAtIndex:index];
+        }]];
+    }
+    [list addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentToolbarAlert:list source:self.groupControlButton];
+}
+
+- (void)closeInstanceAtIndex:(NSUInteger)index
+{
+    if (index >= self.instances.count) return;
+    NSMutableDictionary *record = self.instances[index];
+    WKWebView *view = record[@"view"];
+    [view evaluateJavaScript:@"if (typeof window.__ios2ShutdownGame === 'function') window.__ios2ShutdownGame();void 0;"
+             completionHandler:nil];
+    [view stopLoading];
+    view.navigationDelegate = nil;
+    view.UIDelegate = nil;
+    [view.configuration.userContentController removeScriptMessageHandlerForName:@"ios2Game"];
+    [view.configuration.userContentController removeAllUserScripts];
+    [view loadHTMLString:@"" baseURL:nil];
+    [view removeFromSuperview];
+    [record[@"accountBadge"] removeFromSuperview];
+    [record[@"thumbnailOverlay"] removeFromSuperview];
+    [self.instances removeObjectAtIndex:index];
+    if (!self.instances.count) {
+        [self closeAllInstances];
+        return;
+    }
+    if (self.primaryInstanceIndex > index) self.primaryInstanceIndex--;
+    else if (self.primaryInstanceIndex == index) self.primaryInstanceIndex = MIN(index, self.instances.count - 1);
+    [self configureToolbar];
+    [self layoutInstances];
+}
+
+- (void)updateAccountBadgeForRecord:(NSMutableDictionary *)record frame:(CGRect)frame
+{
+    if (!record || !self.groupContainer) return;
+    UILabel *badge = record[@"accountBadge"];
+    if (!badge) {
+        badge = [UILabel new];
+        badge.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.36];
+        badge.textColor = UIColor.whiteColor;
+        badge.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+        badge.textAlignment = NSTextAlignmentCenter;
+        badge.lineBreakMode = NSLineBreakByTruncatingTail;
+        badge.layer.cornerRadius = 8.0;
+        badge.layer.masksToBounds = YES;
+        badge.userInteractionEnabled = NO;
+        record[@"accountBadge"] = badge;
+        [badge release];
+        badge = record[@"accountBadge"];
+    }
+    NSString *account = [record[@"account"] isKindOfClass:[NSString class]] ? record[@"account"] : @"账号";
+    badge.text = IOS2DisplayAccountName(account);
+    CGFloat maxWidth = MAX(24.0, frame.size.width - 12.0);
+    CGFloat measured = [badge sizeThatFits:CGSizeMake(maxWidth, 24.0)].width + 18.0;
+    CGFloat badgeWidth = MIN(maxWidth, MAX(70.0, measured));
+    badge.frame = CGRectMake(CGRectGetMidX(frame) - badgeWidth * 0.5, frame.origin.y + 8.0,
+                             badgeWidth, 24.0);
+    badge.hidden = NO;
+    [self.groupContainer addSubview:badge];
+}
+
 - (void)instanceThumbnailTapped:(UITapGestureRecognizer *)gesture
 {
     if (gesture.state != UIGestureRecognizerStateEnded || self.instances.count < 2) return;
@@ -1278,6 +1371,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         UIView *thumbnailOverlay = record[@"thumbnailOverlay"];
         thumbnailOverlay.hidden = YES;
         [thumbnailOverlay removeFromSuperview];
+        UIView *accountBadge = record[@"accountBadge"];
+        accountBadge.hidden = YES;
+        [accountBadge removeFromSuperview];
         NSMutableArray *owned = [NSMutableArray array];
         for (NSLayoutConstraint *constraint in content.constraints) {
             if (constraint.firstItem == view || constraint.secondItem == view) [owned addObject:constraint];
@@ -1297,8 +1393,10 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             WKWebView *view = self.instances[index][@"view"];
             NSUInteger column = index % columns;
             NSUInteger row = index / columns;
-            view.frame = CGRectMake(column * (cellWidth + gutter), top + row * (cellHeight + gutter),
-                                    cellWidth, cellHeight);
+            CGRect frame = CGRectMake(column * (cellWidth + gutter), top + row * (cellHeight + gutter),
+                                      cellWidth, cellHeight);
+            view.frame = frame;
+            [self updateAccountBadgeForRecord:self.instances[index] frame:frame];
         }
         if (count > 1 && count < 4) {
             UIView *slot = [UIView new];
@@ -1347,12 +1445,16 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         for (NSUInteger index = 0; index < count; index++) {
             WKWebView *view = self.instances[index][@"view"];
             if (index == self.primaryInstanceIndex) {
-                view.frame = CGRectMake(mainX, mainY, mainWidth, mainHeight);
+                CGRect frame = CGRectMake(mainX, mainY, mainWidth, mainHeight);
+                view.frame = frame;
+                [self updateAccountBadgeForRecord:self.instances[index] frame:frame];
             } else {
                 NSUInteger thumbIndex = index < self.primaryInstanceIndex ? index : index - 1;
                 CGFloat x = (width - (thumbnailWidth * thumbnailCount + stackGutter * (thumbnailCount - 1))) * 0.5 +
                             thumbIndex * (thumbnailWidth + stackGutter);
-                view.frame = CGRectMake(x, top, thumbnailWidth, thumbnailHeight);
+                CGRect frame = CGRectMake(x, top, thumbnailWidth, thumbnailHeight);
+                view.frame = frame;
+                [self updateAccountBadgeForRecord:self.instances[index] frame:frame];
                 UIView *overlay = self.instances[index][@"thumbnailOverlay"];
                 if (!overlay) {
                     overlay = [UIView new];
@@ -1378,6 +1480,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             }
         }
         [content bringSubviewToFront:self.instances[self.primaryInstanceIndex][@"view"]];
+        for (NSDictionary *record in self.instances) [content bringSubviewToFront:record[@"accountBadge"]];
     }
     if (self.toolbar) [content bringSubviewToFront:self.toolbar];
     if (self.groupControlButton) [content bringSubviewToFront:self.groupControlButton];
