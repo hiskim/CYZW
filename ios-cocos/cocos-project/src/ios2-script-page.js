@@ -82,28 +82,30 @@
     }
 
     function fairySwitch(enabled, callback) {
-        var width = 54, height = 32;
+        var width = 72, height = 42;
+        var hitWidth = 112, hitHeight = 76;
         var item = new fgui.GComponent();
-        item.setSize(width, height);
+        item.setSize(hitWidth, hitHeight);
         item.opaque = true;
         var track = fairyGraph(width, height,
             enabled ? cc.color(16, 185, 129, 255) : cc.color(210, 216, 224, 255), height / 2);
+        track.setPosition(20, 17);
         item.addChild(track);
-        var thumb = fairyGraph(26, 26, cc.Color.WHITE, 13, cc.color(196, 203, 212, 255));
-        thumb.setPosition(enabled ? 25 : 3, 3);
+        var thumb = fairyGraph(34, 34, cc.Color.WHITE, 17, cc.color(196, 203, 212, 255));
+        thumb.setPosition(enabled ? 54 : 24, 21);
         item.addChild(thumb);
         item.setState = function (nextEnabled) {
             enabled = !!nextEnabled;
             track.drawRect(0, cc.Color.TRANSPARENT,
                 enabled ? cc.color(16, 185, 129, 255) : cc.color(210, 216, 224, 255), [height / 2]);
-            thumb.setPosition(enabled ? 25 : 3, 3);
+            thumb.setPosition(enabled ? 54 : 24, 21);
         };
         item.node.on(cc.Node.EventType.TOUCH_END, function (event) {
             if (event && event.stopPropagation) event.stopPropagation();
             if (item.enabled === false || typeof callback !== 'function') return;
             var finish = function () { callback(); };
             if (cc.tween) {
-                cc.tween(thumb).to(0.12, { x: enabled ? 3 : 25 }, { easing: 'sineOut' }).call(finish).start();
+                cc.tween(thumb).to(0.12, { x: enabled ? 24 : 54 }, { easing: 'sineOut' }).call(finish).start();
             } else finish();
         });
         return item;
@@ -225,7 +227,7 @@
             var overlay = new fgui.GComponent();
             overlay.setSize(root.width, root.height);
             overlay.addChild(fairyGraph(root.width, root.height, cc.color(12, 18, 28, 150)));
-            var panelWidth = Math.min(360, root.width - 32), rowHeight = 52;
+            var panelWidth = Math.min(380, root.width - 28), rowHeight = 58;
             var panel = new fgui.GComponent();
             panel.setSize(panelWidth, 74 + rowHeight * 4);
             panel.setPosition((root.width - panelWidth) / 2, Math.max(20, (root.height - panel.height) / 2));
@@ -278,14 +280,14 @@
             var top = common.NAV_HEIGHT + common.safeAreaTop(size) + 12;
             var title = fairyText('JS 脚本管理器', 32, COLORS.text, Math.max(120, root.width - 180), 48); title.setPosition(22, top); root.addChild(title);
             var importButton = fairyButton('+ 导入脚本', 126, 40, cc.color(37, 117, 224, 255), cc.Color.WHITE, this._importScript.bind(this)); importButton.setPosition(root.width - 148, top + 2); root.addChild(importButton);
-            var gap = 12, cardWidth = (root.width - 44 - gap) / 2, cardY = top + 62;
+            var gap = 14, cardWidth = (root.width - 44 - gap) / 2, cardY = top + 68;
             var makeCard = function (x, cardTitle, detail, onClick, enabled) {
-                var card = new fgui.GComponent(); card.setSize(cardWidth, 112); card.setPosition(x, cardY);
-                var cardSurface = fairyGraph(cardWidth, 112, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border);
+                var card = new fgui.GComponent(); card.setSize(cardWidth, 136); card.setPosition(x, cardY);
+                var cardSurface = fairyGraph(cardWidth, 136, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border);
                 card.addChild(cardSurface); card.__ios2Surface = cardSurface;
-                var name = fairyText(cardTitle, 21, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 34); name.setPosition(12, 9); card.addChild(name);
-                var desc = fairyText(detail, 17, COLORS.muted, cardWidth - 24, 32); desc.setPosition(12, 43); card.addChild(desc);
-                var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 66, 72); card.addChild(toggle);
+                var name = fairyText(cardTitle, 23, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 36); name.setPosition(12, 10); card.addChild(name);
+                var desc = fairyText(detail, 19, COLORS.muted, cardWidth - 24, 34); desc.setPosition(12, 48); card.addChild(desc);
+                var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 112, 70); card.addChild(toggle);
                 card.__ios2Switch = toggle;
                 return card;
             };
@@ -302,7 +304,7 @@
             this._scriptMultiGateSwitch = multiGateCard.__ios2Switch;
             this._scriptGlobalCard = globalCard;
             this._scriptMultiGateCard = multiGateCard;
-            var listTop = cardY + 132;
+            var listTop = cardY + 156;
             var count = this.scripts.filter(function (item) { return item.enabled; }).length;
             var headerWidth = this._scriptBatchMode ? Math.max(120, root.width - 250) : Math.max(120, root.width - 170);
             var listTitle = fairyText('脚本列表  ·  已启用 ' + count + '/' + this.scripts.length, 22, COLORS.text, headerWidth, 38); listTitle.setPosition(22, listTop); root.addChild(listTitle);
@@ -338,7 +340,7 @@
             list.setSize(root.width - 44, listHeight);
             list.setPosition(22, listY);
             list.layout = fgui.ListLayoutType.SingleColumn;
-            list.lineGap = 8;
+            list.lineGap = 10;
             list.scrollItemToViewOnClick = false;
             list.setupScroll(verticalScrollBuffer());
             root.addChild(list);
@@ -381,20 +383,33 @@
             }
             for (var index = 0; index < this.scripts.length; index++) {
                 (function (script, rowIndex) {
-                    var rowWidth = root.width - 44, row = new fgui.GComponent(); row.setSize(rowWidth, 76);
-                    var rowSurface = fairyGraph(rowWidth, 76, self.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), 10, script.enabled ? cc.color(179, 224, 198, 255) : COLORS.border);
+                    var rowWidth = root.width - 44, row = new fgui.GComponent(); row.setSize(rowWidth, 94);
+                    var rowSurface = fairyGraph(rowWidth, 94, self.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), 10, script.enabled ? cc.color(179, 224, 198, 255) : COLORS.border);
                     row.addChild(rowSurface); row.__ios2Surface = rowSurface; row.__ios2Script = script;
                     var rowTouch = { suppress: false };
                     var leftInset = self._scriptBatchMode ? 52 : 14;
                     if (self._scriptBatchMode) {
                         var checkbox = fairyCheckbox(!!(self._scriptSelectedNames && self._scriptSelectedNames[script.name]));
-                        checkbox.setPosition(14, 24); row.addChild(checkbox); row.__ios2Checkbox = checkbox;
+                        checkbox.setPosition(14, 33); row.addChild(checkbox); row.__ios2Checkbox = checkbox;
                     }
-                    var name = fairyText(script.name, 20, COLORS.text, rowWidth - leftInset - 92, 32); name.setPosition(leftInset, 5); row.addChild(name);
-                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 17, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 140, 26); scope.setPosition(leftInset, 42); row.addChild(scope); row.__ios2Scope = scope;
-                    var state = fairySwitch(script.enabled, function () { rowTouch.suppress = true; script.enabled = !script.enabled; self._saveScripts(); self._updateScriptVisuals(); setTimeout(function () { rowTouch.suppress = false; }, 0); }); state.setPosition(rowWidth - 68, 22); row.addChild(state); row.__ios2Switch = state;
-                    row.node.on(cc.Node.EventType.TOUCH_END, function () {
+                    var name = fairyText(script.name, 22, COLORS.text, rowWidth - leftInset - 116, 36); name.setPosition(leftInset, 6); row.addChild(name);
+                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 18, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 160, 28); scope.setPosition(leftInset, 51); row.addChild(scope); row.__ios2Scope = scope;
+                    var toggleScript = function () {
+                        rowTouch.suppress = true;
+                        script.enabled = !script.enabled;
+                        self._saveScripts(); self._updateScriptVisuals();
+                        setTimeout(function () { rowTouch.suppress = false; }, 0);
+                    };
+                    var state = fairySwitch(script.enabled, toggleScript); state.setPosition(rowWidth - 112, 9); row.addChild(state); row.__ios2Switch = state;
+                    row.node.on(cc.Node.EventType.TOUCH_END, function (event) {
                         if (rowTouch.suppress || scrollPane.isDragged) return;
+                        if (event && typeof event.getLocation === 'function') {
+                            var localPoint = row.node.convertToNodeSpaceAR(event.getLocation());
+                            if (localPoint.x >= rowWidth - 154) {
+                                toggleScript();
+                                return;
+                            }
+                        }
                         if (self._scriptBatchMode) {
                             if (!self._scriptSelectedNames) self._scriptSelectedNames = {};
                             if (self._scriptSelectedNames[script.name]) delete self._scriptSelectedNames[script.name];
