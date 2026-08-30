@@ -1353,7 +1353,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 
 - (void)updateAccountBadgeForRecord:(NSMutableDictionary *)record frame:(CGRect)frame
 {
-    if (!record || !self.groupContainer) return;
+    // Single-account WebKit games already show the account in the toolbar;
+    // reserve the in-game badge for group-control windows only.
+    if (!record || !self.groupContainer || self.instances.count <= 1) return;
     UILabel *badge = record[@"accountBadge"];
     if (!badge) {
         badge = [UILabel new];
