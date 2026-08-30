@@ -21,10 +21,10 @@
         return item;
     }
 
-    function fairyGraph(width, height, fill, radius, border) {
+    function fairyGraph(width, height, fill, radius, border, lineSize) {
         var item = new fgui.GGraph();
         item.setSize(width, height);
-        item.drawRect(border ? 1 : 0, border || cc.Color.TRANSPARENT, fill, radius ? [radius] : null);
+        item.drawRect(border ? (lineSize || 1) : 0, border || cc.Color.TRANSPARENT, fill, radius ? [radius] : null);
         return item;
     }
 
@@ -175,14 +175,22 @@
             if (this._scriptGlobalSwitch) this._scriptGlobalSwitch.setState(this.scriptsGlobalEnabled);
             if (this._scriptMultiGateSwitch) this._scriptMultiGateSwitch.setState(this.multiScriptGate);
             if (this._scriptGlobalCard && this._scriptGlobalCard.__ios2Surface) {
-                this._scriptGlobalCard.__ios2Surface.drawRect(1,
+                this._scriptGlobalCard.__ios2Surface.drawRect(5,
                     this.scriptsGlobalEnabled ? cc.color(34, 177, 112, 255) : COLORS.border,
                     this.scriptsGlobalEnabled ? cc.color(244, 252, 248, 255) : COLORS.panel, [12]);
             }
             if (this._scriptMultiGateCard && this._scriptMultiGateCard.__ios2Surface) {
-                this._scriptMultiGateCard.__ios2Surface.drawRect(1,
+                this._scriptMultiGateCard.__ios2Surface.drawRect(5,
                     this.multiScriptGate ? cc.color(34, 177, 112, 255) : COLORS.border,
                     this.multiScriptGate ? cc.color(244, 252, 248, 255) : COLORS.panel, [12]);
+            }
+            if (this._scriptGlobalCard) {
+                if (this._scriptGlobalCard.__ios2Title) this._scriptGlobalCard.__ios2Title.color = this.scriptsGlobalEnabled ? COLORS.success : COLORS.text;
+                if (this._scriptGlobalCard.__ios2Detail) this._scriptGlobalCard.__ios2Detail.text = this.scriptsGlobalEnabled ? '控制全部脚本运行状态' : '全局已暂停，不修改子状态';
+            }
+            if (this._scriptMultiGateCard) {
+                if (this._scriptMultiGateCard.__ios2Title) this._scriptMultiGateCard.__ios2Title.color = this.multiScriptGate ? COLORS.success : COLORS.text;
+                if (this._scriptMultiGateCard.__ios2Detail) this._scriptMultiGateCard.__ios2Detail.text = this.multiScriptGate ? '允许在多开窗口中执行脚本' : '多开脚本已禁止执行';
             }
             var count = 0;
             if (Array.isArray(this.scripts)) {
@@ -209,7 +217,9 @@
                 if (row.__ios2Switch) row.__ios2Switch.setState(scriptRecord.enabled);
                 if (row.__ios2Checkbox) row.__ios2Checkbox.setState(!!(this._scriptSelectedNames && this._scriptSelectedNames[scriptRecord.name]));
                 if (row.__ios2Scope) {
-                    row.__ios2Scope.text = scriptRecord.scope === 'multi' ? '单开 + 多开' : '仅单开';
+                    var isMultiScope = scriptRecord.scope === 'multi';
+                    row.__ios2Scope.text = isMultiScope ? '单开 + 多开' : '仅单开';
+                    row.__ios2Scope.color = isMultiScope ? cc.color(126, 82, 200, 255) : COLORS.accent;
                 }
                 if (row.__ios2Surface) {
                     row.__ios2Surface.drawRect(1,
@@ -283,10 +293,12 @@
             var gap = 14, cardWidth = (root.width - 44 - gap) / 2, cardY = top + 68;
             var makeCard = function (x, cardTitle, detail, onClick, enabled) {
                 var card = new fgui.GComponent(); card.setSize(cardWidth, 136); card.setPosition(x, cardY);
-                var cardSurface = fairyGraph(cardWidth, 136, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border);
+                var cardSurface = fairyGraph(cardWidth, 136, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border, 5);
                 card.addChild(cardSurface); card.__ios2Surface = cardSurface;
                 var name = fairyText(cardTitle, 23, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 36); name.setPosition(12, 10); card.addChild(name);
                 var desc = fairyText(detail, 19, COLORS.muted, cardWidth - 24, 34); desc.setPosition(12, 48); card.addChild(desc);
+                card.__ios2Title = name;
+                card.__ios2Detail = desc;
                 var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 112, 70); card.addChild(toggle);
                 card.__ios2Switch = toggle;
                 return card;
@@ -295,7 +307,7 @@
                 self.scriptsGlobalEnabled = !self.scriptsGlobalEnabled;
                 self._saveScripts(); self._updateScriptVisuals();
             }, this.scriptsGlobalEnabled);
-            var multiGateCard = makeCard(22 + cardWidth + gap, '多开全局门禁', '允许在多开窗口中执行脚本', function () {
+            var multiGateCard = makeCard(22 + cardWidth + gap, '多开全局门禁', this.multiScriptGate ? '允许在多开窗口中执行脚本' : '多开脚本已禁止执行', function () {
                 self.multiScriptGate = !self.multiScriptGate;
                 self._saveScripts(); self._updateScriptVisuals();
             }, self.multiScriptGate);
