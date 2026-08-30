@@ -1251,6 +1251,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     for (NSDictionary *record in self.instances) {
         WKWebView *view = record[@"view"];
         if (!view) continue;
+        UIView *thumbnailOverlay = record[@"thumbnailOverlay"];
+        thumbnailOverlay.hidden = YES;
+        [thumbnailOverlay removeFromSuperview];
         NSMutableArray *owned = [NSMutableArray array];
         for (NSLayoutConstraint *constraint in content.constraints) {
             if (constraint.firstItem == view || constraint.secondItem == view) [owned addObject:constraint];
@@ -1262,20 +1265,18 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         NSUInteger columns = count == 1 ? 1 : 2;
         // Keep two instances in the same 2x2 geometry as four instances.
         // The third cell is a real, interactive empty slot.
-        NSUInteger slotCount = count == 2 ? 3 : count;
+        NSUInteger slotCount = (count > 1 && count < 4) ? 4 : count;
         NSUInteger rows = (slotCount + columns - 1) / columns;
         CGFloat cellWidth = (width - gutter * (columns - 1)) / columns;
         CGFloat cellHeight = (height - gutter * (rows - 1)) / rows;
         for (NSUInteger index = 0; index < count; index++) {
             WKWebView *view = self.instances[index][@"view"];
-            UITapGestureRecognizer *tap = self.instances[index][@"thumbnailGesture"];
-            tap.enabled = NO;
             NSUInteger column = index % columns;
             NSUInteger row = index / columns;
             view.frame = CGRectMake(column * (cellWidth + gutter), top + row * (cellHeight + gutter),
                                     cellWidth, cellHeight);
         }
-        if (count == 2) {
+        if (count > 1 && count < 4) {
             UIView *slot = [UIView new];
             slot.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
             slot.layer.cornerRadius = 12.0;
@@ -1291,7 +1292,12 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             [add addTarget:self action:@selector(addBinToGroupTapped) forControlEvents:UIControlEventTouchUpInside];
             add.accessibilityLabel = @"从 Bin 列表增加多开";
             [slot addSubview:add];
-            slot.frame = CGRectMake(0.0, top + (cellHeight + gutter), cellWidth, cellHeight);
+            NSUInteger slotIndex = count;
+            NSUInteger slotColumn = slotIndex % columns;
+            NSUInteger slotRow = slotIndex / columns;
+            slot.frame = CGRectMake(slotColumn * (cellWidth + gutter),
+                                    top + slotRow * (cellHeight + gutter),
+                                    cellWidth, cellHeight);
             [content addSubview:slot];
             self.emptySlot = slot;
             [slot release];
@@ -1300,31 +1306,41 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         if (self.primaryInstanceIndex >= count) self.primaryInstanceIndex = 0;
         CGFloat stackGutter = 8.0;
         NSUInteger thumbnailCount = count - 1;
-        CGFloat thumbnailHeight = MIN(96.0, MAX(68.0, height * 0.18));
+        CGFloat thumbnailHeight = MIN(240.0, MAX(150.0, height * 0.34));
         CGFloat thumbnailWidth = (width - stackGutter * (thumbnailCount + 1)) / thumbnailCount;
         CGFloat mainY = top + thumbnailHeight + stackGutter;
         CGFloat mainHeight = MAX(1.0, CGRectGetMaxY(bounds) - mainY - stackGutter);
         for (NSUInteger index = 0; index < count; index++) {
             WKWebView *view = self.instances[index][@"view"];
-            view.tag = (NSInteger)index;
-            UITapGestureRecognizer *tap = self.instances[index][@"thumbnailGesture"];
-            if (!tap) {
-                tap = [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(instanceThumbnailTapped:)] autorelease];
-                tap.cancelsTouchesInView = YES;
-                [view addGestureRecognizer:tap];
-                self.instances[index][@"thumbnailGesture"] = tap;
-            }
-            tap.enabled = index != self.primaryInstanceIndex;
             if (index == self.primaryInstanceIndex) {
                 view.frame = CGRectMake(stackGutter, mainY, width - stackGutter * 2.0, mainHeight);
             } else {
                 NSUInteger thumbIndex = index < self.primaryInstanceIndex ? index : index - 1;
                 CGFloat x = stackGutter + thumbIndex * (thumbnailWidth + stackGutter);
                 view.frame = CGRectMake(x, top, thumbnailWidth, thumbnailHeight);
+                UIView *overlay = self.instances[index][@"thumbnailOverlay"];
+                if (!overlay) {
+                    overlay = [UIView new];
+                    overlay.backgroundColor = UIColor.clearColor;
+                    overlay.userInteractionEnabled = YES;
+                    UITapGestureRecognizer *tap = [[[UITapGestureRecognizer alloc]
+                        initWithTarget:self action:@selector(instanceThumbnailTapped:)] autorelease];
+                    [overlay addGestureRecognizer:tap];
+                    self.instances[index][@"thumbnailOverlay"] = overlay;
+                    [overlay release];
+                    overlay = self.instances[index][@"thumbnailOverlay"];
+                }
+                overlay.tag = (NSInteger)index;
+                overlay.hidden = NO;
+                overlay.frame = view.frame;
+                [content addSubview:overlay];
             }
         }
         for (NSUInteger index = 0; index < count; index++) {
-            if (index != self.primaryInstanceIndex) [content bringSubviewToFront:self.instances[index][@"view"]];
+            if (index != self.primaryInstanceIndex) {
+                [content bringSubviewToFront:self.instances[index][@"view"]];
+                [content bringSubviewToFront:self.instances[index][@"thumbnailOverlay"]];
+            }
         }
         [content bringSubviewToFront:self.instances[self.primaryInstanceIndex][@"view"]];
     }
@@ -1586,10 +1602,6 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             // bootstrap script is released asynchronously above, after this
             // load request has been handed to WebKit.
             [self startNextInstanceForGeneration:@(generation)];
-            if (self.startupIndex >= self.instances.count) {
-                self.scriptsJSON = nil;
-                self.manifestJSON = nil;
-            }
         }
     } else if ([body[@"type"] isEqualToString:@"capabilities"]) {
         NSLog(@"[ios2] Web game %@ compressed textures: PVRTC=%@ ASTC=%@", body[@"instance"], body[@"pvrtc"], body[@"astc"]);
