@@ -798,6 +798,15 @@
         var selected = [];
         var minSelection = 2;
         var maxSelection = 4;
+        // The configuration page stores the preferred upper bound. Keep the
+        // native WebKit contract intact: multi-open always stays within 2-4.
+        try {
+            var configuredValue = this.storage && this.storage.getItem('ios2.webInstanceTarget');
+            var configuredMax = Number(configuredValue);
+            if (configuredValue !== null && configuredValue !== '' && isFinite(configuredMax)) {
+                maxSelection = Math.max(minSelection, Math.min(4, Math.floor(configuredMax)));
+            }
+        } catch (ignored) {}
 
         var nav = new fgui.GComponent();
         nav.setSize(panelWidth, navHeight);
