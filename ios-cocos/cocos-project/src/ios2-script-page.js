@@ -28,6 +28,17 @@
         return item;
     }
 
+    function verticalScrollBuffer() {
+        var byteValues = [fgui.ScrollType.Vertical, fgui.ScrollBarDisplayType.Hidden];
+        var intValues = [16 | 64];
+        return {
+            readByte: function () { return byteValues.length ? byteValues.shift() : 0; },
+            readInt: function () { return intValues.length ? intValues.shift() : 0; },
+            readBool: function () { return false; },
+            readS: function () { return null; }
+        };
+    }
+
     function fairyButton(caption, width, height, fill, color, callback) {
         var item = new fgui.GComponent();
         item.setSize(width, height);
@@ -53,11 +64,18 @@
         var item = new fgui.GComponent();
         item.setSize(width, height);
         item.opaque = true;
-        item.addChild(fairyGraph(width, height,
-            enabled ? cc.color(16, 185, 129, 255) : cc.color(210, 216, 224, 255), height / 2));
+        var track = fairyGraph(width, height,
+            enabled ? cc.color(16, 185, 129, 255) : cc.color(210, 216, 224, 255), height / 2);
+        item.addChild(track);
         var thumb = fairyGraph(26, 26, cc.Color.WHITE, 13, cc.color(196, 203, 212, 255));
         thumb.setPosition(enabled ? 25 : 3, 3);
         item.addChild(thumb);
+        item.setState = function (nextEnabled) {
+            enabled = !!nextEnabled;
+            track.drawRect(0, cc.Color.TRANSPARENT,
+                enabled ? cc.color(16, 185, 129, 255) : cc.color(210, 216, 224, 255), [height / 2]);
+            thumb.setPosition(enabled ? 25 : 3, 3);
+        };
         item.node.on(cc.Node.EventType.TOUCH_END, function (event) {
             if (event && event.stopPropagation) event.stopPropagation();
             if (item.enabled === false || typeof callback !== 'function') return;
@@ -115,7 +133,57 @@
         _disposeScriptFairy: function () {
             if (this._scriptFairyRoot && this._scriptFairyRoot.node) this._scriptFairyRoot.node.removeFromParent(true);
             this._scriptFairyRoot = null;
+            this._scriptList = null;
+            this._scriptGlobalSwitch = null;
+            this._scriptMultiGateSwitch = null;
+            this._scriptGlobalCard = null;
+            this._scriptMultiGateCard = null;
+            this._scriptListTitle = null;
             this._scriptFairyPopup = null;
+        },
+
+        _closeScriptFairyPopup: function () {
+            if (this._scriptFairyPopup && this._scriptFairyPopup.node) this._scriptFairyPopup.node.removeFromParent(true);
+            this._scriptFairyPopup = null;
+        },
+
+        _updateScriptVisuals: function () {
+            if (this._scriptGlobalSwitch) this._scriptGlobalSwitch.setState(this.scriptsGlobalEnabled);
+            if (this._scriptMultiGateSwitch) this._scriptMultiGateSwitch.setState(this.multiScriptGate);
+            if (this._scriptGlobalCard && this._scriptGlobalCard.__ios2Surface) {
+                this._scriptGlobalCard.__ios2Surface.drawRect(1,
+                    this.scriptsGlobalEnabled ? cc.color(34, 177, 112, 255) : COLORS.border,
+                    this.scriptsGlobalEnabled ? cc.color(244, 252, 248, 255) : COLORS.panel, [12]);
+            }
+            if (this._scriptMultiGateCard && this._scriptMultiGateCard.__ios2Surface) {
+                this._scriptMultiGateCard.__ios2Surface.drawRect(1,
+                    this.multiScriptGate ? cc.color(34, 177, 112, 255) : COLORS.border,
+                    this.multiScriptGate ? cc.color(244, 252, 248, 255) : COLORS.panel, [12]);
+            }
+            var count = 0;
+            if (Array.isArray(this.scripts)) {
+                for (var index = 0; index < this.scripts.length; index++) {
+                    var script = this.scripts[index];
+                    if (script && script.enabled) count++;
+                }
+            }
+            if (this._scriptListTitle) this._scriptListTitle.text = '脚本列表  ·  已启用 ' + count + '/' + this.scripts.length;
+            var children = this._scriptList && this._scriptList.numChildren !== undefined ?
+                this._scriptList.numChildren : 0;
+            for (var childIndex = 0; childIndex < children; childIndex++) {
+                var row = this._scriptList.getChildAt(childIndex);
+                var scriptRecord = row && row.__ios2Script;
+                if (!scriptRecord) continue;
+                if (row.__ios2Switch) row.__ios2Switch.setState(scriptRecord.enabled);
+                if (row.__ios2Scope) {
+                    row.__ios2Scope.text = scriptRecord.scope === 'multi' ? '单开 + 多开' : '仅单开';
+                }
+                if (row.__ios2Surface) {
+                    row.__ios2Surface.drawRect(1,
+                        scriptRecord.enabled ? cc.color(179, 224, 198, 255) : COLORS.border,
+                        this.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), [10]);
+                }
+            }
         },
 
         _showScriptFairyPopup: function (script) {
@@ -134,10 +202,10 @@
             var heading = fairyText(script.name, 21, COLORS.text, panelWidth - 32, 42);
             heading.setPosition(16, 10); panel.addChild(heading);
             var options = [
-                { label: '仅单开生效', action: function () { script.scope = 'single'; self._saveScripts(); self._showScripts(); } },
-                { label: '单开 + 多开生效', action: function () { script.scope = 'multi'; self._saveScripts(); self._showScripts(); } },
-                { label: '禁用', action: function () { script.enabled = false; self._saveScripts(); self._showScripts(); } },
-                { label: '删除', danger: true, action: function () { self._deleteScript(script.name); } }
+                { label: '仅单开生效', action: function () { script.scope = 'single'; self._saveScripts(); self._updateScriptVisuals(); self._closeScriptFairyPopup(); } },
+                { label: '单开 + 多开生效', action: function () { script.scope = 'multi'; self._saveScripts(); self._updateScriptVisuals(); self._closeScriptFairyPopup(); } },
+                { label: '禁用', action: function () { script.enabled = false; self._saveScripts(); self._updateScriptVisuals(); self._closeScriptFairyPopup(); } },
+                { label: '删除', danger: true, action: function () { self._closeScriptFairyPopup(); self._deleteScript(script.name); } }
             ];
             for (var index = 0; index < options.length; index++) {
                 (function (option, itemIndex) {
@@ -160,6 +228,11 @@
 
         _showScripts: function () {
             var size = cc.winSize, self = this;
+            var previousScrollY = Number(this._scriptScrollY) || 0;
+            if (this._scriptList && this._scriptList.scrollPane) {
+                previousScrollY = Math.max(0, Number(this._scriptList.scrollPane.posY) || 0);
+            }
+            this._scriptScrollY = previousScrollY;
             this._disposeScriptFairy();
             if (!isWebKitBackend()) {
                 this._header('JS 脚本管理', '控制本地脚本的启用状态');
@@ -177,28 +250,96 @@
             var gap = 12, cardWidth = (root.width - 44 - gap) / 2, cardY = top + 62;
             var makeCard = function (x, cardTitle, detail, onClick, enabled) {
                 var card = new fgui.GComponent(); card.setSize(cardWidth, 112); card.setPosition(x, cardY);
-                card.addChild(fairyGraph(cardWidth, 112, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border));
+                var cardSurface = fairyGraph(cardWidth, 112, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border);
+                card.addChild(cardSurface); card.__ios2Surface = cardSurface;
                 var name = fairyText(cardTitle, 19, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 32); name.setPosition(12, 10); card.addChild(name);
                 var desc = fairyText(detail, 15, COLORS.muted, cardWidth - 24, 30); desc.setPosition(12, 43); card.addChild(desc);
-                var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 66, 72); card.addChild(toggle); return card;
+                var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 66, 72); card.addChild(toggle);
+                card.__ios2Switch = toggle;
+                return card;
             };
-            root.addChild(makeCard(22, 'JS 引擎总开关', this.scriptsGlobalEnabled ? '控制全部脚本运行状态' : '全局已暂停，不修改子状态', function () { self.scriptsGlobalEnabled = !self.scriptsGlobalEnabled; self._saveScripts(); self._showScripts(); }, this.scriptsGlobalEnabled));
-            root.addChild(makeCard(22 + cardWidth + gap, '多开全局门禁', '允许在多开窗口中执行脚本', function () { self.multiScriptGate = !self.multiScriptGate; self._saveScripts(); self._showScripts(); }, self.multiScriptGate));
+            var globalCard = makeCard(22, 'JS 引擎总开关', this.scriptsGlobalEnabled ? '控制全部脚本运行状态' : '全局已暂停，不修改子状态', function () {
+                self.scriptsGlobalEnabled = !self.scriptsGlobalEnabled;
+                self._saveScripts(); self._updateScriptVisuals();
+            }, this.scriptsGlobalEnabled);
+            var multiGateCard = makeCard(22 + cardWidth + gap, '多开全局门禁', '允许在多开窗口中执行脚本', function () {
+                self.multiScriptGate = !self.multiScriptGate;
+                self._saveScripts(); self._updateScriptVisuals();
+            }, self.multiScriptGate);
+            root.addChild(globalCard); root.addChild(multiGateCard);
+            this._scriptGlobalSwitch = globalCard.__ios2Switch;
+            this._scriptMultiGateSwitch = multiGateCard.__ios2Switch;
+            this._scriptGlobalCard = globalCard;
+            this._scriptMultiGateCard = multiGateCard;
             var listTop = cardY + 132;
             var count = this.scripts.filter(function (item) { return item.enabled; }).length;
             var listTitle = fairyText('脚本列表  ·  已启用 ' + count + '/' + this.scripts.length, 20, COLORS.text, root.width - 44, 36); listTitle.setPosition(22, listTop); root.addChild(listTitle);
-            if (!this.scripts.length) { var empty = fairyText('暂无导入的 JS 脚本', 19, COLORS.muted, root.width - 44, 54, fgui.AlignType.Center); empty.setPosition(22, listTop + 66); root.addChild(empty); }
+            this._scriptListTitle = listTitle;
+            var listY = listTop + 42;
+            var listHeight = Math.max(148, root.height - listY - 28);
+            var list = new fgui.GList();
+            list.name = 'IOS2ScriptList';
+            list.setSize(root.width - 44, listHeight);
+            list.setPosition(22, listY);
+            list.layout = fgui.ListLayoutType.SingleColumn;
+            list.lineGap = 8;
+            list.scrollItemToViewOnClick = false;
+            list.setupScroll(verticalScrollBuffer());
+            root.addChild(list);
+            this._scriptList = list;
+            list.node.on(fgui.Event.SCROLL, function () {
+                self._scriptScrollY = Math.max(0, Number(list.scrollPane.posY) || 0);
+            });
+            // This page lives below FairyGUI's GRoot, so its Cocos touch
+            // events do not pass through FairyGUI's InputProcessor. Forward
+            // the native touch stream to the FairyGUI ScrollPane explicitly.
+            var scrollPane = list.scrollPane;
+            var scrollEvent = function (event) {
+                var location = event && typeof event.getLocation === 'function' ? event.getLocation() : null;
+                if (!location) return null;
+                return {
+                    // Cocos reports Y from the bottom while this legacy
+                    // FairyGUI host is anchored from the top. Invert Y
+                    // before ScrollPane.globalToLocal() converts it again.
+                    pos: { x: location.x, y: -location.y },
+                    touchId: event.touch && typeof event.touch.getID === 'function' ? event.touch.getID() : 0,
+                    captureTouch: function () {}
+                };
+            };
+            list.node.on(cc.Node.EventType.TOUCH_START, function (event) {
+                var forwarded = scrollEvent(event); if (forwarded) scrollPane.onTouchBegin(forwarded);
+            });
+            list.node.on(cc.Node.EventType.TOUCH_MOVE, function (event) {
+                var forwarded = scrollEvent(event); if (forwarded) scrollPane.onTouchMove(forwarded);
+                if (event && event.stopPropagation) event.stopPropagation();
+            });
+            list.node.on(cc.Node.EventType.TOUCH_END, function (event) {
+                var forwarded = scrollEvent(event); if (forwarded) scrollPane.onTouchEnd(forwarded);
+            });
+            list.node.on(cc.Node.EventType.TOUCH_CANCEL, function (event) {
+                var forwarded = scrollEvent(event); if (forwarded) scrollPane.onTouchEnd(forwarded);
+            });
+            if (!this.scripts.length) {
+                var empty = fairyText('暂无导入的 JS 脚本', 19, COLORS.muted, root.width - 44, 54, fgui.AlignType.Center);
+                empty.setPosition(0, Math.max(24, listHeight / 2 - 27)); list.addChild(empty);
+            }
             for (var index = 0; index < this.scripts.length; index++) {
                 (function (script, rowIndex) {
-                    var rowWidth = root.width - 44, row = new fgui.GComponent(); row.setSize(rowWidth, 76); row.setPosition(22, listTop + 42 + rowIndex * 84);
-                    row.addChild(fairyGraph(rowWidth, 76, self.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), 10, script.enabled ? cc.color(179, 224, 198, 255) : COLORS.border));
+                    var rowWidth = root.width - 44, row = new fgui.GComponent(); row.setSize(rowWidth, 76);
+                    var rowSurface = fairyGraph(rowWidth, 76, self.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), 10, script.enabled ? cc.color(179, 224, 198, 255) : COLORS.border);
+                    row.addChild(rowSurface); row.__ios2Surface = rowSurface; row.__ios2Script = script;
                     var name = fairyText(script.name, 18, COLORS.text, rowWidth - 92, 30); name.setPosition(14, 7); row.addChild(name);
-                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 15, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 140, 25); scope.setPosition(14, 42); row.addChild(scope);
-                    var state = fairySwitch(script.enabled, function () { script.enabled = !script.enabled; self._saveScripts(); self._showScripts(); }); state.setPosition(rowWidth - 68, 22); row.addChild(state);
-                    row.node.on(cc.Node.EventType.TOUCH_END, function (event) { if (event && event.stopPropagation) event.stopPropagation(); self._showScriptFairyPopup(script); });
-                    row.onClick(function () { self._showScriptFairyPopup(script); }); root.addChild(row);
+                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 15, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 140, 25); scope.setPosition(14, 42); row.addChild(scope); row.__ios2Scope = scope;
+                    var state = fairySwitch(script.enabled, function () { script.enabled = !script.enabled; self._saveScripts(); self._updateScriptVisuals(); }); state.setPosition(rowWidth - 68, 22); row.addChild(state); row.__ios2Switch = state;
+                    row.node.on(cc.Node.EventType.TOUCH_END, function () {
+                        if (!scrollPane.isDragged) self._showScriptFairyPopup(script);
+                    });
+                    list.addChild(row);
                 }(this.scripts[index], index));
             }
+            list.ensureBoundsCorrect();
+            if (list.scrollPane) list.scrollPane.posY = previousScrollY;
+            this._scriptScrollY = Math.max(0, Number(list.scrollPane && list.scrollPane.posY) || 0);
             this.status = this.status || '';
         },
 
