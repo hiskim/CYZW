@@ -72,6 +72,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 - (void)showGroupControlButton;
 - (void)ensureGroupContainer;
 - (void)addBinToGroupTapped;
+- (void)presentGroupBinPicker;
 - (void)instanceThumbnailTapped:(UITapGestureRecognizer *)gesture;
 - (void)appendInstanceWithAccount:(NSString *)account accountID:(NSString *)accountID authResponse:(NSString *)authResponse;
 + (NSString *)layoutMode;
@@ -696,10 +697,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 + (void)showGroupBinPicker
 {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self hide];
-        Class nativeClass = NSClassFromString(@"IOS2Native");
-        SEL selector = NSSelectorFromString(@"showGroupBinPicker");
-        if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector];
+        [[self sharedInstance] presentGroupBinPicker];
     });
 }
 
@@ -1032,9 +1030,6 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.switchButton = account;
     [toolbar addSubview:account];
 
-    UIButton *gear = [self toolbarButtonWithSystemName:@"gearshape.fill" fallback:@"⚙" action:@selector(showGameMenu)];
-    [toolbar addSubview:gear];
-
     UILayoutGuide *safeArea = self.groupContainer.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [toolbar.leadingAnchor constraintEqualToAnchor:self.groupContainer.leadingAnchor],
@@ -1043,27 +1038,23 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         // Keep the game viewport close to the top edge in WebKit mode. The
         // title and controls remain inside the safe area without consuming a
         // second, oversized status-bar band.
-        [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:38.0],
+        [toolbar.bottomAnchor constraintEqualToAnchor:self.groupContainer.topAnchor constant:34.0],
         [title.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:22.0],
         [title.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
-        [title.heightAnchor constraintEqualToConstant:32.0],
-        [title.trailingAnchor constraintLessThanOrEqualToAnchor:gear.leadingAnchor constant:-12.0],
+        [title.heightAnchor constraintEqualToConstant:28.0],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:account.leadingAnchor constant:-10.0],
         [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-14.0],
         [close.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [close.widthAnchor constraintEqualToConstant:40.0],
-        [close.heightAnchor constraintEqualToConstant:40.0],
+        [close.widthAnchor constraintEqualToConstant:34.0],
+        [close.heightAnchor constraintEqualToConstant:34.0],
         [info.trailingAnchor constraintEqualToAnchor:close.leadingAnchor constant:-5.0],
         [info.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [info.widthAnchor constraintEqualToConstant:40.0],
-        [info.heightAnchor constraintEqualToConstant:40.0],
+        [info.widthAnchor constraintEqualToConstant:34.0],
+        [info.heightAnchor constraintEqualToConstant:34.0],
         [account.trailingAnchor constraintEqualToAnchor:info.leadingAnchor constant:-5.0],
         [account.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [account.widthAnchor constraintEqualToConstant:40.0],
-        [account.heightAnchor constraintEqualToConstant:40.0],
-        [gear.trailingAnchor constraintEqualToAnchor:account.leadingAnchor constant:-5.0],
-        [gear.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [gear.widthAnchor constraintEqualToConstant:40.0],
-        [gear.heightAnchor constraintEqualToConstant:40.0]
+        [account.widthAnchor constraintEqualToConstant:34.0],
+        [account.heightAnchor constraintEqualToConstant:34.0]
     ]];
     [title release];
     [toolbar release];
@@ -1074,11 +1065,12 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     groupButton.translatesAutoresizingMaskIntoConstraints = NO;
     groupButton.tintColor = UIColor.whiteColor;
     if (@available(iOS 13.0, *)) {
-        [groupButton setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22.0 weight:UIImageSymbolWeightSemibold]
+        [groupButton setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15.0 weight:UIImageSymbolWeightMedium]
                                              forImageInState:UIControlStateNormal];
     }
+    groupButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
     groupButton.backgroundColor = [UIColor colorWithRed:0.04 green:0.45 blue:0.96 alpha:1.0];
-    groupButton.layer.cornerRadius = 29.0;
+    groupButton.layer.cornerRadius = 24.0;
     groupButton.layer.shadowColor = UIColor.blackColor.CGColor;
     groupButton.layer.shadowOpacity = 0.22;
     groupButton.layer.shadowRadius = 8.0;
@@ -1091,8 +1083,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.groupControlCenterXConstraint = centerX;
     UILayoutGuide *groupSafeArea = self.groupContainer.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [groupButton.widthAnchor constraintEqualToConstant:58.0],
-        [groupButton.heightAnchor constraintEqualToConstant:58.0],
+        [groupButton.widthAnchor constraintEqualToConstant:48.0],
+        [groupButton.heightAnchor constraintEqualToConstant:48.0],
         centerX,
         [groupButton.bottomAnchor constraintEqualToAnchor:groupSafeArea.bottomAnchor constant:-96.0]
     ]];
@@ -1215,10 +1207,42 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 
 - (void)addBinToGroupTapped
 {
-    // The FairyGUI account view owns the existing Bin list and picker UI.
-    Class nativeClass = NSClassFromString(@"IOS2Native");
-    SEL selector = NSSelectorFromString(@"showGroupBinPicker");
-    if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector];
+    [self presentGroupBinPicker];
+}
+
+- (void)presentGroupBinPicker
+{
+    NSArray<NSDictionary *> *records = IOS2ManagedBinRecords() ?: @[];
+    if (!records.count) {
+        UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"增加多开"
+                                                                       message:@"暂无可用的 Bin 文件"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [empty addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentToolbarAlert:empty source:self.emptySlot];
+        return;
+    }
+    UIAlertController *list = [UIAlertController alertControllerWithTitle:@"选择 Bin 增加多开"
+                                                                  message:nil
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    NSMutableSet<NSString *> *activeNames = [NSMutableSet setWithCapacity:self.instances.count];
+    for (NSDictionary *instance in self.instances) {
+        NSString *active = [instance[@"account"] isKindOfClass:[NSString class]] ? instance[@"account"] : @"";
+        if (active.length) [activeNames addObject:active];
+    }
+    for (NSDictionary *record in records) {
+        NSString *name = [record[@"name"] isKindOfClass:[NSString class]] ? record[@"name"] : @"";
+        if (!name.length || [activeNames containsObject:name]) continue;
+        [list addAction:[UIAlertAction actionWithTitle:IOS2DisplayAccountName(name)
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(UIAlertAction *action) {
+            (void)action;
+            Class nativeClass = NSClassFromString(@"IOS2Native");
+            SEL selector = NSSelectorFromString(@"appendBinToWebGroup:");
+            if ([nativeClass respondsToSelector:selector]) [nativeClass performSelector:selector withObject:name];
+        }]];
+    }
+    [list addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentToolbarAlert:list source:self.emptySlot];
 }
 
 - (void)instanceThumbnailTapped:(UITapGestureRecognizer *)gesture
@@ -1238,7 +1262,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [content layoutIfNeeded];
     CGRect bounds = content.bounds;
     CGFloat top = CGRectGetMaxY(self.toolbar.frame);
-    if (top <= 0.0) top = content.safeAreaInsets.top + 38.0;
+    if (top <= 0.0) top = content.safeAreaInsets.top + 34.0;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = MAX(1.0, CGRectGetHeight(bounds) - top);
     BOOL stacked = [[[self class] layoutMode] isEqualToString:@"stacked"] && count > 1;
@@ -1306,17 +1330,28 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         if (self.primaryInstanceIndex >= count) self.primaryInstanceIndex = 0;
         CGFloat stackGutter = 8.0;
         NSUInteger thumbnailCount = count - 1;
-        CGFloat thumbnailHeight = MIN(240.0, MAX(150.0, height * 0.34));
+        CGFloat gameAspect = width / MAX(1.0, height);
         CGFloat thumbnailWidth = (width - stackGutter * (thumbnailCount + 1)) / thumbnailCount;
+        CGFloat thumbnailHeight = thumbnailWidth / MAX(0.1, gameAspect);
+        CGFloat maxThumbnailHeight = height * 0.30;
+        if (thumbnailHeight > maxThumbnailHeight) {
+            thumbnailHeight = maxThumbnailHeight;
+            thumbnailWidth = thumbnailHeight * gameAspect;
+        }
         CGFloat mainY = top + thumbnailHeight + stackGutter;
-        CGFloat mainHeight = MAX(1.0, CGRectGetMaxY(bounds) - mainY - stackGutter);
+        CGFloat mainAvailableHeight = MAX(1.0, CGRectGetMaxY(bounds) - mainY - stackGutter);
+        CGFloat mainHeight = mainAvailableHeight;
+        CGFloat mainWidth = MIN(width - stackGutter * 2.0, mainHeight * gameAspect);
+        mainHeight = mainWidth / MAX(0.1, gameAspect);
+        CGFloat mainX = (width - mainWidth) * 0.5;
         for (NSUInteger index = 0; index < count; index++) {
             WKWebView *view = self.instances[index][@"view"];
             if (index == self.primaryInstanceIndex) {
-                view.frame = CGRectMake(stackGutter, mainY, width - stackGutter * 2.0, mainHeight);
+                view.frame = CGRectMake(mainX, mainY, mainWidth, mainHeight);
             } else {
                 NSUInteger thumbIndex = index < self.primaryInstanceIndex ? index : index - 1;
-                CGFloat x = stackGutter + thumbIndex * (thumbnailWidth + stackGutter);
+                CGFloat x = (width - (thumbnailWidth * thumbnailCount + stackGutter * (thumbnailCount - 1))) * 0.5 +
+                            thumbIndex * (thumbnailWidth + stackGutter);
                 view.frame = CGRectMake(x, top, thumbnailWidth, thumbnailHeight);
                 UIView *overlay = self.instances[index][@"thumbnailOverlay"];
                 if (!overlay) {

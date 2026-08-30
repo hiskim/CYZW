@@ -696,19 +696,6 @@
             this._setStatus('登录失败：' + String(message || '未知错误'), COLORS.warning);
         },
 
-        openGroupBinPicker: function () {
-            if (!this.accountPresenter || !this.accountPresenter.view) return;
-            this._setFairyRootActive(true);
-            this.accountPresenter.view.show();
-            if (typeof this.accountPresenter.view._showGroupBinPicker === 'function') {
-                this.accountPresenter.view._showGroupBinPicker();
-            }
-        },
-
-        closeGroupBinPicker: function () {
-            if (this.accountPresenter && this.accountPresenter.view) this.accountPresenter.view.hide();
-            this._setFairyRootActive(false);
-        }
     };
 
     function extend(target, source) {
@@ -830,15 +817,6 @@
     global.__ios2MultiLoginFailed = function (message) {
         wakeLauncherIdle('multi login failed');
         if (global.__ios2Manager) global.__ios2Manager.onLoginFailed(message);
-    };
-    global.__ios2ShowGroupBinPicker = function () {
-        if (global.__ios2Manager) global.__ios2Manager.openGroupBinPicker();
-    };
-    global.__ios2GroupBinPickerFailed = function (message) {
-        if (global.__ios2Manager) {
-            global.__ios2Manager.onLoginFailed(message);
-            global.__ios2Manager.openGroupBinPicker();
-        }
     };
     global.__ios2WebGameManagerRequested = function () {
         if (!global.__ios2Manager) return;

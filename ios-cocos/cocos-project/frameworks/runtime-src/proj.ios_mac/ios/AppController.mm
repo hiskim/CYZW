@@ -653,7 +653,7 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
         s_ios2LoginBusy = NO;
         if (error || !http || http.statusCode < 200 || http.statusCode >= 300 || data.length <= 4) {
             NSString *message = error.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode];
-            IOS2CallJavaScript(@"__ios2GroupBinPickerFailed", message);
+            IOS2CallJavaScript(@"__ios2BinLoginFailed", message);
             return;
         }
         NSString *authResponse = [data base64EncodedStringWithOptions:0];
@@ -1172,8 +1172,7 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
 
 + (void)showGroupBinPicker
 {
-    [IOS2GameWebView hide];
-    IOS2CallJavaScript(@"__ios2ShowGroupBinPicker", @"");
+    [IOS2GameWebView showGroupBinPicker];
 }
 
 + (void)appendBinToWebGroup:(NSString *)name
@@ -1184,7 +1183,7 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
         NSURL *url = [IOS2BinDirectory() URLByAppendingPathComponent:safeName];
         NSData *binData = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil];
         if (!binData.length) {
-            IOS2CallJavaScript(@"__ios2GroupBinPickerFailed", @"无法读取所选 Bin 文件");
+            IOS2CallJavaScript(@"__ios2BinLoginFailed", @"无法读取所选 Bin 文件");
             return;
         }
         s_ios2LoginBusy = YES;
