@@ -50,6 +50,13 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, strong) UIView *emptySlot;
 @property (nonatomic, strong) UILabel *toolbarTitle;
 @property (nonatomic, strong) UIButton *switchButton;
+@property (nonatomic, strong) UIButton *gearButton;
+@property (nonatomic, strong) NSLayoutConstraint *toolbarSingleBottomConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *toolbarMultiBottomConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *toolbarTitleHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *toolbarTitleSingleTrailingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *toolbarTitleMultiTrailingConstraint;
+@property (nonatomic, strong) NSArray<NSLayoutConstraint *> *toolbarControlSizeConstraints;
 @property (nonatomic, strong) UIButton *groupControlButton;
 @property (nonatomic, strong) NSLayoutConstraint *groupControlCenterXConstraint;
 @property (nonatomic, assign) BOOL groupControlCentered;
@@ -936,6 +943,17 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     NSString *title = single ? IOS2DisplayAccountName([self currentSingleAccountName]) :
         [NSString stringWithFormat:@"群控 %lu开", (unsigned long)self.instances.count];
     self.toolbarTitle.text = title;
+    self.toolbarSingleBottomConstraint.active = single;
+    self.toolbarMultiBottomConstraint.active = !single;
+    self.toolbarTitleHeightConstraint.constant = single ? 32.0 : 28.0;
+    self.toolbarTitleSingleTrailingConstraint.active = single;
+    self.toolbarTitleMultiTrailingConstraint.active = !single;
+    CGFloat controlSize = single ? 40.0 : 34.0;
+    for (NSLayoutConstraint *constraint in self.toolbarControlSizeConstraints) {
+        constraint.constant = controlSize;
+    }
+    self.gearButton.hidden = !single;
+    self.switchButton.hidden = !single;
     self.switchButton.enabled = single;
     self.switchButton.alpha = single ? 1.0 : 0.35;
     [self showGroupControlButton];
@@ -1033,31 +1051,55 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.switchButton = account;
     [toolbar addSubview:account];
 
+    UIButton *gear = [self toolbarButtonWithSystemName:@"gearshape.fill" fallback:@"⚙" action:@selector(showGameMenu)];
+    self.gearButton = gear;
+    [toolbar addSubview:gear];
+
     UILayoutGuide *safeArea = self.groupContainer.safeAreaLayoutGuide;
+    NSLayoutConstraint *singleBottom = [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:38.0];
+    NSLayoutConstraint *multiBottom = [toolbar.bottomAnchor constraintEqualToAnchor:self.groupContainer.topAnchor constant:34.0];
+    self.toolbarSingleBottomConstraint = singleBottom;
+    self.toolbarMultiBottomConstraint = multiBottom;
+    self.toolbarTitleHeightConstraint = [title.heightAnchor constraintEqualToConstant:32.0];
+    self.toolbarTitleSingleTrailingConstraint = [title.trailingAnchor constraintLessThanOrEqualToAnchor:gear.leadingAnchor constant:-12.0];
+    self.toolbarTitleMultiTrailingConstraint = [title.trailingAnchor constraintLessThanOrEqualToAnchor:account.leadingAnchor constant:-10.0];
+    self.toolbarTitleMultiTrailingConstraint.active = NO;
+    NSLayoutConstraint *closeWidth = [close.widthAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *closeHeight = [close.heightAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *infoWidth = [info.widthAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *infoHeight = [info.heightAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *accountWidth = [account.widthAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *accountHeight = [account.heightAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *gearWidth = [gear.widthAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *gearHeight = [gear.heightAnchor constraintEqualToConstant:40.0];
+    self.toolbarControlSizeConstraints = @[closeWidth, closeHeight, infoWidth, infoHeight,
+                                           accountWidth, accountHeight, gearWidth, gearHeight];
     [NSLayoutConstraint activateConstraints:@[
         [toolbar.leadingAnchor constraintEqualToAnchor:self.groupContainer.leadingAnchor],
         [toolbar.trailingAnchor constraintEqualToAnchor:self.groupContainer.trailingAnchor],
         [toolbar.topAnchor constraintEqualToAnchor:self.groupContainer.topAnchor],
-        // Keep the game viewport close to the top edge in WebKit mode. The
-        // title and controls remain inside the safe area without consuming a
-        // second, oversized status-bar band.
-        [toolbar.bottomAnchor constraintEqualToAnchor:self.groupContainer.topAnchor constant:34.0],
+        singleBottom,
         [title.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:22.0],
         [title.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
-        [title.heightAnchor constraintEqualToConstant:28.0],
-        [title.trailingAnchor constraintLessThanOrEqualToAnchor:account.leadingAnchor constant:-10.0],
+        self.toolbarTitleHeightConstraint,
+        self.toolbarTitleSingleTrailingConstraint,
+        self.toolbarTitleMultiTrailingConstraint,
         [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-14.0],
         [close.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [close.widthAnchor constraintEqualToConstant:34.0],
-        [close.heightAnchor constraintEqualToConstant:34.0],
+        closeWidth,
+        closeHeight,
         [info.trailingAnchor constraintEqualToAnchor:close.leadingAnchor constant:-5.0],
         [info.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [info.widthAnchor constraintEqualToConstant:34.0],
-        [info.heightAnchor constraintEqualToConstant:34.0],
+        infoWidth,
+        infoHeight,
         [account.trailingAnchor constraintEqualToAnchor:info.leadingAnchor constant:-5.0],
         [account.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [account.widthAnchor constraintEqualToConstant:34.0],
-        [account.heightAnchor constraintEqualToConstant:34.0]
+        accountWidth,
+        accountHeight,
+        [gear.trailingAnchor constraintEqualToAnchor:account.leadingAnchor constant:-5.0],
+        [gear.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        gearWidth,
+        gearHeight
     ]];
     [title release];
     [toolbar release];
@@ -1411,6 +1453,11 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
             add.tintColor = [UIColor colorWithRed:0.36 green:0.68 blue:1.0 alpha:1.0];
             [add setTitle:@"+  增加多开" forState:UIControlStateNormal];
             add.titleLabel.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightMedium];
+            add.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
+            add.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+            add.titleLabel.textAlignment = NSTextAlignmentCenter;
+            add.titleLabel.adjustsFontSizeToFitWidth = YES;
+            add.titleLabel.minimumScaleFactor = 0.70;
             [add addTarget:self action:@selector(addBinToGroupTapped) forControlEvents:UIControlEventTouchUpInside];
             add.accessibilityLabel = @"从 Bin 列表增加多开";
             [slot addSubview:add];
@@ -1609,6 +1656,13 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.emptySlot = nil;
     self.toolbarTitle = nil;
     self.switchButton = nil;
+    self.gearButton = nil;
+    self.toolbarSingleBottomConstraint = nil;
+    self.toolbarMultiBottomConstraint = nil;
+    self.toolbarTitleHeightConstraint = nil;
+    self.toolbarTitleSingleTrailingConstraint = nil;
+    self.toolbarTitleMultiTrailingConstraint = nil;
+    self.toolbarControlSizeConstraints = nil;
     self.presenter = nil;
     self.scriptsJSON = nil;
     self.manifestJSON = nil;
