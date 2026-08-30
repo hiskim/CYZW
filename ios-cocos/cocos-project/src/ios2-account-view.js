@@ -62,7 +62,9 @@
         item.opaque = true;
         item.addChild(graph(size, size, cc.Color.TRANSPARENT, size / 2));
         item.addChild(text(label, 31, COLORS.accent, size, size, fgui.AlignType.Center));
-        item.tooltips = tooltip || '';
+        // The project does not ship a FairyGUI tooltip window resource.
+        // Avoid registering hover handlers that only log UIConfig errors.
+        item.tooltips = (fgui.UIConfig && fgui.UIConfig.tooltipsWin) ? (tooltip || '') : '';
         item.onClick(function () {
             if (item.enabled && typeof callback === 'function') callback();
         });
@@ -290,7 +292,8 @@
         sort.setPosition(toolbarRight - (toolbarSize + toolbarGap) * 2, top - 2);
         this.root.addChild(sort);
         var mode = gridIcon(toolbarSize, this.viewMode === 'grid');
-        mode.tooltips = this.viewMode === 'grid' ? '切换列表视图' : '切换多块视图';
+        mode.tooltips = (fgui.UIConfig && fgui.UIConfig.tooltipsWin) ?
+            (this.viewMode === 'grid' ? '切换列表视图' : '切换多块视图') : '';
         mode.onClick(this._toggleView.bind(this));
         mode.setPosition(toolbarRight - (toolbarSize + toolbarGap) * 3, top - 2);
         this.root.addChild(mode);
@@ -388,7 +391,7 @@
         deleteArea.addChild(trashIcon(cc.Color.WHITE)).setPosition(14, (height - 30) / 2);
         deleteArea.addChild(text('删除', 18, cc.Color.WHITE, deleteWidth - 54, height, fgui.AlignType.Center))
             .setPosition(48, 0);
-        deleteArea.tooltips = '删除账号';
+        deleteArea.tooltips = (fgui.UIConfig && fgui.UIConfig.tooltipsWin) ? '删除账号' : '';
         deleteArea.touchable = !self.busyName;
 
         foreground.setSize(width, height);
@@ -716,7 +719,7 @@
             self._saveNavigationState();
             self.render();
         }, 10);
-        previous.tooltips = '上一页';
+        previous.tooltips = (fgui.UIConfig && fgui.UIConfig.tooltipsWin) ? '上一页' : '';
         previous.enabled = this.page > 0;
         previous.setPosition(width / 2 - 112, y);
         this.list.addChild(previous);
@@ -729,7 +732,7 @@
             self._saveNavigationState();
             self.render();
         }, 10);
-        next.tooltips = '下一页';
+        next.tooltips = (fgui.UIConfig && fgui.UIConfig.tooltipsWin) ? '下一页' : '';
         next.enabled = this.page < pageCount - 1;
         next.setPosition(width / 2 + 54, y);
         this.list.addChild(next);

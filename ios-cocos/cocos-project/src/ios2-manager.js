@@ -57,9 +57,10 @@
                         global.__ios2WakeLauncherIdlePerformance(reason);
                     }
                 },
-                getEnabledScripts: function () {
+                getEnabledScripts: function (environment) {
                     if (self._runtimeBackend() !== 'webkit') return [];
-                    return typeof self._enabledScriptRecords === 'function' ? self._enabledScriptRecords([]) : [];
+                    return typeof self._enabledScriptRecords === 'function' ?
+                        self._enabledScriptRecords([], environment || 'single') : [];
                 }
             });
         },
@@ -167,6 +168,7 @@
                 return;
             }
             this._setFairyRootActive(false);
+            if (typeof this._disposeScriptFairy === 'function') this._disposeScriptFairy();
             if (this.accountPresenter) this.accountPresenter.hide();
             this._setLegacyChromeVisible(true);
             this._clearContent();

@@ -376,10 +376,8 @@
 
         _navTop: function (size) {
             var viewport = size || cc.winSize;
-            // The native status bar is hidden and this shell is edge-to-edge.
-            // Safe-area padding here duplicates the view's own inset and
-            // shifts every top-level menu down on iPhone devices.
-            return viewport.height - parts.common.NAV_HEIGHT;
+            // Keep the management bar below the Face ID / Dynamic Island inset.
+            return viewport.height - parts.common.NAV_HEIGHT - parts.common.safeAreaTop(viewport);
         },
 
         _panel: function (x, y, width, height, color) {

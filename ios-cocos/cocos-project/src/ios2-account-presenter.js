@@ -58,7 +58,7 @@
         this.view.setBusy(name);
         this.view.setStatus('正在认证 ' + String(name || '') + '…');
         try {
-            var scripts = this.getEnabledScripts ? this.getEnabledScripts() : [];
+            var scripts = this.getEnabledScripts ? this.getEnabledScripts('single') : [];
             this.loginService.login(name, scripts);
         }
         catch (error) {
@@ -71,7 +71,7 @@
         this.view.setBusy('multi');
         this.view.setStatus('正在认证 ' + names.length + ' 个账号…');
         try {
-            var scripts = this.getEnabledScripts ? this.getEnabledScripts() : [];
+            var scripts = this.getEnabledScripts ? this.getEnabledScripts('multi') : [];
             this.loginService.multiLogin(names, scripts);
         } catch (error) {
             this.view.setBusy('');
