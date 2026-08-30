@@ -57,7 +57,8 @@
         var target = Number(storageGet(storage, INSTANCE_TARGET_KEY, '4'));
         return {
             backend: backend === 'webkit' ? 'webkit' : 'native',
-            quality: readQuality(storage, backend === 'webkit' ? 'renderQualityMulti' : 'renderQualitySingle', backend === 'webkit' ? QUALITY_MULTI_KEY : QUALITY_SINGLE_KEY, backend === 'webkit' ? 'medium' : 'high'),
+            singleQuality: backend === 'webkit' ? readQuality(storage, 'renderQualitySingle', QUALITY_SINGLE_KEY, 'high') : 'high',
+            multiQuality: backend === 'webkit' ? readQuality(storage, 'renderQualityMulti', QUALITY_MULTI_KEY, 'medium') : 'medium',
             frameRate: String(frameRate),
             autoRestore: storageGet(storage, 'ios2.autoRestore', '1') !== '0',
             showFPS: readBoolean(storage, 'ios2.showFPS', 'showFPS', false),
@@ -110,7 +111,8 @@
             { key: 'backend', label: '运行模式', type: 'select', values: ['native', 'webkit'], valueLabels: { native: 'Cocos 极速', webkit: 'WebKit 多开' }, set: function (state, value) { if (nativeCall('setRuntimeBackend', value, true) === null) throw new Error('runtime'); state.backend = value; } }
         ] },
         { id: 'performance', title: '画面与性能', items: [
-            { key: 'quality', label: '运行画质', type: 'quality', valueLabels: QUALITY_LABELS, set: function (state, value, storage) { var multi = state.backend === 'webkit'; if (!writeQuality(storage, multi ? 'setRenderQualityMulti' : 'setRenderQualitySingle', multi ? QUALITY_MULTI_KEY : QUALITY_SINGLE_KEY, value, multi ? 'medium' : 'high')) throw new Error('quality'); } },
+            { key: 'singleQuality', label: '单开画质', type: 'quality', valueLabels: QUALITY_LABELS, disabledWhen: function (state) { return state.backend !== 'webkit'; }, set: function (state, value, storage) { if (!writeQuality(storage, 'setRenderQualitySingle', QUALITY_SINGLE_KEY, value, 'high')) throw new Error('single quality'); } },
+            { key: 'multiQuality', label: '多开画质', type: 'quality', valueLabels: QUALITY_LABELS, disabledWhen: function (state) { return state.backend !== 'webkit'; }, set: function (state, value, storage) { if (!writeQuality(storage, 'setRenderQualityMulti', QUALITY_MULTI_KEY, value, 'medium')) throw new Error('multi quality'); } },
             { key: 'frameRate', label: '目标帧率', type: 'select', values: FRAME_RATES, valueLabels: { '30': '30 FPS', '45': '45 FPS', '60': '60 FPS' }, set: function (state, value, storage, manager) { storageSet(storage, 'ios2.frameRate', value); manager._setNativePerformance('frameRate', Number(value)); } },
             { key: 'autoRestore', label: '登录后降载恢复性能', type: 'toggle', valueLabels: { true: '开', false: '关' }, set: function (state, value, storage) { storageSet(storage, 'ios2.autoRestore', value ? '1' : '0'); } }
         ] },
@@ -170,8 +172,9 @@
             var label = common.label(descriptor.label, 20, disabled ? DISABLED_TEXT : COLORS.text); label.setAnchorPoint(0, 0.5); label.setContentSize(Math.max(140, width * 0.46), height); if (label.__ios2LabelComponent) label.__ios2LabelComponent.horizontalAlign = cc.Label.HorizontalAlign.LEFT; label.setPosition(24, height / 2); row.addChild(label);
             var value = state[descriptor.key], valueText = descriptor.valueLabels ? descriptor.valueLabels[String(value)] : String(value);
             if (descriptor.type === 'quality') {
-                var current = common.label(QUALITY_LABELS[value] || '高', 18, COLORS.accent); current.setAnchorPoint(1, 0.5); current.setPosition(width - 24, height - 20); row.addChild(current, 3);
-                var sliderWidth = Math.max(150, Math.min(300, width - 150)), slider = qualitySlider(sliderWidth, 34, value, function (next) { setText(current, QUALITY_LABELS[next], COLORS.accent); }, function (next) { try { saveDescriptor(self, descriptor, state, next, false); self._setStatus('画质设置已保存，下次启动游戏生效。', COLORS.success); return true; } catch (ignored) { self._setStatus('无法保存画质设置', COLORS.warning); return false; } });
+                var current = common.label(QUALITY_LABELS[value] || '高', 18, disabled ? DISABLED_TEXT : COLORS.accent); current.setAnchorPoint(1, 0.5); current.setPosition(width - 24, height - 20); row.addChild(current, 3);
+                var sliderWidth = Math.max(150, Math.min(300, width - 150)), slider = null;
+                if (!disabled) slider = qualitySlider(sliderWidth, 34, value, function (next) { setText(current, QUALITY_LABELS[next], COLORS.accent); }, function (next) { try { saveDescriptor(self, descriptor, state, next, false); self._setStatus('画质设置已保存，下次启动游戏生效。', COLORS.success); return true; } catch (ignored) { self._setStatus('无法保存画质设置', COLORS.warning); return false; } });
                 if (slider) { slider.node.setPosition(width - sliderWidth - 24, 8); row.addChild(slider.node, 2); }
             } else if (descriptor.type === 'toggle') {
                 var toggle = common.surfaceNode(68, 34, disabled ? DISABLED_SURFACE : (value ? COLORS.accent : COLORS.panelAlt), 17, disabled ? DISABLED_TEXT : (value ? COLORS.accent : COLORS.border)); toggle.setPosition(width - 92, 18); row.addChild(toggle, 2); var knob = common.surfaceNode(26, 26, cc.Color.WHITE, 13); knob.setPosition(value ? 38 : 4, 4); toggle.addChild(knob); if (!disabled) row.on(cc.Node.EventType.TOUCH_END, function () { try { saveDescriptor(self, descriptor, state, !value); } catch (ignored) { self._setStatus('无法保存设置', COLORS.warning); } });
