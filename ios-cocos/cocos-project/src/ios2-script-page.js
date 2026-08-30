@@ -33,7 +33,7 @@
         item.setSize(width, height);
         item.opaque = true;
         item.addChild(fairyGraph(width, height, fill, 10));
-        item.addChild(fairyText(caption, 15, color, width, height, fgui.AlignType.Center));
+        item.addChild(fairyText(caption, 17, color, width, height, fgui.AlignType.Center));
         item.onClick(function (event) {
             if (event && event.stopPropagation) event.stopPropagation();
             if (item.enabled !== false && typeof callback === 'function') callback();
@@ -44,6 +44,27 @@
         item.node.on(cc.Node.EventType.TOUCH_END, function (event) {
             if (event && event.stopPropagation) event.stopPropagation();
             if (item.enabled !== false && typeof callback === 'function') callback();
+        });
+        return item;
+    }
+
+    function fairySwitch(enabled, callback) {
+        var width = 54, height = 32;
+        var item = new fgui.GComponent();
+        item.setSize(width, height);
+        item.opaque = true;
+        item.addChild(fairyGraph(width, height,
+            enabled ? cc.color(16, 185, 129, 255) : cc.color(210, 216, 224, 255), height / 2));
+        var thumb = fairyGraph(26, 26, cc.Color.WHITE, 13, cc.color(196, 203, 212, 255));
+        thumb.setPosition(enabled ? 25 : 3, 3);
+        item.addChild(thumb);
+        item.node.on(cc.Node.EventType.TOUCH_END, function (event) {
+            if (event && event.stopPropagation) event.stopPropagation();
+            if (item.enabled === false || typeof callback !== 'function') return;
+            var finish = function () { callback(); };
+            if (cc.tween) {
+                cc.tween(thumb).to(0.12, { x: enabled ? 3 : 25 }, { easing: 'sineOut' }).call(finish).start();
+            } else finish();
         });
         return item;
     }
@@ -110,7 +131,7 @@
             panel.setSize(panelWidth, 74 + rowHeight * 4);
             panel.setPosition((root.width - panelWidth) / 2, Math.max(20, (root.height - panel.height) / 2));
             panel.addChild(fairyGraph(panelWidth, panel.height, COLORS.panel, 14, COLORS.border));
-            var heading = fairyText(script.name, 19, COLORS.text, panelWidth - 32, 42);
+            var heading = fairyText(script.name, 21, COLORS.text, panelWidth - 32, 42);
             heading.setPosition(16, 10); panel.addChild(heading);
             var options = [
                 { label: '仅单开生效', action: function () { script.scope = 'single'; self._saveScripts(); self._showScripts(); } },
@@ -151,36 +172,34 @@
             root.addChild(fairyGraph(root.width, root.height, COLORS.background));
             root.node.setAnchorPoint(0, 1); root.node.setPosition(0, size.height); this.content.addChild(root.node, 10);
             var top = common.NAV_HEIGHT + common.safeAreaTop(size) + 12;
-            var title = fairyText('JS 脚本管理器', 27, COLORS.text, Math.max(120, root.width - 300), 44); title.setPosition(22, top); root.addChild(title);
-            var environment = fairyText('当前：多开模式', 14, cc.color(126, 82, 200, 255), 112, 36, fgui.AlignType.Right);
-            environment.setPosition(Math.max(140, root.width - 274), top + 4); root.addChild(environment);
+            var title = fairyText('JS 脚本管理器', 30, COLORS.text, Math.max(120, root.width - 180), 48); title.setPosition(22, top); root.addChild(title);
             var importButton = fairyButton('+ 导入脚本', 126, 40, cc.color(37, 117, 224, 255), cc.Color.WHITE, this._importScript.bind(this)); importButton.setPosition(root.width - 148, top + 2); root.addChild(importButton);
             var gap = 12, cardWidth = (root.width - 44 - gap) / 2, cardY = top + 62;
             var makeCard = function (x, cardTitle, detail, onClick, enabled) {
                 var card = new fgui.GComponent(); card.setSize(cardWidth, 112); card.setPosition(x, cardY);
                 card.addChild(fairyGraph(cardWidth, 112, enabled ? cc.color(244, 252, 248, 255) : COLORS.panel, 12, enabled ? cc.color(34, 177, 112, 255) : COLORS.border));
-                var name = fairyText(cardTitle, 17, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 30); name.setPosition(12, 12); card.addChild(name);
-                var desc = fairyText(detail, 13, COLORS.muted, cardWidth - 24, 28); desc.setPosition(12, 43); card.addChild(desc);
-                var toggle = fairyButton(enabled ? 'ON' : 'OFF', 66, 30, enabled ? cc.color(16, 185, 129, 255) : cc.color(226, 230, 236, 255), enabled ? cc.Color.WHITE : COLORS.muted, onClick); toggle.setPosition(cardWidth - 78, 72); card.addChild(toggle); return card;
+                var name = fairyText(cardTitle, 19, enabled ? COLORS.success : COLORS.text, cardWidth - 24, 32); name.setPosition(12, 10); card.addChild(name);
+                var desc = fairyText(detail, 15, COLORS.muted, cardWidth - 24, 30); desc.setPosition(12, 43); card.addChild(desc);
+                var toggle = fairySwitch(enabled, onClick); toggle.setPosition(cardWidth - 66, 72); card.addChild(toggle); return card;
             };
             root.addChild(makeCard(22, 'JS 引擎总开关', this.scriptsGlobalEnabled ? '控制全部脚本运行状态' : '全局已暂停，不修改子状态', function () { self.scriptsGlobalEnabled = !self.scriptsGlobalEnabled; self._saveScripts(); self._showScripts(); }, this.scriptsGlobalEnabled));
             root.addChild(makeCard(22 + cardWidth + gap, '多开全局门禁', '允许在多开窗口中执行脚本', function () { self.multiScriptGate = !self.multiScriptGate; self._saveScripts(); self._showScripts(); }, self.multiScriptGate));
             var listTop = cardY + 132;
             var count = this.scripts.filter(function (item) { return item.enabled; }).length;
-            var listTitle = fairyText('脚本列表  ·  已启用 ' + count + '/' + this.scripts.length, 18, COLORS.text, root.width - 44, 34); listTitle.setPosition(22, listTop); root.addChild(listTitle);
-            if (!this.scripts.length) { var empty = fairyText('暂无导入的 JS 脚本', 17, COLORS.muted, root.width - 44, 54, fgui.AlignType.Center); empty.setPosition(22, listTop + 66); root.addChild(empty); }
+            var listTitle = fairyText('脚本列表  ·  已启用 ' + count + '/' + this.scripts.length, 20, COLORS.text, root.width - 44, 36); listTitle.setPosition(22, listTop); root.addChild(listTitle);
+            if (!this.scripts.length) { var empty = fairyText('暂无导入的 JS 脚本', 19, COLORS.muted, root.width - 44, 54, fgui.AlignType.Center); empty.setPosition(22, listTop + 66); root.addChild(empty); }
             for (var index = 0; index < this.scripts.length; index++) {
                 (function (script, rowIndex) {
                     var rowWidth = root.width - 44, row = new fgui.GComponent(); row.setSize(rowWidth, 76); row.setPosition(22, listTop + 42 + rowIndex * 84);
                     row.addChild(fairyGraph(rowWidth, 76, self.scriptsGlobalEnabled ? COLORS.panel : cc.color(245, 247, 250, 255), 10, script.enabled ? cc.color(179, 224, 198, 255) : COLORS.border));
-                    var name = fairyText(script.name, 16, COLORS.text, rowWidth - 120, 28); name.setPosition(14, 8); row.addChild(name);
-                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 13, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 120, 24); scope.setPosition(14, 42); row.addChild(scope);
-                    var state = fairyButton(script.enabled ? '启用' : '禁用', 62, 30, script.enabled ? cc.color(16, 185, 129, 255) : cc.color(226, 230, 236, 255), script.enabled ? cc.Color.WHITE : COLORS.muted, function () { script.enabled = !script.enabled; self._saveScripts(); self._showScripts(); }); state.setPosition(rowWidth - 76, 23); row.addChild(state);
+                    var name = fairyText(script.name, 18, COLORS.text, rowWidth - 92, 30); name.setPosition(14, 7); row.addChild(name);
+                    var scope = fairyText(script.scope === 'multi' ? '单开 + 多开' : '仅单开', 15, script.scope === 'multi' ? cc.color(126, 82, 200, 255) : COLORS.accent, 140, 25); scope.setPosition(14, 42); row.addChild(scope);
+                    var state = fairySwitch(script.enabled, function () { script.enabled = !script.enabled; self._saveScripts(); self._showScripts(); }); state.setPosition(rowWidth - 68, 22); row.addChild(state);
                     row.node.on(cc.Node.EventType.TOUCH_END, function (event) { if (event && event.stopPropagation) event.stopPropagation(); self._showScriptFairyPopup(script); });
                     row.onClick(function () { self._showScriptFairyPopup(script); }); root.addChild(row);
                 }(this.scripts[index], index));
             }
-            this._setStatus(this.status || '点击脚本卡片可设置生效范围、禁用或删除。');
+            this.status = this.status || '';
         },
 
         _showScriptSubmenu: function (active) {
@@ -235,16 +254,16 @@
 
         _importScript: function () {
             if (!isWebKitBackend()) {
-                this._setStatus('JS 脚本仅支持 WebKit 模式', COLORS.warning);
+                this.status = 'JS 脚本仅支持 WebKit 模式';
                 return;
             }
             if (!(global.jsb && jsb.reflection && jsb.reflection.callStaticMethod)) {
-                this._setStatus('当前环境不支持文件选择', COLORS.warning);
+                this.status = '当前环境不支持文件选择';
                 return;
             }
-            this._setStatus('正在打开文件选择器…', COLORS.muted);
+            this.status = '正在打开文件选择器…';
             try { jsb.reflection.callStaticMethod('IOS2Native', 'selectScriptFile'); }
-            catch (error) { this._setStatus('无法打开文件选择器', COLORS.warning); }
+            catch (error) { this.status = '无法打开文件选择器'; }
         },
 
         _importSettings: function () {
@@ -266,9 +285,9 @@
 
         _deleteScript: function (name) {
             if (!(global.jsb && jsb.reflection && jsb.reflection.callStaticMethod)) return;
-            this._setStatus('正在删除 ' + name + '…', COLORS.muted);
+            this.status = '正在删除 ' + name + '…';
             try { jsb.reflection.callStaticMethod('IOS2Native', 'deleteScriptFile:', name); }
-            catch (error) { this._setStatus('删除失败', COLORS.warning); }
+            catch (error) { this.status = '删除失败'; }
         },
 
         _runEnabledScripts: function (callback) {
@@ -393,7 +412,7 @@
         },
 
         onScriptImportFailed: function (message) {
-            this._setStatus('脚本导入失败：' + String(message || '未知错误'), COLORS.warning);
+            this.status = '脚本导入失败：' + String(message || '未知错误');
         },
 
         onSettingsImported: function (name) {
@@ -422,7 +441,7 @@
         },
 
         onScriptDeleteFailed: function (message) {
-            this._setStatus('删除失败：' + String(message || '未知错误'), COLORS.warning);
+            this.status = '删除失败：' + String(message || '未知错误');
         }
     };
 }(window));
