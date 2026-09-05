@@ -647,6 +647,7 @@ private struct AccountGroupSection: View {
     let remarkForAccount: (Account) -> String
     let onToggleSelection: (String) -> Void
     let onLaunch: (Account) -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let tokens = DesignTokens.shared
@@ -662,76 +663,102 @@ private struct AccountGroupSection: View {
                     .foregroundStyle(tokens.color(.textSecondary))
             }
 
-            VStack(spacing: 1) {
+            VStack(spacing: 8) {
                 ForEach(accounts) { account in
-                    NavigationLink {
+                    AccountRow(
+                        account: account,
+                        remark: remarkForAccount(account),
+                        isSelected: selectedIDs.contains(account.id),
+                        isOnline: account.importedAt != .distantPast,
+                        onToggle: { onToggleSelection(account.id) },
+                        onLaunch: { onLaunch(account) }
+                    ) {
                         AccountDetailView(account: account, viewModel: viewModel, onLaunch: onLaunch)
-                    } label: {
-                        AccountRow(
-                            account: account,
-                            remark: remarkForAccount(account),
-                            isSelected: selectedIDs.contains(account.id),
-                            onToggle: { onToggleSelection(account.id) }
-                        )
                     }
-                    .buttonStyle(.plain)
+
+                    .background(tokens.color(.card))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(colorScheme == .light ? Color.gray.opacity(0.28) : tokens.color(.border), lineWidth: 1)
+                    }
+                    .opacity(account.importedAt != .distantPast ? 1 : 0.62)
                 }
-            }
-            .background(tokens.color(.card))
-            .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.card)))
-            .overlay {
-                RoundedRectangle(cornerRadius: tokens.radius(.card))
-                    .stroke(tokens.color(.border))
             }
         }
     }
 }
 
-private struct AccountRow: View {
+private struct AccountRow<Destination: View>: View {
     let account: Account
     let remark: String
     let isSelected: Bool
+    let isOnline: Bool
     let onToggle: () -> Void
+    let onLaunch: () -> Void
+    @ViewBuilder let destination: Destination
 
     var body: some View {
         let tokens = DesignTokens.shared
 
-        HStack(spacing: tokens.spacing(.md)) {
+        HStack(spacing: 11) {
             Button(action: onToggle) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(tokens.font(.xl))
-                    .foregroundStyle(isSelected ? tokens.color(.accent) : tokens.color(.textMuted))
+                ZStack(alignment: .bottomTrailing) {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(isSelected ? tokens.color(.accent).opacity(0.22) : tokens.color(.panel))
+                        .overlay {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(isSelected ? tokens.color(.accent) : tokens.color(.textSecondary))
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .stroke(isSelected ? tokens.color(.accent) : Color.clear, lineWidth: 1.5)
+                        }
+
+                    Image(systemName: isOnline ? "checkmark.circle.fill" : "circle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(isOnline ? tokens.color(.success) : tokens.color(.textMuted), tokens.color(.card))
+                        .offset(x: 3, y: 3)
+                }
+                .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isSelected ? "取消选择 \(account.nickname)" : "选择 \(account.nickname)")
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(account.nickname)
-                    .font(tokens.font(.xl, weight: .semibold))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                    .lineLimit(1)
-                HStack(spacing: tokens.spacing(.sm)) {
-                    Text(account.fileName)
+            NavigationLink {
+                destination
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.nickname)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(tokens.color(.textPrimary))
                         .lineLimit(1)
-                    if !remark.isEmpty {
-                        Text("·")
-                        Text(remark)
-                            .lineLimit(1)
-                    }
+                        .truncationMode(.tail)
+                    Text(remark.isEmpty ? account.fileName : remark)
+                        .font(.system(size: 12))
+                        .foregroundStyle(tokens.color(.textSecondary))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
-                .font(tokens.font(.sm))
-                .foregroundStyle(tokens.color(.textSecondary))
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: tokens.spacing(.sm))
-
-            Image(systemName: "chevron.right")
-                .font(tokens.font(.sm, weight: .semibold))
-                .foregroundStyle(tokens.color(.textMuted))
+            Button(action: onLaunch) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 30, height: 30)
+                    .foregroundStyle(tokens.color(.textPrimary))
+                    .background(tokens.color(.primaryButton))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("启动 \(account.nickname)")
         }
-        .padding(.horizontal, tokens.spacing(.lg))
-        .padding(.vertical, tokens.spacing(.md))
-        .contentShape(Rectangle())
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
     }
 }
 
