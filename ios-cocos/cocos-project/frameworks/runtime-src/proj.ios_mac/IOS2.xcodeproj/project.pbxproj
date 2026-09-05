@@ -81,6 +81,35 @@
 		F887953630389372005CA1E2 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 288D4372225B43BE0075FBAB /* assets */; };
 		FA676C761C71AFA200E091E3 /* libiconv.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = FA676C751C71AFA200E091E3 /* libiconv.dylib */; };
 		FA676C781C71AFAB00E091E3 /* libiconv.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = FA676C771C71AFAB00E091E3 /* libiconv.dylib */; };
+		F0B000000000000000000001 /* ShellHostingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000001 /* ShellHostingController.swift */; };
+		F0B000000000000000000101 /* EngineConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000101 /* EngineConfig.swift */; };
+		F0B000000000000000000102 /* EngineEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000102 /* EngineEvent.swift */; };
+		F0B000000000000000000103 /* EngineHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000103 /* EngineHost.swift */; };
+		F0B000000000000000000104 /* EngineHostError.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000104 /* EngineHostError.swift */; };
+		F0B000000000000000000105 /* EngineHostRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000105 /* EngineHostRegistry.swift */; };
+		F0B000000000000000000106 /* EngineState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000106 /* EngineState.swift */; };
+		F0B000000000000000000107 /* ResourceRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000107 /* ResourceRef.swift */; };
+		F0B000000000000000000108 /* Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000108 /* Snapshot.swift */; };
+		F0B000000000000000000201 /* AccountLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000201 /* AccountLibraryView.swift */; };
+		F0B000000000000000000202 /* AccountLibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000202 /* AccountLibraryViewModel.swift */; };
+		F0B000000000000000000203 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000203 /* AppCoordinator.swift */; };
+		F0B000000000000000000204 /* DesignTokenLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000204 /* DesignTokenLoader.swift */; };
+		F0B000000000000000000205 /* MockEngineHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000205 /* MockEngineHost.swift */; };
+		F0B000000000000000000206 /* PluginPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000206 /* PluginPanelView.swift */; };
+		F0B000000000000000000207 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000207 /* SettingsView.swift */; };
+		F0B000000000000000000208 /* ShellModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000208 /* ShellModels.swift */; };
+		F0B000000000000000000209 /* TokenButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000209 /* TokenButtonStyles.swift */; };
+		F0B000000000000000000210 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000210 /* WorkspaceView.swift */; };
+		F0B000000000000000000211 /* WorkspaceViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000211 /* WorkspaceViewModel.swift */; };
+		F0B000000000000000000301 /* BridgeMessageHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000301 /* BridgeMessageHandler.swift */; };
+		F0B000000000000000000302 /* WebKitInstance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000302 /* WebKitInstance.swift */; };
+		F0B000000000000000000303 /* WebKitSandboxPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000303 /* WebKitSandboxPolicy.swift */; };
+		F0B000000000000000000401 /* CocosBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000401 /* CocosBridge.swift */; };
+		F0B000000000000000000402 /* CocosNativeInstance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000402 /* CocosNativeInstance.swift */; };
+		F0B000000000000000000501 /* LoggerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000501 /* LoggerPlugin.swift */; };
+		F0B000000000000000000502 /* PluginProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000502 /* PluginProtocol.swift */; };
+		F0B000000000000000000503 /* PluginSandbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000503 /* PluginSandbox.swift */; };
+		F0B000000000000000000601 /* shared in Resources */ = {isa = PBXBuildFile; fileRef = F0A000000000000000000601 /* shared */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -184,6 +213,35 @@
 		ED6D5264263544C8003A20DD /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS14.1.sdk/System/Library/Frameworks/CoreVideo.framework; sourceTree = DEVELOPER_DIR; };
 		FA676C751C71AFA200E091E3 /* libiconv.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libiconv.dylib; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS8.4.sdk/usr/lib/libiconv.dylib; sourceTree = DEVELOPER_DIR; };
 		FA676C771C71AFAB00E091E3 /* libiconv.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libiconv.dylib; path = usr/lib/libiconv.dylib; sourceTree = SDKROOT; };
+		F0A000000000000000000001 /* ShellHostingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ios/ShellHostingController.swift; sourceTree = "<group>"; };
+		F0A000000000000000000101 /* EngineConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineConfig.swift; sourceTree = "<group>"; };
+		F0A000000000000000000102 /* EngineEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineEvent.swift; sourceTree = "<group>"; };
+		F0A000000000000000000103 /* EngineHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHost.swift; sourceTree = "<group>"; };
+		F0A000000000000000000104 /* EngineHostError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHostError.swift; sourceTree = "<group>"; };
+		F0A000000000000000000105 /* EngineHostRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHostRegistry.swift; sourceTree = "<group>"; };
+		F0A000000000000000000106 /* EngineState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineState.swift; sourceTree = "<group>"; };
+		F0A000000000000000000107 /* ResourceRef.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceRef.swift; sourceTree = "<group>"; };
+		F0A000000000000000000108 /* Snapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshot.swift; sourceTree = "<group>"; };
+		F0A000000000000000000201 /* AccountLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryView.swift; sourceTree = "<group>"; };
+		F0A000000000000000000202 /* AccountLibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryViewModel.swift; sourceTree = "<group>"; };
+		F0A000000000000000000203 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		F0A000000000000000000204 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
+		F0A000000000000000000205 /* MockEngineHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockEngineHost.swift; sourceTree = "<group>"; };
+		F0A000000000000000000206 /* PluginPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginPanelView.swift; sourceTree = "<group>"; };
+		F0A000000000000000000207 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F0A000000000000000000208 /* ShellModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellModels.swift; sourceTree = "<group>"; };
+		F0A000000000000000000209 /* TokenButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenButtonStyles.swift; sourceTree = "<group>"; };
+		F0A000000000000000000210 /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
+		F0A000000000000000000211 /* WorkspaceViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceViewModel.swift; sourceTree = "<group>"; };
+		F0A000000000000000000301 /* BridgeMessageHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeMessageHandler.swift; sourceTree = "<group>"; };
+		F0A000000000000000000302 /* WebKitInstance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitInstance.swift; sourceTree = "<group>"; };
+		F0A000000000000000000303 /* WebKitSandboxPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitSandboxPolicy.swift; sourceTree = "<group>"; };
+		F0A000000000000000000401 /* CocosBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CocosBridge.swift; sourceTree = "<group>"; };
+		F0A000000000000000000402 /* CocosNativeInstance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CocosNativeInstance.swift; sourceTree = "<group>"; };
+		F0A000000000000000000501 /* LoggerPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoggerPlugin.swift; sourceTree = "<group>"; };
+		F0A000000000000000000502 /* PluginProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginProtocol.swift; sourceTree = "<group>"; };
+		F0A000000000000000000503 /* PluginSandbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginSandbox.swift; sourceTree = "<group>"; };
+		F0A000000000000000000601 /* shared */ = {isa = PBXFileReference; lastKnownFileType = folder; name = shared; path = ../../../../../shared; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -294,6 +352,8 @@
 				D4545214156E28EF00887EB5 /* Classes */,
 				A92275401517C094001B78AA /* Frameworks */,
 				D45446CC156DE73F00887EB5 /* ios */,
+				F0A000000000000000000700 /* Engine Shell */,
+				F0A000000000000000000601 /* shared */,
 				509D4ACA17EBB2BE00697056 /* mac */,
 				A922753E1517C094001B78AA /* Products */,
 				15628F5B15F0F5C2000CF24B /* Resources */,
@@ -381,6 +441,7 @@
 				509D4ABB17EBB2AB00697056 /* RootViewController.mm */,
 				22CC756221BA527F00FBF2F7 /* SDKWrapper.h */,
 				22CC756121BA527F00FBF2F7 /* SDKWrapper.m */,
+				F0A000000000000000000001 /* ShellHostingController.swift */,
 			);
 			name = ios;
 			sourceTree = "<group>";
@@ -404,6 +465,81 @@
 				1AC6FB48180E9ACB004C840B /* libcocos2d Mac.a */,
 			);
 			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		F0A000000000000000000700 /* Engine Shell */ = {
+			isa = PBXGroup;
+			children = (
+				F0A000000000000000000710 /* EngineHost */,
+				F0A000000000000000000720 /* Shell */,
+				F0A000000000000000000730 /* WebKitInstance */,
+				F0A000000000000000000740 /* CocosInstance */,
+				F0A000000000000000000750 /* Plugins */,
+			);
+			name = "Engine Shell";
+			path = ../../../../../ios;
+			sourceTree = "<group>";
+		};
+		F0A000000000000000000710 /* EngineHost */ = {
+			isa = PBXGroup;
+			children = (
+				F0A000000000000000000101 /* EngineConfig.swift */,
+				F0A000000000000000000102 /* EngineEvent.swift */,
+				F0A000000000000000000103 /* EngineHost.swift */,
+				F0A000000000000000000104 /* EngineHostError.swift */,
+				F0A000000000000000000105 /* EngineHostRegistry.swift */,
+				F0A000000000000000000106 /* EngineState.swift */,
+				F0A000000000000000000107 /* ResourceRef.swift */,
+				F0A000000000000000000108 /* Snapshot.swift */,
+			);
+			path = EngineHost;
+			sourceTree = "<group>";
+		};
+		F0A000000000000000000720 /* Shell */ = {
+			isa = PBXGroup;
+			children = (
+				F0A000000000000000000201 /* AccountLibraryView.swift */,
+				F0A000000000000000000202 /* AccountLibraryViewModel.swift */,
+				F0A000000000000000000203 /* AppCoordinator.swift */,
+				F0A000000000000000000204 /* DesignTokenLoader.swift */,
+				F0A000000000000000000205 /* MockEngineHost.swift */,
+				F0A000000000000000000206 /* PluginPanelView.swift */,
+				F0A000000000000000000207 /* SettingsView.swift */,
+				F0A000000000000000000208 /* ShellModels.swift */,
+				F0A000000000000000000209 /* TokenButtonStyles.swift */,
+				F0A000000000000000000210 /* WorkspaceView.swift */,
+				F0A000000000000000000211 /* WorkspaceViewModel.swift */,
+			);
+			path = Shell;
+			sourceTree = "<group>";
+		};
+		F0A000000000000000000730 /* WebKitInstance */ = {
+			isa = PBXGroup;
+			children = (
+				F0A000000000000000000301 /* BridgeMessageHandler.swift */,
+				F0A000000000000000000302 /* WebKitInstance.swift */,
+				F0A000000000000000000303 /* WebKitSandboxPolicy.swift */,
+			);
+			path = WebKitInstance;
+			sourceTree = "<group>";
+		};
+		F0A000000000000000000740 /* CocosInstance */ = {
+			isa = PBXGroup;
+			children = (
+				F0A000000000000000000401 /* CocosBridge.swift */,
+				F0A000000000000000000402 /* CocosNativeInstance.swift */,
+			);
+			path = CocosInstance;
+			sourceTree = "<group>";
+		};
+		F0A000000000000000000750 /* Plugins */ = {
+			isa = PBXGroup;
+			children = (
+				F0A000000000000000000501 /* LoggerPlugin.swift */,
+				F0A000000000000000000502 /* PluginProtocol.swift */,
+				F0A000000000000000000503 /* PluginSandbox.swift */,
+			);
+			path = Plugins;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -517,6 +653,7 @@
 				1AFFCD851F7A5DCF00628F2C /* Images.xcassets in Resources */,
 				40CEC422212BDAB0004BCE66 /* LaunchScreen.storyboard in Resources */,
 				C03780EB18BEE0E400FE4F13 /* src in Resources */,
+				F0B000000000000000000601 /* shared in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -569,6 +706,34 @@
 				509D4ABC17EBB2AB00697056 /* AppController.mm in Sources */,
 				7A2E00100000000000000001 /* IOS2ScriptWebView.mm in Sources */,
 				7A2E00200000000000000001 /* IOS2GameWebView.mm in Sources */,
+				F0B000000000000000000001 /* ShellHostingController.swift in Sources */,
+				F0B000000000000000000101 /* EngineConfig.swift in Sources */,
+				F0B000000000000000000102 /* EngineEvent.swift in Sources */,
+				F0B000000000000000000103 /* EngineHost.swift in Sources */,
+				F0B000000000000000000104 /* EngineHostError.swift in Sources */,
+				F0B000000000000000000105 /* EngineHostRegistry.swift in Sources */,
+				F0B000000000000000000106 /* EngineState.swift in Sources */,
+				F0B000000000000000000107 /* ResourceRef.swift in Sources */,
+				F0B000000000000000000108 /* Snapshot.swift in Sources */,
+				F0B000000000000000000201 /* AccountLibraryView.swift in Sources */,
+				F0B000000000000000000202 /* AccountLibraryViewModel.swift in Sources */,
+				F0B000000000000000000203 /* AppCoordinator.swift in Sources */,
+				F0B000000000000000000204 /* DesignTokenLoader.swift in Sources */,
+				F0B000000000000000000205 /* MockEngineHost.swift in Sources */,
+				F0B000000000000000000206 /* PluginPanelView.swift in Sources */,
+				F0B000000000000000000207 /* SettingsView.swift in Sources */,
+				F0B000000000000000000208 /* ShellModels.swift in Sources */,
+				F0B000000000000000000209 /* TokenButtonStyles.swift in Sources */,
+				F0B000000000000000000210 /* WorkspaceView.swift in Sources */,
+				F0B000000000000000000211 /* WorkspaceViewModel.swift in Sources */,
+				F0B000000000000000000301 /* BridgeMessageHandler.swift in Sources */,
+				F0B000000000000000000302 /* WebKitInstance.swift in Sources */,
+				F0B000000000000000000303 /* WebKitSandboxPolicy.swift in Sources */,
+				F0B000000000000000000401 /* CocosBridge.swift in Sources */,
+				F0B000000000000000000402 /* CocosNativeInstance.swift in Sources */,
+				F0B000000000000000000501 /* LoggerPlugin.swift in Sources */,
+				F0B000000000000000000502 /* PluginProtocol.swift in Sources */,
+				F0B000000000000000000503 /* PluginSandbox.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -729,7 +894,7 @@
 				HEADER_SEARCH_PATHS = "$(inherited) $(SRCROOT)/../../cocos2d-x $(SRCROOT)/../../cocos2d-x/cocos $(SRCROOT)/../../cocos2d-x/cocos/base $(SRCROOT)/../../cocos2d-x/cocos/physics $(SRCROOT)/../../cocos2d-x/cocos/math/kazmath $(SRCROOT)/../../cocos2d-x/cocos/2d $(SRCROOT)/../../cocos2d-x/cocos/gui $(SRCROOT)/../../cocos2d-x/cocos/network $(SRCROOT)/../../cocos2d-x/cocos/audio/include $(SRCROOT)/../../cocos2d-x/cocos/editor-support $(SRCROOT)/../../cocos2d-x/extensions $(SRCROOT)/../../cocos2d-x/external $(SRCROOT)/../../cocos2d-x/external/sources $(SRCROOT)/../../cocos2d-x/external/chipmunk/include/chipmunk $(SRCROOT)/../../cocos2d-x/cocos/scripting/js-bindings/auto $(SRCROOT)/../../cocos2d-x/cocos/scripting/js-bindings/manual $(SRCROOT)/../../cocos2d-x/cocos/platform/ios $(SRCROOT)/../../cocos2d-x/plugin/jsbindings/auto $(SRCROOT)/../../cocos2d-x/plugin/jsbindings/manual $(SRCROOT)/../../cocos2d-x/external/ios/include $(SRCROOT)/../../cocos2d-x/external/ios/include/spidermonkey";
 				INFOPLIST_FILE = ios/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.card-games";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				"ARCHS[sdk=iphonesimulator*]" = arm64;
 				ONLY_ACTIVE_ARCH = YES;
 				LIBRARY_SEARCH_PATHS = (
@@ -742,6 +907,8 @@
 					"$(inherited)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2;
+				PRODUCT_MODULE_NAME = IOS2Mobile;
+				SWIFT_VERSION = 5.0;
 				SDKROOT = iphoneos;
 				STRIP_PNG_TEXT = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -770,7 +937,7 @@
 				HEADER_SEARCH_PATHS = "$(inherited) $(SRCROOT)/../../cocos2d-x $(SRCROOT)/../../cocos2d-x/cocos $(SRCROOT)/../../cocos2d-x/cocos/base $(SRCROOT)/../../cocos2d-x/cocos/physics $(SRCROOT)/../../cocos2d-x/cocos/math/kazmath $(SRCROOT)/../../cocos2d-x/cocos/2d $(SRCROOT)/../../cocos2d-x/cocos/gui $(SRCROOT)/../../cocos2d-x/cocos/network $(SRCROOT)/../../cocos2d-x/cocos/audio/include $(SRCROOT)/../../cocos2d-x/cocos/editor-support $(SRCROOT)/../../cocos2d-x/extensions $(SRCROOT)/../../cocos2d-x/external $(SRCROOT)/../../cocos2d-x/external/sources $(SRCROOT)/../../cocos2d-x/external/chipmunk/include/chipmunk $(SRCROOT)/../../cocos2d-x/cocos/scripting/js-bindings/auto $(SRCROOT)/../../cocos2d-x/cocos/scripting/js-bindings/manual $(SRCROOT)/../../cocos2d-x/cocos/platform/ios $(SRCROOT)/../../cocos2d-x/plugin/jsbindings/auto $(SRCROOT)/../../cocos2d-x/plugin/jsbindings/manual $(SRCROOT)/../../cocos2d-x/external/ios/include $(SRCROOT)/../../cocos2d-x/external/ios/include/spidermonkey";
 				INFOPLIST_FILE = ios/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.card-games";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LIBRARY_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../ios-libs",
 					"$(SRCROOT)/../../cocos2d-x/external/ios/libs",
@@ -781,6 +948,8 @@
 					"$(inherited)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2;
+				PRODUCT_MODULE_NAME = IOS2Mobile;
+				SWIFT_VERSION = 5.0;
 				SDKROOT = iphoneos;
 				STRIP_PNG_TEXT = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";

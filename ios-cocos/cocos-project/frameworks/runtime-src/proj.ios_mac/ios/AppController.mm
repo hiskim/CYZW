@@ -31,6 +31,7 @@
 #import "SDKWrapper.h"
 #import "IOS2ScriptWebView.h"
 #import "IOS2GameWebView.h"
+#import "IOS2Mobile-Swift.h"
 #import "platform/ios/CCEAGLView-ios.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <OpenGLES/ES2/gl.h>
@@ -1733,30 +1734,12 @@ Application* app = nullptr;
     CGRect bounds = [[UIScreen mainScreen] bounds];
     window = [[UIWindow alloc] initWithFrame: bounds];
     
-    // cocos2d application instance
-    app = new AppDelegate(bounds.size.width * scale, bounds.size.height * scale);
-    app->setMultitouch(true);
-    
-    // Use RootViewController to manage CCEAGLView
-    _viewController = [[RootViewController alloc]init];
-#ifdef NSFoundationVersionNumber_iOS_7_0
-    _viewController.automaticallyAdjustsScrollViewInsets = NO;
-    _viewController.extendedLayoutIncludesOpaqueBars = NO;
-    _viewController.edgesForExtendedLayout = UIRectEdgeAll;
-#else
-    _viewController.wantsFullScreenLayout = YES;
-#endif
-    // Set RootViewController to window
-    if ( [[UIDevice currentDevice].systemVersion floatValue] < 6.0)
-    {
-        // warning: addSubView doesn't work on iOS6
-        [window addSubview: _viewController.view];
-    }
-    else
-    {
-        // use this method on ios6
-        [window setRootViewController:_viewController];
-    }
+    // The SwiftUI shell is the launcher. Cocos is initialized only when a
+    // future CocosNativeInstance is requested, so the legacy FairyGUI account
+    // page never renders behind this interface.
+    ShellHostingController *shellController = [[ShellHostingController alloc] init];
+    [window setRootViewController:shellController];
+    [shellController release];
     
     [window makeKeyAndVisible];
 
@@ -1773,15 +1756,7 @@ Application* app = nullptr;
         }
     }
     
-    [[UIApplication sharedApplication] setStatusBarHidden:YES];
-
-    //run the cocos2d-x game scene
-    app->start();
-
-    const GLubyte *glVersion = glGetString(GL_VERSION);
-    const GLubyte *glExtensions = glGetString(GL_EXTENSIONS);
-    NSLog(@"[ios2] GL version: %s", glVersion ? (const char *)glVersion : "<none>");
-    NSLog(@"[ios2] ASTC extension: %s", (glExtensions && strstr((const char *)glExtensions, "texture_compression_astc_ldr")) ? "yes" : "no");
+    [[UIApplication sharedApplication] setStatusBarHidden:NO];
 
     return YES;
 }
@@ -1791,7 +1766,7 @@ Application* app = nullptr;
      Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
      Use this method to pause ongoing tasks, disable timers, and throttle down OpenGL ES frame rates. Games should use this method to pause the game.
      */
-    app->onPause();
+    if (app) app->onPause();
     [[SDKWrapper getInstance] applicationWillResignActive:application];
 }
 
@@ -1799,7 +1774,7 @@ Application* app = nullptr;
     /*
      Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
      */
-    app->onResume();
+    if (app) app->onResume();
     [[SDKWrapper getInstance] applicationDidBecomeActive:application];
 }
 
