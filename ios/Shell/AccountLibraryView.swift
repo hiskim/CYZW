@@ -156,6 +156,8 @@ struct AccountLibraryView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: tokens.spacing(.sm)) {
                 ForEach([viewModel.allGroup] + viewModel.visibleGroups) { group in
+                    let isSelected = currentGroup.id == group.id
+                    let groupColor = group.swatchColor
                     Button {
                         selectedGroupID = group.id
                     } label: {
@@ -163,28 +165,24 @@ struct AccountLibraryView: View {
                             Text(group.name)
                             Text("\(viewModel.accounts(in: group).count)")
                                 .foregroundStyle(
-                                    currentGroup.id == group.id
-                                        ? tokens.color(.textPrimary).opacity(0.7)
-                                        : tokens.color(.textMuted)
+                                    isSelected
+                                        ? Color.white.opacity(0.82)
+                                        : groupColor
                                 )
                         }
                         .font(tokens.font(.sm, weight: .medium))
                         .foregroundStyle(
-                            currentGroup.id == group.id
-                                ? tokens.color(.textPrimary)
-                                : tokens.color(.textSecondary)
+                            isSelected ? Color.white : groupColor
                         )
                         .padding(.horizontal, tokens.spacing(.md))
                         .padding(.vertical, tokens.spacing(.sm))
                         .background(
-                            currentGroup.id == group.id
-                                ? tokens.color(.accent)
-                                : tokens.color(.card)
+                            isSelected ? groupColor : Color.clear
                         )
                         .clipShape(Capsule())
                         .overlay {
-                            if currentGroup.id != group.id {
-                                Capsule().stroke(tokens.color(.border))
+                            if !isSelected {
+                                Capsule().stroke(groupColor)
                             }
                         }
                     }
@@ -391,16 +389,19 @@ private struct GroupManagementRow: View {
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
                 }
+                .buttonStyle(.borderless)
                 .accessibilityLabel("编辑分组")
 
                 Button(action: onToggleHidden) {
                     Image(systemName: group.isHidden ? "eye" : "eye.slash")
                 }
+                .buttonStyle(.borderless)
                 .accessibilityLabel(group.isHidden ? "显示分组" : "隐藏分组")
 
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                 }
+                .buttonStyle(.borderless)
                 .accessibilityLabel("删除分组")
             }
         }
@@ -576,7 +577,13 @@ private struct GroupDeletionSheet: View {
                     viewModel.deleteGroup(group, deletingMembers: deletesAccounts)
                     dismiss()
                 }
-                .buttonStyle(TokenPrimaryButtonStyle())
+                .font(tokens.font(.lg, weight: .semibold))
+                .foregroundStyle(tokens.color(.textPrimary))
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, tokens.spacing(.lg))
+                .padding(.vertical, tokens.spacing(.md))
+                .background(tokens.color(.danger))
+                .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
             }
         }
         .padding(tokens.spacing(.xl))
