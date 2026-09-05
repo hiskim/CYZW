@@ -1,5 +1,30 @@
 import Foundation
 
+struct AccountGroup: Identifiable, Codable, Hashable {
+    static let allID = "all-accounts"
+    static let all = AccountGroup(id: allID, name: "全部", colorName: "gray", isHidden: false, sortOrder: 0)
+
+    let id: String
+    var name: String
+    var colorName: String
+    var isHidden: Bool
+    var sortOrder: Int
+
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        colorName: String = "blue",
+        isHidden: Bool = false,
+        sortOrder: Int = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.colorName = colorName
+        self.isHidden = isHidden
+        self.sortOrder = sortOrder
+    }
+}
+
 struct Account: Identifiable, Codable, Hashable {
     /// The legacy credential file is opaque. Its persisted filename is the
     /// account identity, so selection remains stable across shell launches.
