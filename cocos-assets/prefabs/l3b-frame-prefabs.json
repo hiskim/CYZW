@@ -1,0 +1,9 @@
+{
+  "source": {
+    "ardotFileID": "721098916642284",
+    "scan": "exportable resources"
+  },
+  "ownership": "L3-b only",
+  "nodes": [],
+  "note": "No L3-b Frame exists in the Ardot component tree. Do not create a prefab from L1 launch, account, workspace, or plugin UI."
+}

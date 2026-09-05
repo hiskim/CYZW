@@ -1,0 +1,69 @@
+:root {
+  /* Exported from Ardot file 721098916642284, mode: light. */
+  --启动器令牌-画布: #000000;
+  --启动器令牌-卡片: #1C1C1F;
+  --启动器令牌-卡片高: #29292B;
+  --启动器令牌-面板: #262626;
+  --启动器令牌-描边: #3B3B3D;
+  --启动器令牌-强调: #2996FF;
+  --启动器令牌-主按钮: #0066CC;
+  --启动器令牌-文字主: #FFFFFF;
+  --启动器令牌-文字次: #8F8F94;
+  --启动器令牌-文字弱: #6E6E73;
+  --启动器令牌-成功: #30D159;
+  --启动器令牌-危险: #FF453B;
+  --启动器令牌-圆角卡片: 18px;
+  --启动器令牌-圆角控件: 12px;
+  --启动器令牌-圆角图标: 14px;
+  --启动器令牌-圆角胶囊: 9999px;
+  --启动器令牌-间距sm: 8px;
+  --启动器令牌-间距md: 12px;
+  --启动器令牌-间距lg: 16px;
+  --启动器令牌-间距xl: 20px;
+
+  /* Shell-friendly aliases for the same exported values. */
+  --color-canvas: #000000;
+  --color-card: #1C1C1F;
+  --color-card-raised: #29292B;
+  --color-panel: #262626;
+  --color-border: #3B3B3D;
+  --color-accent: #2996FF;
+  --color-primary-button: #0066CC;
+  --color-text-primary: #FFFFFF;
+  --color-text-secondary: #8F8F94;
+  --color-text-muted: #6E6E73;
+  --color-success: #30D159;
+  --color-danger: #FF453B;
+
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+
+  --radius-card: 18px;
+  --radius-control: 12px;
+  --radius-icon: 14px;
+  --radius-pill: 9999px;
+
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-md: 13px;
+  --font-lg: 14px;
+  --font-xl: 15px;
+  --font-xxl: 22px;
+}
+
+[data-theme="light"] {
+  --color-canvas: #000000;
+  --color-card: #1C1C1F;
+  --color-card-raised: #29292B;
+  --color-panel: #262626;
+  --color-border: #3B3B3D;
+  --color-accent: #2996FF;
+  --color-primary-button: #0066CC;
+  --color-text-primary: #FFFFFF;
+  --color-text-secondary: #8F8F94;
+  --color-text-muted: #6E6E73;
+  --color-success: #30D159;
+  --color-danger: #FF453B;
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="stylesheet" href="../shared/design-tokens.css">
+  <title>活动</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: transparent; color: var(--color-text-primary); font: var(--font-lg)/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    main { padding: var(--space-xl); display: grid; gap: var(--space-lg); }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: var(--font-xxl); }
+    h2 { font-size: var(--font-xl); }
+    .event { display: grid; gap: var(--space-md); background: var(--color-card-raised); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: var(--space-lg); }
+    .event p { color: var(--color-text-secondary); font-size: var(--font-md); }
+    button { min-width: 44px; min-height: 44px; justify-self: start; border: 0; border-radius: var(--radius-control); background: var(--color-primary-button); color: var(--color-text-primary); padding: 0 var(--space-md); font: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <!-- BRIDGE: emits ready { pageName: 'events' } and eventSelected { eventID }, allowing Swift to open an authorized activity target. -->
+  <main>
+    <h1>活动</h1>
+    <article class="event"><h2>星空远征</h2><p>剩余 3 天，完成委托领取限定材料。</p><button data-event="star-expedition">查看活动</button></article>
+    <article class="event"><h2>登录奖励</h2><p>本周累计登录可领取额外补给。</p><button data-event="login-reward">领取奖励</button></article>
+  </main>
+  <script>
+    const send = (event, payload) => window.webkit?.messageHandlers?.engineHost?.postMessage({ event, payload });
+    document.addEventListener('DOMContentLoaded', () => send('ready', { pageName: 'events' }));
+    document.querySelectorAll('[data-event]').forEach((button) => button.addEventListener('click', () => send('eventSelected', { eventID: button.dataset.event })));
+  </script>
+</body>
+</html>

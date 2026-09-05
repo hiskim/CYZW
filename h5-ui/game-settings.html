@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="stylesheet" href="../shared/design-tokens.css">
+  <title>游戏内设置</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: transparent; color: var(--color-text-primary); font: var(--font-lg)/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    main { padding: var(--space-xl); display: grid; gap: var(--space-lg); }
+    h1, p { margin: 0; }
+    h1 { font-size: var(--font-xxl); }
+    .setting { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: var(--space-lg); }
+    .setting p { color: var(--color-text-secondary); font-size: var(--font-md); }
+    button { min-width: 44px; min-height: 44px; border: 1px solid var(--color-border); border-radius: var(--radius-pill); background: var(--color-panel); color: var(--color-text-primary); padding: 0 var(--space-md); font: inherit; cursor: pointer; }
+    button[aria-pressed="true"] { border-color: var(--color-success); color: var(--color-success); }
+  </style>
+</head>
+<body>
+  <!-- BRIDGE: emits ready { pageName: 'game-settings' } and settingChanged { key, value }; native code validates and persists the setting. -->
+  <main>
+    <h1>游戏内设置</h1>
+    <section class="setting"><div><strong>背景音乐</strong><p>在战斗外播放背景音乐</p></div><button aria-pressed="true" data-setting="music">开启</button></section>
+    <section class="setting"><div><strong>战斗特效</strong><p>显示完整的技能和环境特效</p></div><button aria-pressed="true" data-setting="effects">开启</button></section>
+  </main>
+  <script>
+    const send = (event, payload) => window.webkit?.messageHandlers?.engineHost?.postMessage({ event, payload });
+    document.addEventListener('DOMContentLoaded', () => send('ready', { pageName: 'game-settings' }));
+    document.querySelectorAll('[data-setting]').forEach((button) => button.addEventListener('click', () => { const enabled = button.getAttribute('aria-pressed') !== 'true'; button.setAttribute('aria-pressed', String(enabled)); button.textContent = enabled ? '开启' : '关闭'; send('settingChanged', { key: button.dataset.setting, value: enabled }); }));
+  </script>
+</body>
+</html>

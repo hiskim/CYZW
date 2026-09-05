@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="stylesheet" href="../shared/design-tokens.css">
+  <title>背包</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: transparent; color: var(--color-text-primary); font: var(--font-lg)/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    main { padding: var(--space-xl); display: grid; gap: var(--space-lg); }
+    h1 { margin: 0; font-size: var(--font-xxl); }
+    .tabs, .item { display: flex; gap: var(--space-sm); align-items: center; }
+    button { min-width: 44px; min-height: 44px; border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-panel); color: var(--color-text-primary); padding: 0 var(--space-md); font: inherit; cursor: pointer; }
+    button[aria-pressed="true"] { background: var(--color-accent); border-color: var(--color-accent); }
+    .items { display: grid; gap: var(--space-md); }
+    .item { justify-content: space-between; background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: var(--space-lg); }
+    .item__name { font-size: var(--font-xl); }
+    .item__count { color: var(--color-text-secondary); font-size: var(--font-md); }
+  </style>
+</head>
+<body>
+  <!-- BRIDGE: emits ready { pageName: 'inventory' }, inventoryTabChanged { tab }, and useItem { itemID }. -->
+  <main>
+    <h1>背包</h1>
+    <nav class="tabs" aria-label="背包分类"><button aria-pressed="true" data-tab="items">道具</button><button aria-pressed="false" data-tab="materials">材料</button></nav>
+    <section class="items"><article class="item"><div><div class="item__name">恢复药剂</div><div class="item__count">持有 12</div></div><button data-item="potion">使用</button></article><article class="item"><div><div class="item__name">强化石</div><div class="item__count">持有 48</div></div><button data-item="stone">查看</button></article></section>
+  </main>
+  <script>
+    const send = (event, payload) => window.webkit?.messageHandlers?.engineHost?.postMessage({ event, payload });
+    document.addEventListener('DOMContentLoaded', () => send('ready', { pageName: 'inventory' }));
+    document.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('[data-tab]').forEach((tab) => tab.setAttribute('aria-pressed', String(tab === button))); send('inventoryTabChanged', { tab: button.dataset.tab }); }));
+    document.querySelectorAll('[data-item]').forEach((button) => button.addEventListener('click', () => send('useItem', { itemID: button.dataset.item })));
+  </script>
+</body>
+</html>

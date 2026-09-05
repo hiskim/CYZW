@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ardot Launcher</title>
+  <link rel="stylesheet" href="design-tokens.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); }
+    body { padding: 20px; }
+    button { font: inherit; color: inherit; border: 0; cursor: pointer; }
+    .app { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: calc(100vh - 40px); max-width: 1600px; margin: auto; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0a1525; box-shadow: var(--shadow); }
+    .sidebar { padding: 22px 14px; border-right: 1px solid var(--line); background: #0b1728; display: flex; flex-direction: column; }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 27px; }
+    .brand-mark { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: #061222; background: var(--cyan); font-weight: 800; font-size: 17px; }
+    .brand strong { font-size: 16px; letter-spacing: .2px; }
+    .brand small { display:block; color: var(--muted-2); font-size: 10px; margin-top: 2px; letter-spacing: 1.3px; text-transform: uppercase; }
+    .nav-label { padding: 0 11px 9px; color: var(--muted-2); font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase; }
+    .nav { display: grid; gap: 4px; }
+    .nav button { display: flex; align-items: center; gap: 11px; padding: 10px 11px; border-radius: 7px; background: transparent; color: var(--muted); text-align: left; font-size: 13px; }
+    .nav button:hover, .nav button.active { background: var(--panel-2); color: var(--text); }
+    .nav button.active { box-shadow: inset 2px 0 var(--blue); }
+    .nav .icon { width: 18px; color: currentColor; text-align:center; font-size: 15px; }
+    .sidebar-bottom { margin-top: auto; padding: 14px 10px 2px; border-top: 1px solid var(--line); }
+    .profile { display:flex; align-items:center; gap: 9px; }
+    .avatar { width: 28px; height: 28px; border-radius: 50%; display:grid; place-items:center; background:#23436c; color:#a9d4ff; font-size:12px; font-weight:700; }
+    .profile span { font-size: 12px; }
+    .profile small { display:block; color: var(--muted-2); font-size:10px; margin-top: 2px; }
+    main { padding: 24px 28px 30px; min-width: 0; background: var(--bg); }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap: 18px; margin-bottom: 26px; }
+    .eyebrow { color: var(--blue); font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; }
+    h1 { margin: 6px 0 0; font-size: 26px; line-height:1.1; letter-spacing: -.3px; }
+    .top-actions { display:flex; gap: 9px; align-items:center; }
+    .ghost, .primary, .square { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 8px 12px; font-size: 12px; }
+    .ghost:hover, .square:hover { border-color:#37628d; background:var(--panel-2); }
+    .primary { border-color: transparent; background: var(--blue-strong); color: #fff; font-weight: 600; }
+    .primary:hover { background: #4394f4; }
+    .square { width: 34px; padding: 8px 0; text-align:center; font-size: 15px; }
+    .metrics { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 23px; }
+    .metric { padding: 14px 15px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(14,26,43,.84); }
+    .metric-label { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+    .metric-value { margin-top: 10px; font-size: 24px; font-weight: 700; }
+    .metric-trend { color:var(--green); font-size:10px; }
+    .layout { display:grid; grid-template-columns: minmax(0, 1.45fr) minmax(290px, .75fr); gap: 17px; align-items:start; }
+    .section { border: 1px solid var(--line); border-radius: var(--radius); background: rgba(14,26,43,.78); overflow:hidden; }
+    .section-head { display:flex; justify-content:space-between; align-items:center; gap:12px; padding: 15px 17px; border-bottom: 1px solid var(--line); }
+    .section-title { font-size: 14px; font-weight: 650; }
+    .section-meta { color:var(--muted); font-size:11px; }
+    .head-actions { display:flex; gap:7px; align-items:center; }
+    .workstations { padding: 13px; display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 11px; }
+    .station { min-height: 156px; border:1px solid #244161; border-radius:7px; padding: 14px; background: var(--panel-2); position:relative; }
+    .station:hover { border-color:#3f75aa; }
+    .station-top { display:flex; justify-content:space-between; align-items:center; }
+    .station-id { color:var(--muted); font-size:10px; letter-spacing:1px; }
+    .status { display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--green); }
+    .status:before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; box-shadow:0 0 0 3px rgba(82,210,140,.12); }
+    .status.idle { color:var(--muted-2); }
+    .status.pause { color:var(--amber); }
+    .station h3 { margin: 18px 0 3px; font-size:14px; }
+    .station p { margin:0; color:var(--muted); font-size:11px; }
+    .station-footer { position:absolute; bottom:13px; left:14px; right:14px; display:flex; align-items:center; justify-content:space-between; }
+    .engine-tag { padding:4px 7px; border-radius:4px; background:#102f50; color:#85c5ff; font-size:10px; }
+    .station-actions { display:flex; gap:5px; }
+    .station-actions button { width:25px; height:25px; border:1px solid var(--line); border-radius:5px; background:#112139; font-size:12px; }
+    .station-actions button:hover { border-color:var(--blue); color:var(--blue); }
+    .accounts { padding: 0 13px 13px; }
+    .account-row { display:grid; grid-template-columns: 26px minmax(0,1fr) 100px 80px 28px; gap:11px; align-items:center; min-height:53px; border-bottom:1px solid rgba(33,53,80,.75); }
+    .account-row:last-child { border-bottom:0; }
+    .check { width:14px; height:14px; accent-color: var(--blue); }
+    .account-name { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .account-sub { color:var(--muted-2); font-size:10px; margin-top:3px; }
+    .account-state { color:var(--green); font-size:10px; }
+    .account-state.offline { color:var(--muted-2); }
+    .account-time { color:var(--muted); font-size:10px; }
+    .row-menu { background:transparent; color:var(--muted); font-size:16px; }
+    .right-col { display:grid; gap:17px; }
+    .host { padding: 16px 17px; }
+    .host-header { display:flex; justify-content:space-between; align-items:flex-start; }
+    .host-title { font-size:16px; font-weight:650; }
+    .host-sub { color:var(--muted); font-size:11px; margin-top:5px; }
+    .host-status { display:flex; align-items:center; gap:6px; color:var(--cyan); font-size:10px; }
+    .host-status:before { content:""; width:6px;height:6px;border-radius:50%;background:currentColor; }
+    .host-line { display:flex; justify-content:space-between; padding:12px 0; border-bottom:1px solid rgba(33,53,80,.75); font-size:11px; }
+    .host-line:last-of-type { border-bottom:0; }
+    .host-line span:first-child { color:var(--muted); }
+    .host-line strong { font-weight:500; }
+    .engine-switch { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:3px; margin: 15px 0 8px; border-radius:6px; background:#091524; border:1px solid var(--line); }
+    .engine-switch button { padding:8px 5px; border-radius:4px; color:var(--muted); background:transparent; font-size:11px; }
+    .engine-switch button.active { color:var(--text); background:#203a5d; }
+    .host-cta { display:flex; gap:7px; margin-top:14px; }
+    .host-cta button { flex:1; }
+    .plugin-list { padding: 3px 17px 12px; }
+    .plugin { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom:1px solid rgba(33,53,80,.75); }
+    .plugin:last-child { border-bottom:0; }
+    .plugin-left { display:flex; gap:10px; align-items:center; }
+    .plugin-icon { width:27px;height:27px;border-radius:6px;display:grid;place-items:center;background:#1c3f62;color:#9bd0ff;font-size:12px; }
+    .plugin-name { font-size:11px; }
+    .plugin-desc { color:var(--muted-2); font-size:10px; margin-top:3px; }
+    .toggle { width:31px;height:18px;border-radius:20px;background:#29415c;padding:2px; }
+    .toggle i { display:block;width:14px;height:14px;border-radius:50%;background:#71869e;transition:.16s; }
+    .toggle.on { background:var(--blue-strong); }
+    .toggle.on i { transform:translateX(13px); background:#fff; }
+    .notice { display:flex; gap:10px; align-items:flex-start; padding:13px 15px; color:#b9cee5; font-size:10px; line-height:1.55; border:1px solid #254767; border-radius:7px; background:rgba(19,48,76,.4); }
+    .notice strong { color:var(--text); font-size:11px; display:block; margin-bottom:2px; }
+    @media (max-width: 980px) { body{padding:0}.app{min-height:100vh;border:0;border-radius:0;grid-template-columns:180px minmax(0,1fr)} main{padding:20px}.metrics{grid-template-columns:repeat(2,1fr)} .layout{grid-template-columns:1fr}.right-col{grid-template-columns:repeat(2,minmax(0,1fr))}.notice{grid-column:1/-1} }
+    @media (max-width: 700px) { .app{display:block}.sidebar{border-right:0;border-bottom:1px solid var(--line);padding:12px 14px}.brand{padding:0 6px 12px}.nav-label,.sidebar-bottom{display:none}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.nav button.active{box-shadow:inset 0 -2px var(--blue)} main{padding:17px 14px 25px}.topbar{align-items:flex-start}.top-actions .ghost{display:none}.top-actions{gap:5px}.metrics{gap:7px}.metric{padding:11px}.metric-value{font-size:20px}.workstations{grid-template-columns:1fr}.right-col{grid-template-columns:1fr}.account-row{grid-template-columns:22px minmax(0,1fr) 64px 25px}.account-time{display:none} }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">A</div><div><strong>Ardot Launcher</strong><small>control plane</small></div></div>
+      <div class="nav-label">Workspace</div>
+      <nav class="nav">
+        <button class="active" data-view="overview"><span class="icon">⌂</span>总览</button>
+        <button data-view="accounts"><span class="icon">◉</span>账号库 <em>24</em></button>
+        <button data-view="batch"><span class="icon">▦</span>批量选号</button>
+        <button data-view="stations"><span class="icon">▤</span>多开工位 <em>3</em></button>
+        <button data-view="plugins"><span class="icon">✣</span>插件</button>
+        <button data-view="config"><span class="icon">⚙</span>配置</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="profile"><div class="avatar">XY</div><div><span>本地工作区</span><small>已同步 · 12 秒前</small></div></div></div>
+    </aside>
+    <main>
+      <div class="topbar"><div><div class="eyebrow">L1 · Launcher Shell</div><h1>运行总览</h1></div><div class="top-actions"><button class="ghost" id="refresh">↻&nbsp; 刷新状态</button><button class="square" title="通知">♢</button><button class="primary" id="newStation">＋ 新建工位</button></div></div>
+      <section class="metrics"><div class="metric"><div class="metric-label"><span>在线工位</span><span class="metric-trend">+1 今日</span></div><div class="metric-value">3 <small>/ 4</small></div></div><div class="metric"><div class="metric-label"><span>账号总数</span><span class="metric-trend">已就绪</span></div><div class="metric-value">24</div></div><div class="metric"><div class="metric-label"><span>引擎占用</span><span class="metric-trend">稳定</span></div><div class="metric-value">42<small>%</small></div></div><div class="metric"><div class="metric-label"><span>今日运行时长</span><span class="metric-trend">↑ 18%</span></div><div class="metric-value">06:42</div></div></section>
+      <div class="layout">
+        <div class="left-col">
+          <section class="section"><div class="section-head"><div><div class="section-title">多开工位</div><div class="section-meta">统一管理运行中的游戏实例</div></div><div class="head-actions"><button class="ghost" id="layoutToggle">▦ 网格</button><button class="primary" id="batchLaunch">▶ 批量启动</button></div></div><div class="workstations" id="stationsGrid">
+            <article class="station"><div class="station-top"><span class="station-id">ST-01</span><span class="status">运行中</span></div><h3>主力账号组</h3><p>8 个账号 · 最后心跳 12 秒前</p><div class="station-footer"><span class="engine-tag">WebKit 多开</span><div class="station-actions"><button title="暂停">Ⅱ</button><button title="更多">⋯</button></div></div></article>
+            <article class="station"><div class="station-top"><span class="station-id">ST-02</span><span class="status">运行中</span></div><h3>日常任务 A</h3><p>4 个账号 · 最后心跳 29 秒前</p><div class="station-footer"><span class="engine-tag">WebKit 多开</span><div class="station-actions"><button title="暂停">Ⅱ</button><button title="更多">⋯</button></div></div></article>
+            <article class="station"><div class="station-top"><span class="station-id">ST-03</span><span class="status pause">已暂停</span></div><h3>素材采集</h3><p>1 个账号 · 暂停于今天 09:18</p><div class="station-footer"><span class="engine-tag">Cocos 极速</span><div class="station-actions"><button title="继续">▶</button><button title="更多">⋯</button></div></div></article>
+            <article class="station" style="border-style:dashed;background:transparent;display:grid;place-items:center;min-height:156px"><button class="ghost" id="emptyCreate">＋ 添加工位</button></article>
+          </div></section>
+          <section class="section" style="margin-top:17px"><div class="section-head"><div><div class="section-title">账号库</div><div class="section-meta">最近使用的账号</div></div><div class="head-actions"><button class="ghost">筛选</button><button class="ghost">查看全部 →</button></div></div><div class="accounts">
+            <div class="account-row"><input class="check" type="checkbox" checked><div><div class="account-name">alpha_001.bin</div><div class="account-sub">分组：主力账号组</div></div><span class="account-state">已登录</span><span class="account-time">刚刚</span><button class="row-menu">⋯</button></div>
+            <div class="account-row"><input class="check" type="checkbox"><div><div class="account-name">daily_07.bin</div><div class="account-sub">分组：日常任务 A</div></div><span class="account-state">已登录</span><span class="account-time">3 分钟前</span><button class="row-menu">⋯</button></div>
+            <div class="account-row"><input class="check" type="checkbox"><div><div class="account-name">素材-北区-03.bin</div><div class="account-sub">分组：素材采集</div></div><span class="account-state offline">离线</span><span class="account-time">昨天</span><button class="row-menu">⋯</button></div>
+          </div></section>
+        </div>
+        <div class="right-col">
+          <section class="section host"><div class="host-header"><div><div class="eyebrow">L2 · EngineHost</div><div class="host-title">运行时控制</div><div class="host-sub">UI 只认协议，不认引擎</div></div><span class="host-status">协议在线</span></div><div class="engine-switch"><button class="active" data-engine="webkit">WebKit 多开</button><button data-engine="cocos">Cocos 极速</button></div><div class="host-line"><span>实例策略</span><strong id="instanceValue">隔离沙箱 · 最多 4 开</strong></div><div class="host-line"><span>快照状态</span><strong>3 个可恢复</strong></div><div class="host-line"><span>注入通道</span><strong style="color:var(--cyan)">就绪</strong></div><div class="host-cta"><button class="ghost" id="snapshot">◫ 获取快照</button><button class="primary" id="resumeAll">▶ 恢复全部</button></div></section>
+          <section class="section"><div class="section-head"><div><div class="section-title">插件</div><div class="section-meta">对当前工位生效</div></div><button class="ghost">管理 →</button></div><div class="plugin-list"><div class="plugin"><div class="plugin-left"><div class="plugin-icon">⌁</div><div><div class="plugin-name">自动任务脚本</div><div class="plugin-desc">多开环境 · v2.4.1</div></div></div><button class="toggle on"><i></i></button></div><div class="plugin"><div class="plugin-left"><div class="plugin-icon">↗</div><div><div class="plugin-name">网络监控</div><div class="plugin-desc">记录请求与响应</div></div></div><button class="toggle on"><i></i></button></div><div class="plugin"><div class="plugin-left"><div class="plugin-icon">◒</div><div><div class="plugin-name">性能浮窗</div><div class="plugin-desc">帧率 · 内存 · GPU</div></div></div><button class="toggle"><i></i></button></div></div></section>
+          <div class="notice"><span style="font-size:15px;color:var(--cyan)">ⓘ</span><div><strong>引擎可互换</strong>当前工位支持随时切换后端，账号数据和脚本配置保持独立。</div></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script>
+    const qs = (s, root=document) => root.querySelector(s);
+    document.querySelectorAll('.nav button').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active')); btn.classList.add('active'); qs('h1').textContent = btn.textContent.trim().replace(/\s+\d+$/, ''); }));
+    document.querySelectorAll('.engine-switch button').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.engine-switch button').forEach(b => b.classList.remove('active')); btn.classList.add('active'); qs('#instanceValue').textContent = btn.dataset.engine === 'webkit' ? '隔离沙箱 · 最多 4 开' : '单实例 · 性能优先'; }));
+    document.querySelectorAll('.toggle').forEach(toggle => toggle.addEventListener('click', () => toggle.classList.toggle('on')));
+    const notify = (message) => { const old = qs('.notice strong').textContent; qs('.notice strong').textContent = message; setTimeout(() => qs('.notice strong').textContent = old, 1600); };
+    qs('#refresh').addEventListener('click', () => notify('状态已刷新'));
+    qs('#snapshot').addEventListener('click', () => notify('快照已更新'));
+    qs('#resumeAll').addEventListener('click', () => { document.querySelectorAll('.status.pause').forEach(s => { s.className='status'; s.textContent='运行中'; }); notify('全部工位已恢复'); });
+    [qs('#newStation'), qs('#emptyCreate')].forEach(b => b.addEventListener('click', () => notify('新工位向导已就绪')));
+    qs('#batchLaunch').addEventListener('click', () => notify('批量启动队列已提交'));
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+:root {
+  --bg: #08111f;
+  --panel: #0e1a2b;
+  --panel-2: #132239;
+  --panel-3: #182943;
+  --line: #213550;
+  --text: #eef5ff;
+  --muted: #8ea4c0;
+  --muted-2: #5e7592;
+  --blue: #5aa8ff;
+  --blue-strong: #2f83ed;
+  --cyan: #56d6c1;
+  --green: #52d28c;
+  --amber: #f3bd62;
+  --red: #f27782;
+  --radius: 8px;
+  --shadow: 0 16px 42px rgba(0, 0, 0, .24);
+  --font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", sans-serif;
+}
