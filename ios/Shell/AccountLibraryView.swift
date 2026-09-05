@@ -46,7 +46,6 @@ struct AccountLibraryView: View {
                             groupEmptyState(tokens: tokens)
                         } else {
                             AccountGroupSection(
-                                name: currentGroup.name,
                                 accounts: visibleAccounts,
                                 viewModel: viewModel,
                                 selectedIDs: viewModel.selectedIDs,
@@ -117,22 +116,11 @@ struct AccountLibraryView: View {
         }
         .padding(.top, tokens.spacing(.xl))
 
-        HStack(spacing: tokens.spacing(.md)) {
-            Label("\(viewModel.accounts.count) 个账号", systemImage: "person.2")
-            Text("已选 \(viewModel.selectedIDs.count)")
-                .foregroundStyle(tokens.color(.textSecondary))
-            Spacer()
-            Button(viewModel.allSelected ? "取消全选" : "全选") {
-                viewModel.toggleSelectAll()
-            }
+        Label("\(viewModel.accounts.count) 个账号", systemImage: "person.2")
             .font(tokens.font(.sm, weight: .medium))
-            .foregroundStyle(tokens.color(.accent))
-            .buttonStyle(.plain)
-        }
-        .font(tokens.font(.sm, weight: .medium))
-        .foregroundStyle(tokens.color(.textPrimary))
-        .padding(.top, tokens.spacing(.xl))
-        .padding(.bottom, tokens.spacing(.md))
+            .foregroundStyle(tokens.color(.textPrimary))
+            .padding(.top, tokens.spacing(.xl))
+            .padding(.bottom, tokens.spacing(.md))
 
         Divider()
             .overlay(tokens.color(.border))
@@ -640,7 +628,6 @@ private extension AccountGroup {
 }
 
 private struct AccountGroupSection: View {
-    let name: String
     let accounts: [Account]
     @ObservedObject var viewModel: AccountLibraryViewModel
     let selectedIDs: Set<String>
@@ -653,16 +640,6 @@ private struct AccountGroupSection: View {
         let tokens = DesignTokens.shared
 
         VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
-            HStack(alignment: .firstTextBaseline) {
-                Label(name, systemImage: "folder.fill")
-                    .font(tokens.font(.lg, weight: .semibold))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                Spacer()
-                Text("\(accounts.count) 人")
-                    .font(tokens.font(.sm))
-                    .foregroundStyle(tokens.color(.textSecondary))
-            }
-
             VStack(spacing: 8) {
                 ForEach(accounts) { account in
                     AccountRow(
