@@ -33,6 +33,15 @@ final class AppCoordinator: ObservableObject {
         switch state {
         case "game-ready":
             legacyCocosPresentation = .game
+        case "returned-to-shell":
+            selectedTab = .accounts
+            // A managed re-login first logs out the resident Cocos runtime.
+            // Keep the SwiftUI progress screen visible for that intermediate
+            // logout rather than briefly exposing the account library.
+            if case .loggingIn = legacyCocosPresentation {
+                break
+            }
+            legacyCocosPresentation = .shell
         case "failed":
             guard case let .loggingIn(account) = legacyCocosPresentation else { return }
             legacyCocosPresentation = .failed(account, message ?? "登录失败，请重新打开应用后重试。")

@@ -1498,6 +1498,9 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
         s_ios2AccountID = nil;
         IOS2CallHSDKMessage(@"user-logout-from-sdk", @{}, 0);
         [IOS2GameWebView shutdownAndCloseAll];
+        // Cocos may keep its legacy account scene alive for runtime cleanup,
+        // but ownership of the visible launcher returns to the SwiftUI shell.
+        IOS2PostLegacyCocosState(@"returned-to-shell", nil);
     });
 }
 
@@ -1834,7 +1837,26 @@ static NSString * const kIOS2LaunchLegacyCocosBinNameKey = @"binFileName";
         return;
     }
     if (app) {
-        NSLog(@"[ios2] Cocos launch ignored because the native runtime is already active");
+        // Cocos is a single-instance renderer. After a game exits, retain the
+        // renderer but send subsequent SwiftUI selections through its manager
+        // so the existing runtime can authenticate and start the new account.
+        ShellHostingController *shellController = (ShellHostingController *)window.rootViewController;
+        if ([shellController isKindOfClass:[ShellHostingController class]]) {
+            [shellController showCocosController];
+        }
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:safeName
+                                                             options:NSJSONWritingFragmentsAllowed
+                                                               error:nil];
+        NSString *json = [[[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding] autorelease];
+        NSString *script = [NSString stringWithFormat:
+                            @"if (window.__ios2Manager && typeof window.__ios2Manager._requestGameAccountLogin === 'function') { window.__ios2Manager._requestGameAccountLogin(%@); } else { window.__ios2NativeLaunchBin = %@; }",
+                            json ?: @"null", json ?: @"null"];
+        se::ScriptEngine *engine = se::ScriptEngine::getInstance();
+        if (engine) {
+            engine->evalString(script.UTF8String);
+        } else {
+            IOS2PostLegacyCocosState(@"failed", @"游戏运行时不可用");
+        }
         return;
     }
 

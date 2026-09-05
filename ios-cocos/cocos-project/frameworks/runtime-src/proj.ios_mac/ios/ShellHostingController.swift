@@ -8,6 +8,7 @@ public final class ShellHostingController: UIViewController {
     private static let legacyCocosStateNotification = Notification.Name("com.xyzw.ios2.legacyCocosState")
     private static let legacyCocosStateKey = "state"
     private var legacyCocosStateObserver: NSObjectProtocol?
+    private weak var cocosController: UIViewController?
     private let coordinator = AppCoordinator()
     private lazy var shellController: UIHostingController<AnyView> = UIHostingController(
         rootView: AnyView(
@@ -42,6 +43,13 @@ public final class ShellHostingController: UIViewController {
         ) { [weak self] notification in
             guard let state = notification.userInfo?[Self.legacyCocosStateKey] as? String else { return }
             self?.shellController.view.isUserInteractionEnabled = state != "game-ready"
+            if state == "returned-to-shell" {
+                self?.cocosController?.view.isHidden = true
+            } else if state == "game-ready" {
+                // A re-login emits an intermediate logout while Cocos remains
+                // alive. Restore the retained renderer only once it is ready.
+                self?.cocosController?.view.isHidden = false
+            }
         }
     }
 
@@ -52,6 +60,8 @@ public final class ShellHostingController: UIViewController {
 
         // The login state belongs to SwiftUI until Cocos reports game-ready.
         shellController.view.isUserInteractionEnabled = true
+        cocosController = controller
+        controller.view.isHidden = false
 
         addChild(controller)
         controller.view.translatesAutoresizingMaskIntoConstraints = false
@@ -63,6 +73,13 @@ public final class ShellHostingController: UIViewController {
             controller.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         controller.didMove(toParent: self)
+    }
+
+    /// Makes the retained single Cocos renderer visible for a new launch.
+    /// The renderer is hidden again when logout returns ownership to SwiftUI.
+    @objc(showCocosController)
+    public func showCocosController() {
+        cocosController?.view.isHidden = false
     }
 
     deinit {
