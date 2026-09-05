@@ -2,22 +2,20 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct AccountLibraryView: View {
-    @State private var viewModel = AccountLibraryViewModel()
+    @StateObject private var viewModel = AccountLibraryViewModel()
     @State private var isPresentingImporter = false
 
     let onLaunch: (Account) -> Void
 
     var body: some View {
         let tokens = DesignTokens.shared
-        @Bindable var model = viewModel
-
         VStack(spacing: tokens.spacing(.lg)) {
             HStack(spacing: tokens.spacing(.md)) {
                 VStack(alignment: .leading, spacing: tokens.spacing(.sm)) {
                     Text("账号库")
                         .font(tokens.font(.xxl, weight: .semibold))
                         .foregroundStyle(tokens.color(.textPrimary))
-                    Text("\(model.accounts.count) 个账号 · \(model.selectedIDs.count) 个已选")
+                    Text("\(viewModel.accounts.count) 个账号 · \(viewModel.selectedIDs.count) 个已选")
                         .font(tokens.font(.md))
                         .foregroundStyle(tokens.color(.textSecondary))
                 }
@@ -33,30 +31,30 @@ struct AccountLibraryView: View {
             }
 
             HStack(spacing: tokens.spacing(.md)) {
-                Button(model.allSelected ? "取消全选" : "全选") {
-                    model.toggleSelectAll()
+                Button(viewModel.allSelected ? "取消全选" : "全选") {
+                    viewModel.toggleSelectAll()
                 }
                 .buttonStyle(TokenSecondaryButtonStyle())
 
                 Spacer()
 
                 Button("启动已选") {
-                    guard let account = model.selectedAccounts.first,
-                          model.selectedAccounts.count == 1 else { return }
+                    guard let account = viewModel.selectedAccounts.first,
+                          viewModel.selectedAccounts.count == 1 else { return }
                     onLaunch(account)
                 }
                 .buttonStyle(TokenPrimaryButtonStyle())
-                .disabled(model.selectedAccounts.count != 1)
+                .disabled(viewModel.selectedAccounts.count != 1)
             }
 
-            if model.selectedAccounts.count > 1 {
+            if viewModel.selectedAccounts.count > 1 {
                 Text("原生 Cocos 仅支持单实例，请选择一个账号启动。")
                     .font(tokens.font(.sm))
                     .foregroundStyle(tokens.color(.textSecondary))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let errorMessage = model.errorMessage {
+            if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
                     .font(tokens.font(.sm))
                     .foregroundStyle(tokens.color(.danger))
@@ -64,29 +62,28 @@ struct AccountLibraryView: View {
             }
 
             List {
-                ForEach(model.accounts) { account in
+                ForEach(viewModel.accounts) { account in
                     AccountRow(
                         account: account,
-                        isSelected: model.selectedIDs.contains(account.id),
-                        onToggle: { model.toggleSelection(id: account.id) },
-                        onDelete: { model.delete(id: account.id) }
+                        isSelected: viewModel.selectedIDs.contains(account.id),
+                        onToggle: { viewModel.toggleSelection(id: account.id) },
+                        onDelete: { viewModel.delete(id: account.id) }
                     )
                     .listRowBackground(tokens.color(.card))
                     .listRowSeparatorTint(tokens.color(.border))
                 }
                 .onDelete { offsets in
                     for index in offsets {
-                        model.delete(id: model.accounts[index].id)
+                        viewModel.delete(id: viewModel.accounts[index].id)
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
             .background(tokens.color(.canvas))
         }
         .padding(tokens.spacing(.xl))
         .background(tokens.color(.canvas))
         .task {
-            model.refresh()
+            viewModel.refresh()
         }
         .fileImporter(
             isPresented: $isPresentingImporter,
@@ -94,7 +91,7 @@ struct AccountLibraryView: View {
             allowsMultipleSelection: true
         ) { result in
             if case let .success(urls) = result {
-                model.importFiles(from: urls)
+                viewModel.importFiles(from: urls)
             }
         }
     }

@@ -1,11 +1,10 @@
 import Foundation
-import Observation
+import Combine
 
 @MainActor
-@Observable
-final class MockEngineHost: EngineHost {
+final class MockEngineHost: EngineHost, ObservableObject {
     let id: UUID
-    private(set) var state: EngineState = .idle
+    @Published private(set) var state: EngineState = .idle
     let events: AsyncStream<EngineEvent>
 
     var nextStartError: EngineHostError?

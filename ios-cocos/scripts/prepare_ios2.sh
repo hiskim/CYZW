@@ -168,7 +168,7 @@ if [ -f "$IOS_PROJECT_DIR/HelloJavascript.xcodeproj/project.pbxproj" ] && [ ! -e
 fi
 if [ -f "$IOS_PROJECT/project.pbxproj" ]; then
     perl -0pi -e 's/HelloJavascript/IOS2/g; s/org\.cocos2dx\.hellojavascript/com\.xyzw\.ios2/g' "$IOS_PROJECT/project.pbxproj"
-    perl -0pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = 10\.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' "$IOS_PROJECT/project.pbxproj"
+    perl -0pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = 10\.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.6;/g' "$IOS_PROJECT/project.pbxproj"
     # Let Xcode manage signing for device builds. The team is account-specific
     # and must be selected in Signing & Capabilities (or supplied by Xcode's
     # user settings), so do not commit an empty or guessed team identifier.
@@ -188,7 +188,7 @@ if [ -f "$IOS_PROJECT/project.pbxproj" ]; then
     perl -0pi -e 's/SDKROOT = "\$\(SDKROOT\)";/SDKROOT = iphoneos;/g' "$IOS_PROJECT/project.pbxproj"
     perl -0pi -e 's|LIBRARY_SEARCH_PATHS = "\$\(SRCROOT\)/\.\./\.\./cocos2d-x/external/ios/libs";|LIBRARY_SEARCH_PATHS = (\n\t\t\t\t\t"\$(SRCROOT)/../../../ios-libs",\n\t\t\t\t\t"\$(SRCROOT)/../../cocos2d-x/external/ios/libs",\n\t\t\t\t);|g' "$IOS_PROJECT/project.pbxproj"
     if ! grep -q 'PRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2;' "$IOS_PROJECT/project.pbxproj"; then
-        perl -0pi -e 's/(INFOPLIST_FILE = ios\/Info\.plist;\n\s+IPHONEOS_DEPLOYMENT_TARGET = 15\.0;)/$1\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2;/g' "$IOS_PROJECT/project.pbxproj"
+        perl -0pi -e 's/(INFOPLIST_FILE = ios\/Info\.plist;\n\s+IPHONEOS_DEPLOYMENT_TARGET = 15\.6;)/$1\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2;/g' "$IOS_PROJECT/project.pbxproj"
     fi
 
     # AppController.mm uses UIDocumentPicker's UTType API. Add the framework

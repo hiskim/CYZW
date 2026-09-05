@@ -1,9 +1,8 @@
-import Observation
+import Combine
 import SwiftUI
 
 @MainActor
-@Observable
-final class SettingsViewModel {
+final class SettingsViewModel: ObservableObject {
     enum AccentChoice: String, CaseIterable, Identifiable {
         case accent
         case primaryButton
@@ -44,18 +43,16 @@ final class SettingsViewModel {
         }
     }
 
-    var accentChoice: AccentChoice = .accent
-    var fontToken: DesignFontToken = .lg
-    var performanceProfile: PerformanceProfile = .balanced
+    @Published var accentChoice: AccentChoice = .accent
+    @Published var fontToken: DesignFontToken = .lg
+    @Published var performanceProfile: PerformanceProfile = .balanced
 }
 
 struct SettingsView: View {
-    @State private var viewModel = SettingsViewModel()
+    @StateObject private var viewModel = SettingsViewModel()
 
     var body: some View {
         let tokens = DesignTokens.shared
-        @Bindable var model = viewModel
-
         ScrollView {
             VStack(alignment: .leading, spacing: tokens.spacing(.lg)) {
                 Text("设置")
@@ -63,7 +60,7 @@ struct SettingsView: View {
                     .foregroundStyle(tokens.color(.textPrimary))
 
                 TokenSettingsCard(title: "主题色") {
-                    Picker("主题色", selection: $model.accentChoice) {
+                    Picker("主题色", selection: $viewModel.accentChoice) {
                         ForEach(SettingsViewModel.AccentChoice.allCases) { choice in
                             HStack(spacing: tokens.spacing(.sm)) {
                                 Circle()
@@ -79,7 +76,7 @@ struct SettingsView: View {
                 }
 
                 TokenSettingsCard(title: "字号") {
-                    Picker("字号", selection: $model.fontToken) {
+                    Picker("字号", selection: $viewModel.fontToken) {
                         ForEach(DesignFontToken.allCases, id: \.self) { token in
                             Text("\(token.rawValue) · \(Int(tokens.fontSize(token)))px")
                                 .font(tokens.font(token))
@@ -89,12 +86,12 @@ struct SettingsView: View {
                     .font(tokens.font(.lg))
                     .tint(tokens.color(.accent))
                     Text("预览文本")
-                        .font(tokens.font(model.fontToken))
+                        .font(tokens.font(viewModel.fontToken))
                         .foregroundStyle(tokens.color(.textPrimary))
                 }
 
                 TokenSettingsCard(title: "性能档位") {
-                    Picker("性能档位", selection: $model.performanceProfile) {
+                    Picker("性能档位", selection: $viewModel.performanceProfile) {
                         ForEach(SettingsViewModel.PerformanceProfile.allCases) { profile in
                             Text(profile.label)
                                 .font(tokens.font(.lg))

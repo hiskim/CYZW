@@ -1,9 +1,8 @@
-import Observation
+import Combine
 import SwiftUI
 
 @MainActor
-@Observable
-final class AppCoordinator {
+final class AppCoordinator: ObservableObject {
     enum RootTab: Hashable {
         case accounts
         case workspace
@@ -11,10 +10,9 @@ final class AppCoordinator {
         case settings
     }
 
-    var selectedTab: RootTab = .accounts
-    var navigationPath = NavigationPath()
+    @Published var selectedTab: RootTab = .accounts
     let workspace = WorkspaceViewModel()
-    var legacyCocosPresentation: LegacyCocosPresentation = .shell
+    @Published var legacyCocosPresentation: LegacyCocosPresentation = .shell
     private var legacyCocosStateObserver: NSObjectProtocol?
 
     init() {
@@ -54,7 +52,7 @@ final class AppCoordinator {
 }
 
 struct ShellRootView: View {
-    @Bindable var coordinator: AppCoordinator
+    @ObservedObject var coordinator: AppCoordinator
 
     var body: some View {
         let tokens = DesignTokens.shared
@@ -79,7 +77,7 @@ struct ShellRootView: View {
 
     @ViewBuilder
     private func shellTabs(tokens: DesignTokens) -> some View {
-        NavigationStack(path: $coordinator.navigationPath) {
+        NavigationView {
             TabView(selection: $coordinator.selectedTab) {
                 AccountLibraryView { account in
                     coordinator.launchLegacyCocos(account: account)
@@ -114,6 +112,7 @@ struct ShellRootView: View {
             .tint(tokens.color(.accent))
             .background(tokens.color(.canvas))
         }
+        .navigationViewStyle(.stack)
     }
 }
 

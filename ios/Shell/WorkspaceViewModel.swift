@@ -1,5 +1,5 @@
 import Foundation
-import Observation
+import Combine
 
 struct WorkspaceItem: Identifiable {
     let id: UUID
@@ -9,11 +9,10 @@ struct WorkspaceItem: Identifiable {
 }
 
 @MainActor
-@Observable
-final class WorkspaceViewModel {
-    private(set) var items: [WorkspaceItem] = []
-    var selectedID: UUID?
-    private(set) var revision = 0
+final class WorkspaceViewModel: ObservableObject {
+    @Published private(set) var items: [WorkspaceItem] = []
+    @Published var selectedID: UUID?
+    @Published private(set) var revision = 0
 
     func start(accounts: [Account]) async {
         for account in accounts where !items.contains(where: { $0.account.id == account.id }) {

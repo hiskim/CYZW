@@ -1,5 +1,4 @@
 import Foundation
-import Observation
 import SwiftUI
 
 enum DesignColorToken: String, CaseIterable {
@@ -30,7 +29,6 @@ enum DesignFontToken: String, CaseIterable {
 }
 
 @MainActor
-@Observable
 final class DesignTokens {
     static let shared = DesignTokens()
 

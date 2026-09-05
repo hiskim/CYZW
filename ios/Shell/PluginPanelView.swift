@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct PluginPanelView: View {
-    @Bindable var workspace: WorkspaceViewModel
+    @ObservedObject var workspace: WorkspaceViewModel
     @State private var plugins = [
         Plugin(name: "资源 JS 配置", detail: "向目标实例注入已验证资源", assetName: "settings.js", isEnabled: true),
         Plugin(name: "状态监视器", detail: "订阅实例生命周期事件", assetName: "status-monitor.js", isEnabled: false)

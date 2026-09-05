@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WorkspaceView: View {
-    @Bindable var viewModel: WorkspaceViewModel
+    @ObservedObject var viewModel: WorkspaceViewModel
 
     var body: some View {
         let tokens = DesignTokens.shared

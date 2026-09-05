@@ -1,12 +1,11 @@
 import Foundation
-import Observation
+import Combine
 
 @MainActor
-@Observable
-final class AccountLibraryViewModel {
-    private(set) var accounts: [Account] = []
-    private(set) var selectedIDs: Set<String> = []
-    private(set) var errorMessage: String?
+final class AccountLibraryViewModel: ObservableObject {
+    @Published private(set) var accounts: [Account] = []
+    @Published private(set) var selectedIDs: Set<String> = []
+    @Published private(set) var errorMessage: String?
 
     init() {
     }
