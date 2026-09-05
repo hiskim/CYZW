@@ -49,6 +49,7 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 @property (nonatomic, strong) UIView *groupContainer;
 @property (nonatomic, strong) UIView *emptySlot;
 @property (nonatomic, strong) UILabel *toolbarTitle;
+@property (nonatomic, strong) UILabel *toolbarStatus;
 @property (nonatomic, strong) UIButton *switchButton;
 @property (nonatomic, strong) UIButton *gearButton;
 @property (nonatomic, strong) NSLayoutConstraint *toolbarSingleBottomConstraint;
@@ -103,6 +104,26 @@ static NSTimeInterval const kIOS2WebParallelStartupDelay = 0.75;
 static NSTimeInterval const kIOS2WebStartupPayloadCleanupDelay = 0.75;
 static NSTimeInterval const kIOS2WebStartupTimeout = 60.0;
 static NSTimeInterval const kIOS2WebGroupControlIdleDelay = 3.5;
+
+static UIColor *IOS2TokenCardColor(void)
+{
+    return [UIColor colorWithRed:28.0 / 255.0 green:28.0 / 255.0 blue:31.0 / 255.0 alpha:0.96];
+}
+
+static UIColor *IOS2TokenCardRaisedColor(void)
+{
+    return [UIColor colorWithRed:41.0 / 255.0 green:41.0 / 255.0 blue:43.0 / 255.0 alpha:0.98];
+}
+
+static UIColor *IOS2TokenBorderColor(void)
+{
+    return [UIColor colorWithRed:59.0 / 255.0 green:59.0 / 255.0 blue:61.0 / 255.0 alpha:0.92];
+}
+
+static UIColor *IOS2TokenAccentColor(void)
+{
+    return [UIColor colorWithRed:41.0 / 255.0 green:150.0 / 255.0 blue:255.0 / 255.0 alpha:1.0];
+}
 
 static WKProcessPool *IOS2SharedWebProcessPool(void)
 {
@@ -921,14 +942,26 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
 {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.tintColor = [UIColor systemBlueColor];
-    button.titleLabel.font = [UIFont systemFontOfSize:31.0 weight:UIFontWeightSemibold];
+    button.tintColor = UIColor.whiteColor;
+    button.backgroundColor = IOS2TokenCardRaisedColor();
+    button.layer.cornerRadius = 14.0;
+    button.layer.borderWidth = 1.0;
+    button.layer.borderColor = IOS2TokenBorderColor().CGColor;
+    button.layer.shadowColor = UIColor.blackColor.CGColor;
+    button.layer.shadowOpacity = 0.20;
+    button.layer.shadowRadius = 7.0;
+    button.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+    button.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
     BOOL didSetImage = NO;
     if (@available(iOS 13.0, *)) {
         UIImage *image = [UIImage systemImageNamed:systemName];
         if (image) {
             [button setImage:image forState:UIControlStateNormal];
             button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+            [button setPreferredSymbolConfiguration:
+                [UIImageSymbolConfiguration configurationWithPointSize:17.0
+                                                                  weight:UIImageSymbolWeightSemibold]
+                                             forImageInState:UIControlStateNormal];
             didSetImage = YES;
         }
     }
@@ -943,19 +976,21 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     NSString *title = single ? IOS2DisplayAccountName([self currentSingleAccountName]) :
         [NSString stringWithFormat:@"群控 %lu开", (unsigned long)self.instances.count];
     self.toolbarTitle.text = title;
+    self.toolbarStatus.text = single ? @"运行中  ·  WebKit" :
+        [NSString stringWithFormat:@"运行中  ·  %lu 个实例", (unsigned long)self.instances.count];
     self.toolbarSingleBottomConstraint.active = single;
     self.toolbarMultiBottomConstraint.active = !single;
-    self.toolbarTitleHeightConstraint.constant = single ? 32.0 : 28.0;
+    self.toolbarTitleHeightConstraint.constant = 40.0;
     self.toolbarTitleSingleTrailingConstraint.active = single;
     self.toolbarTitleMultiTrailingConstraint.active = !single;
-    CGFloat controlSize = single ? 40.0 : 34.0;
+    CGFloat controlSize = 44.0;
     for (NSLayoutConstraint *constraint in self.toolbarControlSizeConstraints) {
         constraint.constant = controlSize;
     }
     self.gearButton.hidden = !single;
-    self.switchButton.hidden = !single;
-    self.switchButton.enabled = single;
-    self.switchButton.alpha = single ? 1.0 : 0.35;
+    self.switchButton.hidden = NO;
+    self.switchButton.enabled = YES;
+    self.switchButton.alpha = 1.0;
     [self showGroupControlButton];
 }
 
@@ -1028,18 +1063,37 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     if (self.toolbar.superview) return;
     UIView *toolbar = [UIView new];
     toolbar.translatesAutoresizingMaskIntoConstraints = NO;
-    toolbar.backgroundColor = [UIColor colorWithRed:0.937 green:0.957 blue:0.988 alpha:1.0];
+    toolbar.backgroundColor = UIColor.clearColor;
+    toolbar.userInteractionEnabled = YES;
     self.toolbar = toolbar;
     [self.groupContainer addSubview:toolbar];
 
     UILabel *title = [UILabel new];
     title.translatesAutoresizingMaskIntoConstraints = NO;
-    title.font = [UIFont systemFontOfSize:26.0 weight:UIFontWeightBold];
-    title.textColor = [UIColor colorWithRed:0.09 green:0.11 blue:0.15 alpha:1.0];
+    title.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    title.textColor = UIColor.whiteColor;
+    title.backgroundColor = IOS2TokenCardColor();
+    title.layer.cornerRadius = 18.0;
+    title.layer.borderWidth = 1.0;
+    title.layer.borderColor = IOS2TokenBorderColor().CGColor;
+    title.layer.masksToBounds = YES;
     title.textAlignment = NSTextAlignmentLeft;
     title.lineBreakMode = NSLineBreakByTruncatingTail;
     self.toolbarTitle = title;
     [toolbar addSubview:title];
+
+    UILabel *status = [UILabel new];
+    status.translatesAutoresizingMaskIntoConstraints = NO;
+    status.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightMedium];
+    status.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
+    status.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.86];
+    status.layer.cornerRadius = 12.0;
+    status.layer.borderWidth = 1.0;
+    status.layer.borderColor = IOS2TokenBorderColor().CGColor;
+    status.layer.masksToBounds = YES;
+    status.textAlignment = NSTextAlignmentCenter;
+    self.toolbarStatus = status;
+    [self.groupContainer addSubview:status];
 
     UIButton *close = [self toolbarButtonWithSystemName:@"arrow.right" fallback:@"↪" action:@selector(showManager)];
     [toolbar addSubview:close];
@@ -1056,52 +1110,57 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     [toolbar addSubview:gear];
 
     UILayoutGuide *safeArea = self.groupContainer.safeAreaLayoutGuide;
-    NSLayoutConstraint *singleBottom = [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:38.0];
-    NSLayoutConstraint *multiBottom = [toolbar.bottomAnchor constraintEqualToAnchor:self.groupContainer.topAnchor constant:34.0];
+    NSLayoutConstraint *singleBottom = [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:68.0];
+    NSLayoutConstraint *multiBottom = [toolbar.bottomAnchor constraintEqualToAnchor:safeArea.topAnchor constant:68.0];
     self.toolbarSingleBottomConstraint = singleBottom;
     self.toolbarMultiBottomConstraint = multiBottom;
-    self.toolbarTitleHeightConstraint = [title.heightAnchor constraintEqualToConstant:32.0];
+    self.toolbarTitleHeightConstraint = [title.heightAnchor constraintEqualToConstant:40.0];
     self.toolbarTitleSingleTrailingConstraint = [title.trailingAnchor constraintLessThanOrEqualToAnchor:gear.leadingAnchor constant:-12.0];
     self.toolbarTitleMultiTrailingConstraint = [title.trailingAnchor constraintLessThanOrEqualToAnchor:account.leadingAnchor constant:-10.0];
     self.toolbarTitleMultiTrailingConstraint.active = NO;
-    NSLayoutConstraint *closeWidth = [close.widthAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *closeHeight = [close.heightAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *infoWidth = [info.widthAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *infoHeight = [info.heightAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *accountWidth = [account.widthAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *accountHeight = [account.heightAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *gearWidth = [gear.widthAnchor constraintEqualToConstant:40.0];
-    NSLayoutConstraint *gearHeight = [gear.heightAnchor constraintEqualToConstant:40.0];
+    NSLayoutConstraint *closeWidth = [close.widthAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *closeHeight = [close.heightAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *infoWidth = [info.widthAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *infoHeight = [info.heightAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *accountWidth = [account.widthAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *accountHeight = [account.heightAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *gearWidth = [gear.widthAnchor constraintEqualToConstant:44.0];
+    NSLayoutConstraint *gearHeight = [gear.heightAnchor constraintEqualToConstant:44.0];
     self.toolbarControlSizeConstraints = @[closeWidth, closeHeight, infoWidth, infoHeight,
                                            accountWidth, accountHeight, gearWidth, gearHeight];
     [NSLayoutConstraint activateConstraints:@[
         [toolbar.leadingAnchor constraintEqualToAnchor:self.groupContainer.leadingAnchor],
         [toolbar.trailingAnchor constraintEqualToAnchor:self.groupContainer.trailingAnchor],
-        [toolbar.topAnchor constraintEqualToAnchor:self.groupContainer.topAnchor],
+        [toolbar.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0],
         singleBottom,
-        [title.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:22.0],
-        [title.bottomAnchor constraintEqualToAnchor:toolbar.bottomAnchor constant:-4.0],
+        [title.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:12.0],
+        [title.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         self.toolbarTitleHeightConstraint,
         self.toolbarTitleSingleTrailingConstraint,
         self.toolbarTitleMultiTrailingConstraint,
-        [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-14.0],
-        [close.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [close.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-12.0],
+        [close.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         closeWidth,
         closeHeight,
-        [info.trailingAnchor constraintEqualToAnchor:close.leadingAnchor constant:-5.0],
-        [info.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [info.trailingAnchor constraintEqualToAnchor:close.leadingAnchor constant:-6.0],
+        [info.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         infoWidth,
         infoHeight,
-        [account.trailingAnchor constraintEqualToAnchor:info.leadingAnchor constant:-5.0],
-        [account.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [account.trailingAnchor constraintEqualToAnchor:info.leadingAnchor constant:-6.0],
+        [account.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         accountWidth,
         accountHeight,
-        [gear.trailingAnchor constraintEqualToAnchor:account.leadingAnchor constant:-5.0],
-        [gear.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [gear.trailingAnchor constraintEqualToAnchor:account.leadingAnchor constant:-6.0],
+        [gear.centerYAnchor constraintEqualToAnchor:toolbar.centerYAnchor],
         gearWidth,
-        gearHeight
+        gearHeight,
+        [status.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:16.0],
+        [status.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor constant:-12.0],
+        [status.widthAnchor constraintGreaterThanOrEqualToConstant:118.0],
+        [status.heightAnchor constraintEqualToConstant:24.0]
     ]];
     [title release];
+    [status release];
     [toolbar release];
 
     UIButton *groupButton = [self toolbarButtonWithSystemName:@"square.grid.2x2.fill"
@@ -1114,7 +1173,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
                                              forImageInState:UIControlStateNormal];
     }
     groupButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
-    groupButton.backgroundColor = [UIColor colorWithRed:0.04 green:0.45 blue:0.96 alpha:1.0];
+    groupButton.backgroundColor = IOS2TokenAccentColor();
     groupButton.layer.cornerRadius = 24.0;
     groupButton.layer.shadowColor = UIColor.blackColor.CGColor;
     groupButton.layer.shadowOpacity = 0.22;
@@ -1398,8 +1457,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     UIView *content = self.groupContainer;
     [content layoutIfNeeded];
     CGRect bounds = content.bounds;
-    CGFloat top = CGRectGetMaxY(self.toolbar.frame);
-    if (top <= 0.0) top = content.safeAreaInsets.top + 34.0;
+    // The WebKit scene is full-bleed. The native controls are an overlay and
+    // must not reserve a white/header band above the game surface.
+    CGFloat top = 0.0;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = MAX(1.0, CGRectGetHeight(bounds) - top);
     BOOL stacked = [[[self class] layoutMode] isEqualToString:@"stacked"] && count > 1;
@@ -1532,6 +1592,7 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         for (NSDictionary *record in self.instances) [content bringSubviewToFront:record[@"accountBadge"]];
     }
     if (self.toolbar) [content bringSubviewToFront:self.toolbar];
+    if (self.toolbarStatus) [content bringSubviewToFront:self.toolbarStatus];
     if (self.groupControlButton) [content bringSubviewToFront:self.groupControlButton];
 }
 
@@ -1657,6 +1718,8 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
     self.groupContainer = nil;
     self.emptySlot = nil;
     self.toolbarTitle = nil;
+    [self.toolbarStatus removeFromSuperview];
+    self.toolbarStatus = nil;
     self.switchButton = nil;
     self.gearButton = nil;
     self.toolbarSingleBottomConstraint = nil;

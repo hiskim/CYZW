@@ -393,7 +393,31 @@ function ios2InstallNativeMemoryGuardHooks() {
 }
 
 function ios2LoadManagerShell() {
-    if (window.__ios2ManagerMount) return;
+    // A downloaded launcher can leave an older manager registration in the
+    // shared JS realm. Do not let that registration prevent the app-bundled
+    // HUD from loading after an update.
+    if (window.__ios2ManagerShellVersion === 's3-hud-v2') return;
+    try {
+        var legacyManager = window.__ios2Manager;
+        if (legacyManager) {
+            if (cc.game && typeof cc.game.removePersistRootNode === 'function') {
+                cc.game.removePersistRootNode(legacyManager);
+            }
+            if (typeof legacyManager.removeFromParent === 'function') legacyManager.removeFromParent(true);
+        }
+        var legacyFairyRoot = window.__ios2FairyRoot && window.__ios2FairyRoot.node;
+        if (legacyFairyRoot) {
+            if (cc.game && typeof cc.game.removePersistRootNode === 'function') {
+                cc.game.removePersistRootNode(legacyFairyRoot);
+            }
+            if (typeof legacyFairyRoot.removeFromParent === 'function') legacyFairyRoot.removeFromParent(true);
+        }
+        window.__ios2Manager = null;
+        window.__ios2FairyRoot = null;
+        window.__ios2ManagerParts = null;
+    } catch (cleanupError) {
+        ios2Trace('legacy manager cleanup failed: ' + (cleanupError.message || cleanupError));
+    }
     try {
         var managerFiles = [
             'src/vendor/fairygui.js',
@@ -413,6 +437,7 @@ function ios2LoadManagerShell() {
             if (!managerSource) throw new Error('management module is empty: ' + managerFiles[index]);
             eval(managerSource);
         }
+        ios2Trace('loaded app-bundled manager shell ' + (window.__ios2ManagerShellVersion || '<unknown>'));
     } catch (error) {
         console.error('[ios2] management shell failed to load', error);
         ios2Trace('management shell load failed: ' + (error.stack || error.message || error));
