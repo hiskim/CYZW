@@ -73,6 +73,7 @@ struct ShellRootView: View {
             }
         }
         .background(Color.clear)
+        .allowsHitTesting(coordinator.legacyCocosPresentation != .game)
     }
 
     @ViewBuilder

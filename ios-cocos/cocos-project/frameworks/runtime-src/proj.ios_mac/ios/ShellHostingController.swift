@@ -5,6 +5,9 @@ import UIKit
 /// application delegate remains responsible for application lifecycle events.
 @objc(ShellHostingController)
 public final class ShellHostingController: UIViewController {
+    private static let legacyCocosStateNotification = Notification.Name("com.xyzw.ios2.legacyCocosState")
+    private static let legacyCocosStateKey = "state"
+    private var legacyCocosStateObserver: NSObjectProtocol?
     private let coordinator = AppCoordinator()
     private lazy var shellController: UIHostingController<AnyView> = UIHostingController(
         rootView: AnyView(
@@ -28,12 +31,27 @@ public final class ShellHostingController: UIViewController {
             shellController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         shellController.didMove(toParent: self)
+
+        // Cocos is installed below the SwiftUI shell. Once its game scene is
+        // ready, the transparent hosting view must stop participating in hit
+        // testing so touches reach CCEAGLView.
+        legacyCocosStateObserver = NotificationCenter.default.addObserver(
+            forName: Self.legacyCocosStateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let state = notification.userInfo?[Self.legacyCocosStateKey] as? String else { return }
+            self?.shellController.view.isUserInteractionEnabled = state != "game-ready"
+        }
     }
 
     /// The shell stays above Cocos while native authentication is in flight.
     @objc(installCocosController:)
     public func installCocosController(_ controller: UIViewController) {
         guard controller.parent == nil else { return }
+
+        // The login state belongs to SwiftUI until Cocos reports game-ready.
+        shellController.view.isUserInteractionEnabled = true
 
         addChild(controller)
         controller.view.translatesAutoresizingMaskIntoConstraints = false
@@ -45,6 +63,12 @@ public final class ShellHostingController: UIViewController {
             controller.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         controller.didMove(toParent: self)
+    }
+
+    deinit {
+        if let legacyCocosStateObserver {
+            NotificationCenter.default.removeObserver(legacyCocosStateObserver)
+        }
     }
 
     public override var supportedInterfaceOrientations: UIInterfaceOrientationMask {

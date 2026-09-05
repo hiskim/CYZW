@@ -98,15 +98,22 @@
                 if (radius && typeof graphics.roundRect === 'function') graphics.roundRect(0, 0, width, height, radius);
                 else graphics.rect(0, 0, width, height);
             };
-            graphics.fillColor = color;
-            draw();
-            graphics.fill();
-            if (borderColor) {
-                graphics.lineWidth = 1;
-                graphics.strokeColor = borderColor;
+            node.setColor = function (nextColor) {
+                // Graphics nodes do not expose cc.Node#setColor. Redraw so HUD
+                // controls can update their fill without losing the border.
+                if (typeof graphics.clear === 'function') graphics.clear();
+                graphics.fillColor = nextColor;
                 draw();
-                graphics.stroke();
-            }
+                graphics.fill();
+                if (borderColor) {
+                    graphics.lineWidth = 1;
+                    graphics.strokeColor = borderColor;
+                    draw();
+                    graphics.stroke();
+                }
+                node.__ios2SurfaceColor = nextColor;
+            };
+            node.setColor(color);
             return node;
         },
         actionButton: function (text, size, callback, fillColor, minimumWidth) {
