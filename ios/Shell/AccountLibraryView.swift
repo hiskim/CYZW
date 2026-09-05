@@ -129,6 +129,7 @@ struct AccountLibraryView: View {
 
         if viewModel.selectedAccounts.count == 1, let account = viewModel.selectedAccounts.first {
             Button {
+                viewModel.recordLogin(for: account)
                 onLaunch(account)
             } label: {
                 Label("启动已选", systemImage: "play.fill")
@@ -648,7 +649,10 @@ private struct AccountGroupSection: View {
                         isSelected: selectedIDs.contains(account.id),
                         isOnline: account.importedAt != .distantPast,
                         onToggle: { onToggleSelection(account.id) },
-                        onLaunch: { onLaunch(account) }
+                        onLaunch: {
+                            viewModel.recordLogin(for: account)
+                            onLaunch(account)
+                        }
                     ) {
                         AccountDetailView(account: account, viewModel: viewModel, onLaunch: onLaunch)
                     }
@@ -746,10 +750,9 @@ struct AccountDetailView: View {
 
     @Environment(\.presentationMode) private var presentationMode
     @State private var draftRemark = ""
-    @State private var draftGroup = Account.defaultGroupName
     @State private var currentGroupName = Account.defaultGroupName
     @State private var isEditingRemark = false
-    @State private var isEditingGroup = false
+    @State private var isPresentingGroupPicker = false
     @State private var isPresentingDeleteConfirmation = false
 
     var body: some View {
@@ -770,7 +773,6 @@ struct AccountDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             draftRemark = viewModel.remark(for: account)
-            draftGroup = account.groupName
             currentGroupName = account.groupName
         }
         .alert(isPresented: $isPresentingDeleteConfirmation) {
@@ -816,8 +818,7 @@ struct AccountDetailView: View {
         VStack(spacing: 0) {
             detailRow(label: "账号昵称", value: account.nickname, icon: "person", tokens: tokens)
             detailRow(label: ".bin 文件名", value: account.fileName, icon: "doc.fill", tokens: tokens)
-            detailRow(label: "导入时间", value: formattedDate(account.importedAt), icon: "clock", tokens: tokens)
-            detailRow(label: "分组", value: currentGroupName, icon: "folder.fill", tokens: tokens)
+            detailRow(label: "最后登录时间", value: formattedDate(viewModel.lastLoginDate(for: account)), icon: "clock", tokens: tokens)
         }
         .background(tokens.color(.card))
         .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.card)))
@@ -830,48 +831,36 @@ struct AccountDetailView: View {
     @ViewBuilder
     private func groupSection(tokens: DesignTokens) -> some View {
         VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
-            HStack {
-                Text("所属分组")
-                    .font(tokens.font(.lg, weight: .semibold))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                Spacer()
-                Button {
-                    if isEditingGroup {
-                        viewModel.updateGroup(draftGroup, for: account)
-                        currentGroupName = draftGroup.isEmpty ? Account.defaultGroupName : draftGroup
-                    }
-                    isEditingGroup.toggle()
-                } label: {
-                    Image(systemName: isEditingGroup ? "checkmark" : "pencil")
-                        .font(tokens.font(.md, weight: .semibold))
-                }
-                .foregroundStyle(tokens.color(.accent))
-                .buttonStyle(.plain)
-                .accessibilityLabel(isEditingGroup ? "保存分组" : "编辑分组")
-            }
+            Text("所属分组")
+                .font(tokens.font(.lg, weight: .semibold))
+                .foregroundStyle(tokens.color(.textPrimary))
 
-            if isEditingGroup {
-                Picker("分组", selection: $draftGroup) {
-                    ForEach(viewModel.groupNames, id: \.self) { groupName in
-                        Text(groupName).tag(groupName)
-                    }
+            Button {
+                isPresentingGroupPicker = true
+            } label: {
+                HStack(spacing: tokens.spacing(.md)) {
+                    Label(currentGroupName, systemImage: "folder.fill")
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(tokens.font(.sm, weight: .semibold))
+                        .foregroundStyle(tokens.color(.textSecondary))
                 }
-                .pickerStyle(.menu)
                 .font(tokens.font(.md, weight: .medium))
                 .foregroundStyle(tokens.color(.textPrimary))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, tokens.spacing(.lg))
-                .padding(.vertical, tokens.spacing(.sm))
+                .padding(tokens.spacing(.lg))
                 .background(tokens.color(.card))
                 .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
-            } else {
-                Label(currentGroupName, systemImage: "folder.fill")
-                    .font(tokens.font(.md, weight: .medium))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(tokens.spacing(.lg))
-                    .background(tokens.color(.card))
-                    .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("选择所属分组")
+        }
+        .confirmationDialog("选择所属分组", isPresented: $isPresentingGroupPicker, titleVisibility: .visible) {
+            ForEach(viewModel.groupNames, id: \.self) { groupName in
+                Button(groupName) {
+                    viewModel.updateGroup(groupName, for: account)
+                    currentGroupName = groupName
+                }
             }
         }
     }
@@ -905,41 +894,42 @@ struct AccountDetailView: View {
     @ViewBuilder
     private func remarkSection(tokens: DesignTokens) -> some View {
         VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
-            HStack {
-                Text("备注")
-                    .font(tokens.font(.lg, weight: .semibold))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                Spacer()
-                Button {
-                    if isEditingRemark {
-                        viewModel.updateRemark(draftRemark, for: account)
-                    }
-                    isEditingRemark.toggle()
-                } label: {
-                    Image(systemName: isEditingRemark ? "checkmark" : "pencil")
-                        .font(tokens.font(.md, weight: .semibold))
-                }
-                .foregroundStyle(tokens.color(.accent))
-                .buttonStyle(.plain)
-                .accessibilityLabel(isEditingRemark ? "保存备注" : "编辑备注")
-            }
+            Text("备注")
+                .font(tokens.font(.lg, weight: .semibold))
+                .foregroundStyle(tokens.color(.textPrimary))
 
             if isEditingRemark {
-                TextEditor(text: $draftRemark)
-                    .font(tokens.font(.md))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                    .frame(minHeight: 90)
-                    .padding(tokens.spacing(.sm))
-                    .background(tokens.color(.panel))
-                    .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+                VStack(alignment: .trailing, spacing: tokens.spacing(.sm)) {
+                    TextEditor(text: $draftRemark)
+                        .font(tokens.font(.md))
+                        .foregroundStyle(tokens.color(.textPrimary))
+                        .frame(minHeight: 90)
+                        .padding(tokens.spacing(.sm))
+                        .background(tokens.color(.panel))
+                        .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+
+                    Button("完成") {
+                        viewModel.updateRemark(draftRemark, for: account)
+                        isEditingRemark = false
+                    }
+                    .font(tokens.font(.md, weight: .semibold))
+                    .foregroundStyle(tokens.color(.accent))
+                    .buttonStyle(.plain)
+                }
             } else {
-                Text(draftRemark.isEmpty ? "暂无备注" : draftRemark)
-                    .font(tokens.font(.md))
-                    .foregroundStyle(draftRemark.isEmpty ? tokens.color(.textMuted) : tokens.color(.textPrimary))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(tokens.spacing(.lg))
-                    .background(tokens.color(.card))
-                    .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+                Button {
+                    isEditingRemark = true
+                } label: {
+                    Text(draftRemark.isEmpty ? "暂无备注" : draftRemark)
+                        .font(tokens.font(.md))
+                        .foregroundStyle(draftRemark.isEmpty ? tokens.color(.textMuted) : tokens.color(.textPrimary))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(tokens.spacing(.lg))
+                        .background(tokens.color(.card))
+                        .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("编辑备注")
             }
         }
     }
@@ -948,6 +938,7 @@ struct AccountDetailView: View {
     private func actionsSection(tokens: DesignTokens) -> some View {
         VStack(spacing: tokens.spacing(.md)) {
             Button {
+                viewModel.recordLogin(for: account)
                 onLaunch(account)
             } label: {
                 Label("启动该账号", systemImage: "play.fill")
@@ -973,8 +964,8 @@ struct AccountDetailView: View {
         }
     }
 
-    private func formattedDate(_ date: Date) -> String {
-        guard date != .distantPast else { return "未知" }
+    private func formattedDate(_ date: Date?) -> String {
+        guard let date else { return "尚未登录" }
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short

@@ -7,16 +7,19 @@ final class AccountLibraryViewModel: ObservableObject {
     @Published private(set) var selectedIDs: Set<String> = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var remarks: [String: String]
+    @Published private(set) var lastLoginTimestamps: [String: TimeInterval]
     @Published private(set) var groups: [AccountGroup]
     @Published private(set) var defaultGroupID: String?
 
     init() {
         remarks = UserDefaults.standard.dictionary(forKey: Self.remarksKey) as? [String: String] ?? [:]
+        lastLoginTimestamps = Self.loadLastLoginTimestamps()
         groups = Self.loadGroups()
         defaultGroupID = UserDefaults.standard.string(forKey: Self.defaultGroupKey)
     }
 
     private static let remarksKey = "ios.shell.account-remarks"
+    private static let lastLoginTimestampsKey = "ios.shell.account-last-login-timestamps"
     private static let groupAssignmentsKey = "ios.shell.account-groups"
     private static let groupNamesKey = "ios.shell.groups"
     private static let groupDefinitionsKey = "ios.shell.group-definitions"
@@ -68,6 +71,15 @@ final class AccountLibraryViewModel: ObservableObject {
             remarks[account.id] = trimmedValue
         }
         UserDefaults.standard.set(remarks, forKey: Self.remarksKey)
+    }
+
+    func lastLoginDate(for account: Account) -> Date? {
+        lastLoginTimestamps[account.id].map(Date.init(timeIntervalSince1970:))
+    }
+
+    func recordLogin(for account: Account) {
+        lastLoginTimestamps[account.id] = Date().timeIntervalSince1970
+        UserDefaults.standard.set(lastLoginTimestamps, forKey: Self.lastLoginTimestampsKey)
     }
 
     func accounts(in group: AccountGroup) -> [Account] {
@@ -225,6 +237,8 @@ final class AccountLibraryViewModel: ObservableObject {
 
         remarks.removeValue(forKey: id)
         UserDefaults.standard.set(remarks, forKey: Self.remarksKey)
+        lastLoginTimestamps.removeValue(forKey: id)
+        UserDefaults.standard.set(lastLoginTimestamps, forKey: Self.lastLoginTimestampsKey)
         var assignments = groupAssignments
         assignments.removeValue(forKey: id)
         groupAssignments = assignments
@@ -274,6 +288,14 @@ final class AccountLibraryViewModel: ObservableObject {
         let legacyNames = UserDefaults.standard.stringArray(forKey: groupNamesKey) ?? []
         return legacyNames.enumerated().map { index, name in
             AccountGroup(name: name, sortOrder: index + 1)
+        }
+    }
+
+    private static func loadLastLoginTimestamps() -> [String: TimeInterval] {
+        let storedValues = UserDefaults.standard.dictionary(forKey: lastLoginTimestampsKey) ?? [:]
+        return storedValues.reduce(into: [:]) { timestamps, entry in
+            guard let timestamp = (entry.value as? NSNumber)?.doubleValue else { return }
+            timestamps[entry.key] = timestamp
         }
     }
 }
