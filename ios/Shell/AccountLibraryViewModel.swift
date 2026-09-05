@@ -6,9 +6,13 @@ final class AccountLibraryViewModel: ObservableObject {
     @Published private(set) var accounts: [Account] = []
     @Published private(set) var selectedIDs: Set<String> = []
     @Published private(set) var errorMessage: String?
+    @Published private(set) var remarks: [String: String]
 
     init() {
+        remarks = UserDefaults.standard.dictionary(forKey: Self.remarksKey) as? [String: String] ?? [:]
     }
+
+    private static let remarksKey = "ios.shell.account-remarks"
 
     var selectedAccounts: [Account] {
         accounts.filter { selectedIDs.contains($0.id) }
@@ -16,6 +20,20 @@ final class AccountLibraryViewModel: ObservableObject {
 
     var allSelected: Bool {
         !accounts.isEmpty && accounts.allSatisfy { selectedIDs.contains($0.id) }
+    }
+
+    func remark(for account: Account) -> String {
+        remarks[account.id] ?? ""
+    }
+
+    func updateRemark(_ value: String, for account: Account) {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedValue.isEmpty {
+            remarks.removeValue(forKey: account.id)
+        } else {
+            remarks[account.id] = trimmedValue
+        }
+        UserDefaults.standard.set(remarks, forKey: Self.remarksKey)
     }
 
     func refresh() {
@@ -84,7 +102,7 @@ private enum LegacyBinAccountStore {
 
     static func loadAccounts() throws -> [Account] {
         let directory = try binDirectory()
-        let keys: Set<URLResourceKey> = [.contentModificationDateKey]
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .creationDateKey]
         let urls = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: Array(keys),
@@ -98,7 +116,13 @@ private enum LegacyBinAccountStore {
                 if leftDate != rightDate { return leftDate > rightDate }
                 return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedAscending
             }
-            .map { Account(fileName: $0.lastPathComponent) }
+            .map { url in
+                let values = try? url.resourceValues(forKeys: keys)
+                return Account(
+                    fileName: url.lastPathComponent,
+                    importedAt: values?.creationDate ?? values?.contentModificationDate ?? .distantPast
+                )
+            }
     }
 
     static func importAccount(from source: URL) throws -> Account {

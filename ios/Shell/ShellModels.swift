@@ -4,14 +4,16 @@ struct Account: Identifiable, Codable, Hashable {
     /// The legacy credential file is opaque. Its persisted filename is the
     /// account identity, so selection remains stable across shell launches.
     let fileName: String
+    let importedAt: Date
 
     var id: String { fileName }
     var nickname: String { (fileName as NSString).deletingPathExtension }
     var gameName: String { "旧 .bin 账号" }
     var groupName: String { "本地文件" }
 
-    init(fileName: String) {
+    init(fileName: String, importedAt: Date = .now) {
         self.fileName = fileName
+        self.importedAt = importedAt
     }
 }
 
