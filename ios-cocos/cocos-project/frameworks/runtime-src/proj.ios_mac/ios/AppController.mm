@@ -55,6 +55,12 @@ static NSString *s_ios2HSDKImageInstanceID = nil;
 static NSString *s_ios2HSDKTargetInstanceID = nil;
 static NSString *s_ios2AccountID = nil;
 static NSString *s_ios2AuthResponseBase64 = nil;
+// SwiftUI selects a managed .bin before Cocos has a JS environment. Retain
+// its safe filename until the JS login bridge explicitly accepts the handoff.
+static NSString *s_ios2PendingCocosBinName = nil;
+static NSString * const kIOS2LegacyCocosStateNotification = @"com.xyzw.ios2.legacyCocosState";
+static NSString * const kIOS2LegacyCocosStateKey = @"state";
+static NSString * const kIOS2LegacyCocosMessageKey = @"message";
 
 // These values are the production identity embedded in the reference iOS
 // client.  Game scripts use the HSDK init response to decide which in-game
@@ -70,6 +76,18 @@ static NSString * const kIOS2RuntimeBackendDefaultsKey = @"ios2.runtimeBackend";
 static NSString * const kIOS2RenderQualitySingleDefaultsKey = @"ios2.renderQuality.single";
 static NSString * const kIOS2RenderQualityMultiDefaultsKey = @"ios2.renderQuality.multi";
 static uint8_t s_ios2SingleRenderTextureFactor = 1;
+
+static void IOS2PostLegacyCocosState(NSString *state, NSString *message)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSMutableDictionary *info = [@{ kIOS2LegacyCocosStateKey: state ?: @"" } mutableCopy];
+        if (message.length) info[kIOS2LegacyCocosMessageKey] = message;
+        [[NSNotificationCenter defaultCenter] postNotificationName:kIOS2LegacyCocosStateNotification
+                                                            object:nil
+                                                          userInfo:info];
+        [info release];
+    });
+}
 
 static NSInteger IOS2PreferredFrameRate(void)
 {
@@ -631,6 +649,7 @@ static void IOS2Authenticate(NSData *binData)
             s_ios2AuthReady = NO;
             IOS2FinishSDKLogin(1);
             NSString *message = error.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode];
+            IOS2PostLegacyCocosState(@"failed", message);
             IOS2CallJavaScript(@"__ios2BinLoginFailed", message);
             return;
         }
@@ -858,6 +877,8 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
 + (NSString *)webGameLayoutMode;
 + (void)setWebGameLayoutMode:(NSString *)mode;
 + (void)webGameManagerRequested;
++ (void)consumeNativeCocosLaunch;
++ (void)legacyCocosGameReady;
 @end
 
 @implementation IOS2Native
@@ -1386,6 +1407,33 @@ static void IOS2AuthenticateAdditionalBin(NSData *binData, NSString *name)
     });
 }
 
++ (void)consumeNativeCocosLaunch
+{
+    NSString *name = [s_ios2PendingCocosBinName copy];
+    if (!name.length) {
+        [name release];
+        return;
+    }
+
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:name
+                                                         options:NSJSONWritingFragmentsAllowed
+                                                           error:nil];
+    NSString *json = [[[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding] autorelease];
+    NSString *script = [NSString stringWithFormat:@"window.__ios2NativeLaunchBin = %@;", json ?: @"null"];
+    se::ScriptEngine *engine = se::ScriptEngine::getInstance();
+    if (engine) {
+        engine->evalString(script.UTF8String);
+        [s_ios2PendingCocosBinName release];
+        s_ios2PendingCocosBinName = nil;
+    }
+    [name release];
+}
+
++ (void)legacyCocosGameReady
+{
+    IOS2PostLegacyCocosState(@"game-ready", nil);
+}
+
 + (void)resumeLastBin
 {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1706,6 +1754,11 @@ extern "C" void IOS2LoginManagedBin(NSString *name, NSString *scriptsJSON, NSStr
 
 using namespace cocos2d;
 
+Application* app = nullptr;
+
+static NSString * const kIOS2LaunchLegacyCocosNotification = @"com.xyzw.ios2.launchLegacyCocos";
+static NSString * const kIOS2LaunchLegacyCocosBinNameKey = @"binFileName";
+
 // The startup script calls this method for compatibility with the original
 // app. UIKit owns the launch storyboard in ios2, so there is no extra splash
 // view to dismiss.
@@ -1721,7 +1774,6 @@ using namespace cocos2d;
 
 @implementation AppController
 
-Application* app = nullptr;
 @synthesize window;
 
 #pragma mark -
@@ -1743,6 +1795,11 @@ Application* app = nullptr;
     
     [window makeKeyAndVisible];
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(launchLegacyCocos:)
+                                                 name:kIOS2LaunchLegacyCocosNotification
+                                               object:nil];
+
     // Request portrait geometry explicitly so Cocos receives a portrait-sized
     // framebuffer from the first frame on modern simulator runtimes.
     if (@available(iOS 16.0, *)) {
@@ -1759,6 +1816,54 @@ Application* app = nullptr;
     [[UIApplication sharedApplication] setStatusBarHidden:NO];
 
     return YES;
+}
+
+- (void)launchLegacyCocos:(NSNotification *)notification
+{
+    id requestedValue = notification.userInfo[kIOS2LaunchLegacyCocosBinNameKey];
+    NSString *requestedName = [requestedValue isKindOfClass:[NSString class]] ? requestedValue : nil;
+    NSString *safeName = requestedName.length ? IOS2SafeBinName(requestedName) : nil;
+    if (!safeName.length || ![safeName isEqualToString:requestedName.lastPathComponent]) {
+        NSLog(@"[ios2] rejected invalid SwiftUI Cocos launch request");
+        return;
+    }
+
+    NSURL *binURL = [IOS2BinDirectory() URLByAppendingPathComponent:safeName];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:binURL.path]) {
+        NSLog(@"[ios2] requested .bin does not exist: %@", safeName);
+        return;
+    }
+    if (app) {
+        NSLog(@"[ios2] Cocos launch ignored because the native runtime is already active");
+        return;
+    }
+
+    [s_ios2PendingCocosBinName release];
+    s_ios2PendingCocosBinName = [safeName copy];
+
+    CGFloat scale = UIScreen.mainScreen.scale;
+    CGRect bounds = UIScreen.mainScreen.bounds;
+    app = new AppDelegate((int)(bounds.size.width * scale), (int)(bounds.size.height * scale));
+    app->setMultitouch(true);
+
+    ShellHostingController *shellController = (ShellHostingController *)window.rootViewController;
+    if (![shellController isKindOfClass:[ShellHostingController class]]) {
+        NSLog(@"[ios2] cannot install Cocos because the SwiftUI shell is unavailable");
+        delete app;
+        app = nil;
+        [s_ios2PendingCocosBinName release];
+        s_ios2PendingCocosBinName = nil;
+        IOS2PostLegacyCocosState(@"failed", @"启动容器不可用");
+        return;
+    }
+
+    _viewController = [[RootViewController alloc] init];
+    _viewController.automaticallyAdjustsScrollViewInsets = NO;
+    _viewController.extendedLayoutIncludesOpaqueBars = NO;
+    _viewController.edgesForExtendedLayout = UIRectEdgeAll;
+    [shellController installCocosController:_viewController];
+    [[UIApplication sharedApplication] setStatusBarHidden:NO];
+    app->start();
 }
 
 - (void)applicationWillResignActive:(UIApplication *)application {

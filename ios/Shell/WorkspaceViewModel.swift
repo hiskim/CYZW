@@ -26,7 +26,8 @@ final class WorkspaceViewModel {
                 try await host.start(config: EngineConfig(
                     bundleIdentifier: "com.xyzw.game",
                     initialTarget: .scene("launcher"),
-                    authenticationToken: account.id.uuidString
+                    // Legacy account identities are opaque .bin filenames, not UUIDs.
+                    authenticationToken: account.id
                 ))
                 selectedID = host.id
             } catch {

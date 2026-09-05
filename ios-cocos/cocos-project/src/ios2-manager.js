@@ -643,11 +643,16 @@
         },
 
         _consumePendingSingleLogin: function () {
-            if (!this.storage || this.gameStarted || this._pendingLoginTimer) return;
-            var name = '';
-            try { name = String(this.storage.getItem(PENDING_SINGLE_LOGIN_KEY) || ''); } catch (ignored) {}
+            if (this.gameStarted || this._pendingLoginTimer) return;
+            var name = String(global.__ios2NativeLaunchBin || '');
+            if (name) {
+                global.__ios2NativeLaunchBin = '';
+            } else {
+                if (!this.storage) return;
+                try { name = String(this.storage.getItem(PENDING_SINGLE_LOGIN_KEY) || ''); } catch (ignored) {}
+            }
             if (!name) return;
-            try { this.storage.removeItem(PENDING_SINGLE_LOGIN_KEY); } catch (ignored2) {}
+            try { if (this.storage) this.storage.removeItem(PENDING_SINGLE_LOGIN_KEY); } catch (ignored2) {}
             this.pendingLoginAfterRestart = '';
             var self = this;
             this._pendingLoginTimer = setTimeout(function () {
@@ -683,6 +688,10 @@
             if (this.gameToolbar) this.gameToolbar.active = true;
             if (this.background) this.background.active = false;
             if (this.content) this.content.active = false;
+            if (global.jsb && jsb.reflection && jsb.reflection.callStaticMethod) {
+                try { jsb.reflection.callStaticMethod('IOS2Native', 'legacyCocosGameReady'); }
+                catch (error) { console.error('[ios2] unable to notify SwiftUI game handoff', error); }
+            }
             if (typeof global.__ios2StartGame === 'function') global.__ios2StartGame();
             else if (this.launcher && typeof this.launcher.onLoadFunc === 'function') this.launcher.onLoadFunc();
         },

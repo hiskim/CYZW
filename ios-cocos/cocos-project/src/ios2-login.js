@@ -238,6 +238,12 @@
         nativeReflection.callStaticMethod('IOS2Native', 'selectLoginBin');
     };
 
+    // SwiftUI can request a Cocos launch before this script and the manager
+    // are loaded. Native hands the selected filename back now; the manager
+    // consumes it only after its account presenter is ready.
+    try { nativeReflection.callStaticMethod('IOS2Native', 'consumeNativeCocosLaunch'); }
+    catch (error) { console.error('[ios2] native Cocos launch handoff failed', error); }
+
     // The HSDK login request opens the picker explicitly. Keeping this
     // bridge passive prevents an old cached account from logging in before
     // the user chooses the intended .bin file.

@@ -1,11 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AccountLibraryView: View {
     @State private var viewModel = AccountLibraryViewModel()
-    @State private var isPresentingEditor = false
-    @State private var editingAccount: Account?
+    @State private var isPresentingImporter = false
 
-    let onLaunch: ([Account]) -> Void
+    let onLaunch: (Account) -> Void
 
     var body: some View {
         let tokens = DesignTokens.shared
@@ -23,14 +23,13 @@ struct AccountLibraryView: View {
                 }
                 Spacer()
                 Button {
-                    editingAccount = nil
-                    isPresentingEditor = true
+                    isPresentingImporter = true
                 } label: {
                     Image(systemName: "plus")
                         .font(tokens.font(.lg, weight: .semibold))
                 }
                 .buttonStyle(TokenIconButtonStyle())
-                .accessibilityLabel("新增账号")
+                .accessibilityLabel("导入 .bin 账号")
             }
 
             HStack(spacing: tokens.spacing(.md)) {
@@ -42,10 +41,26 @@ struct AccountLibraryView: View {
                 Spacer()
 
                 Button("启动已选") {
-                    onLaunch(model.selectedAccounts)
+                    guard let account = model.selectedAccounts.first,
+                          model.selectedAccounts.count == 1 else { return }
+                    onLaunch(account)
                 }
                 .buttonStyle(TokenPrimaryButtonStyle())
-                .disabled(model.selectedAccounts.isEmpty)
+                .disabled(model.selectedAccounts.count != 1)
+            }
+
+            if model.selectedAccounts.count > 1 {
+                Text("原生 Cocos 仅支持单实例，请选择一个账号启动。")
+                    .font(tokens.font(.sm))
+                    .foregroundStyle(tokens.color(.textSecondary))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let errorMessage = model.errorMessage {
+                Text(errorMessage)
+                    .font(tokens.font(.sm))
+                    .foregroundStyle(tokens.color(.danger))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             List {
@@ -54,10 +69,7 @@ struct AccountLibraryView: View {
                         account: account,
                         isSelected: model.selectedIDs.contains(account.id),
                         onToggle: { model.toggleSelection(id: account.id) },
-                        onEdit: {
-                            editingAccount = account
-                            isPresentingEditor = true
-                        }
+                        onDelete: { model.delete(id: account.id) }
                     )
                     .listRowBackground(tokens.color(.card))
                     .listRowSeparatorTint(tokens.color(.border))
@@ -73,15 +85,17 @@ struct AccountLibraryView: View {
         }
         .padding(tokens.spacing(.xl))
         .background(tokens.color(.canvas))
-        .sheet(isPresented: $isPresentingEditor) {
-            AccountEditorView(account: editingAccount) { account in
-                if editingAccount == nil {
-                    model.add(account)
-                } else {
-                    model.update(account)
-                }
+        .task {
+            model.refresh()
+        }
+        .fileImporter(
+            isPresented: $isPresentingImporter,
+            allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
+            allowsMultipleSelection: true
+        ) { result in
+            if case let .success(urls) = result {
+                model.importFiles(from: urls)
             }
-            .presentationBackground(tokens.color(.panel))
         }
     }
 }
@@ -90,7 +104,7 @@ private struct AccountRow: View {
     let account: Account
     let isSelected: Bool
     let onToggle: () -> Void
-    let onEdit: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         let tokens = DesignTokens.shared
@@ -115,79 +129,14 @@ private struct AccountRow: View {
 
             Spacer()
 
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-                    .font(tokens.font(.lg))
-                    .foregroundStyle(tokens.color(.accent))
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                .font(tokens.font(.lg))
+                .foregroundStyle(tokens.color(.danger))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("编辑 \(account.nickname)")
+            .accessibilityLabel("删除 \(account.nickname)")
         }
         .padding(.vertical, tokens.spacing(.sm))
-    }
-}
-
-private struct AccountEditorView: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var nickname: String
-    @State private var gameName: String
-    @State private var groupName: String
-
-    let existingID: UUID?
-    let onSave: (Account) -> Void
-
-    init(account: Account?, onSave: @escaping (Account) -> Void) {
-        _nickname = State(initialValue: account?.nickname ?? "")
-        _gameName = State(initialValue: account?.gameName ?? "")
-        _groupName = State(initialValue: account?.groupName ?? "")
-        existingID = account?.id
-        self.onSave = onSave
-    }
-
-    var body: some View {
-        let tokens = DesignTokens.shared
-
-        VStack(alignment: .leading, spacing: tokens.spacing(.lg)) {
-            Text(existingID == nil ? "新增账号" : "编辑账号")
-                .font(tokens.font(.xl, weight: .semibold))
-                .foregroundStyle(tokens.color(.textPrimary))
-
-            TokenTextField(title: "昵称", text: $nickname)
-            TokenTextField(title: "游戏名", text: $gameName)
-            TokenTextField(title: "分组", text: $groupName)
-
-            HStack(spacing: tokens.spacing(.md)) {
-                Button("取消") { dismiss() }
-                    .buttonStyle(TokenSecondaryButtonStyle())
-                Spacer()
-                Button("保存") {
-                    onSave(Account(id: existingID ?? UUID(), nickname: nickname, gameName: gameName, groupName: groupName))
-                    dismiss()
-                }
-                .buttonStyle(TokenPrimaryButtonStyle())
-                .disabled(nickname.isEmpty || gameName.isEmpty || groupName.isEmpty)
-            }
-        }
-        .padding(tokens.spacing(.xl))
-        .background(tokens.color(.panel))
-    }
-}
-
-private struct TokenTextField: View {
-    let title: String
-    @Binding var text: String
-
-    var body: some View {
-        let tokens = DesignTokens.shared
-        TextField(title, text: $text)
-            .font(tokens.font(.lg))
-            .foregroundStyle(tokens.color(.textPrimary))
-            .padding(tokens.spacing(.md))
-            .background(tokens.color(.card))
-            .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
-            .overlay {
-                RoundedRectangle(cornerRadius: tokens.radius(.control))
-                    .stroke(tokens.color(.border))
-            }
     }
 }
