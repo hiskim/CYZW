@@ -5,15 +5,17 @@ struct Account: Identifiable, Codable, Hashable {
     /// account identity, so selection remains stable across shell launches.
     let fileName: String
     let importedAt: Date
+    var groupName: String
+
+    static let defaultGroupName = "未分组"
 
     var id: String { fileName }
     var nickname: String { (fileName as NSString).deletingPathExtension }
     var gameName: String { "旧 .bin 账号" }
-    var groupName: String { "本地文件" }
-
-    init(fileName: String, importedAt: Date = .now) {
+    init(fileName: String, importedAt: Date = .now, groupName: String = Account.defaultGroupName) {
         self.fileName = fileName
         self.importedAt = importedAt
+        self.groupName = groupName
     }
 }
 

@@ -7,12 +7,21 @@ final class AccountLibraryViewModel: ObservableObject {
     @Published private(set) var selectedIDs: Set<String> = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var remarks: [String: String]
+    @Published private(set) var customGroupNames: [String]
 
     init() {
         remarks = UserDefaults.standard.dictionary(forKey: Self.remarksKey) as? [String: String] ?? [:]
+        customGroupNames = UserDefaults.standard.stringArray(forKey: Self.groupNamesKey) ?? []
     }
 
     private static let remarksKey = "ios.shell.account-remarks"
+    private static let groupAssignmentsKey = "ios.shell.account-groups"
+    private static let groupNamesKey = "ios.shell.groups"
+
+    private var groupAssignments: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: Self.groupAssignmentsKey) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.groupAssignmentsKey) }
+    }
 
     var selectedAccounts: [Account] {
         accounts.filter { selectedIDs.contains($0.id) }
@@ -20,6 +29,17 @@ final class AccountLibraryViewModel: ObservableObject {
 
     var allSelected: Bool {
         !accounts.isEmpty && accounts.allSatisfy { selectedIDs.contains($0.id) }
+    }
+
+    var groupNames: [String] {
+        var names = Set(customGroupNames)
+        names.insert(Account.defaultGroupName)
+        names.formUnion(accounts.map(\.groupName))
+        return names.sorted { lhs, rhs in
+            if lhs == Account.defaultGroupName { return true }
+            if rhs == Account.defaultGroupName { return false }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
     }
 
     func remark(for account: Account) -> String {
@@ -36,9 +56,36 @@ final class AccountLibraryViewModel: ObservableObject {
         UserDefaults.standard.set(remarks, forKey: Self.remarksKey)
     }
 
+    func addGroup(named name: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              trimmedName != Account.defaultGroupName,
+              !customGroupNames.contains(trimmedName) else { return }
+        customGroupNames.append(trimmedName)
+        customGroupNames.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+        UserDefaults.standard.set(customGroupNames, forKey: Self.groupNamesKey)
+    }
+
+    func updateGroup(_ value: String, for account: Account) {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let group = trimmedValue.isEmpty ? Account.defaultGroupName : trimmedValue
+        var assignments = groupAssignments
+        assignments[account.id] = group
+        groupAssignments = assignments
+        addGroup(named: group)
+
+        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        accounts[index].groupName = group
+    }
+
     func refresh() {
         do {
-            accounts = try LegacyBinAccountStore.loadAccounts()
+            let assignments = groupAssignments
+            accounts = try LegacyBinAccountStore.loadAccounts().map { account in
+                var account = account
+                account.groupName = assignments[account.id] ?? Account.defaultGroupName
+                return account
+            }
             selectedIDs.formIntersection(Set(accounts.map(\.id)))
             errorMessage = nil
         } catch {
@@ -67,6 +114,12 @@ final class AccountLibraryViewModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         selectedIDs.remove(id)
+
+        remarks.removeValue(forKey: id)
+        UserDefaults.standard.set(remarks, forKey: Self.remarksKey)
+        var assignments = groupAssignments
+        assignments.removeValue(forKey: id)
+        groupAssignments = assignments
     }
 
     func toggleSelection(id: String) {
