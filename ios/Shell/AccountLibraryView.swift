@@ -1,10 +1,24 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
+#if canImport(UIKit)
+import UIKit
+#endif
+
+private let accountSortingLogger = Logger(subsystem: "com.xyzw.ios2", category: "AccountSorting")
+
+private func logAccountSorting(_ message: String) {
+    accountSortingLogger.info("\(message, privacy: .public)")
+#if DEBUG
+    print("[AccountSorting] \(message)")
+#endif
+}
 
 struct AccountLibraryView: View {
     @StateObject private var viewModel = AccountLibraryViewModel()
     @State private var isPresentingImporter = false
     @State private var selectedGroupID = AccountGroup.allID
+    @State private var isSortingAccounts = false
 
     let onLaunch: (Account) -> Void
 
@@ -34,7 +48,7 @@ struct AccountLibraryView: View {
                 emptyState(tokens: tokens)
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: tokens.spacing(.xl)) {
+                    VStack(alignment: .leading, spacing: tokens.spacing(.xl)) {
                         if viewModel.selectedAccounts.count > 1 {
                             Text("原生 Cocos 仅支持单实例，请选择一个账号启动。")
                                 .font(tokens.font(.sm))
@@ -46,18 +60,24 @@ struct AccountLibraryView: View {
                             groupEmptyState(tokens: tokens)
                         } else {
                             AccountGroupSection(
+                                group: currentGroup,
                                 accounts: visibleAccounts,
                                 viewModel: viewModel,
                                 selectedIDs: viewModel.selectedIDs,
                                 remarkForAccount: { viewModel.remark(for: $0) },
                                 onToggleSelection: { viewModel.toggleSelection(id: $0) },
-                                onLaunch: onLaunch
+                                onLaunch: onLaunch,
+                                isSorting: $isSortingAccounts
                             )
                         }
                     }
                     .padding(.top, tokens.spacing(.lg))
                     .padding(.bottom, tokens.spacing(.xl))
                 }
+                .id(selectedGroupID)
+#if canImport(UIKit)
+                .background(ScrollViewGestureLogger(isSorting: $isSortingAccounts))
+#endif
             }
         }
         .padding(.horizontal, tokens.spacing(.xl))
@@ -70,6 +90,9 @@ struct AccountLibraryView: View {
             if !visibleIDs.contains(selectedGroupID) {
                 selectedGroupID = AccountGroup.allID
             }
+        }
+        .onChange(of: isSortingAccounts) { sorting in
+            accountSortingLogger.info("sorting state changed: \(sorting, privacy: .public), group: \(selectedGroupID, privacy: .public)")
         }
         .fileImporter(
             isPresented: $isPresentingImporter,
@@ -149,6 +172,7 @@ struct AccountLibraryView: View {
                     let groupColor = group.swatchColor
                     Button {
                         selectedGroupID = group.id
+                        isSortingAccounts = false
                     } label: {
                         HStack(spacing: 6) {
                             Text(group.name)
@@ -628,45 +652,269 @@ private extension AccountGroup {
     }
 }
 
+#if canImport(UIKit)
+private struct ScrollViewGestureLogger: UIViewRepresentable {
+    @Binding var isSorting: Bool
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        configure(view)
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        configure(uiView)
+        uiView.attachIfNeeded()
+    }
+
+    private func configure(_ view: ProbeView) {
+        let sortingBinding = $isSorting
+        view.onEnterSorting = {
+            guard !sortingBinding.wrappedValue else { return }
+#if canImport(UIKit)
+            let feedback = UIImpactFeedbackGenerator(style: .medium)
+            feedback.prepare()
+            feedback.impactOccurred()
+#endif
+            logAccountSorting("long press recognized")
+            logAccountSorting("haptic impact requested")
+            sortingBinding.wrappedValue = true
+        }
+    }
+
+    final class ProbeView: UIView {
+        private weak var observedScrollView: UIScrollView?
+        private var longPressRecognizer: UILongPressGestureRecognizer?
+        var onEnterSorting: (() -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            isUserInteractionEnabled = false
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            attachIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                self?.attachIfNeeded()
+            }
+        }
+
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            attachIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                self?.attachIfNeeded()
+            }
+        }
+
+        func attachIfNeeded() {
+            guard observedScrollView == nil else { return }
+
+            var ancestor = superview
+            while let view = ancestor {
+                if let scrollView = view as? UIScrollView {
+                    attach(to: scrollView)
+                    return
+                }
+                ancestor = view.superview
+            }
+
+            if let window, let scrollView = findVerticalScrollView(in: window) {
+                attach(to: scrollView)
+            }
+        }
+
+        private func attach(to scrollView: UIScrollView) {
+            guard observedScrollView == nil else { return }
+            observedScrollView = scrollView
+            scrollView.panGestureRecognizer.addTarget(self, action: #selector(panChanged(_:)))
+            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(longPressChanged(_:)))
+            longPress.minimumPressDuration = 2
+            longPress.allowableMovement = 8
+            longPress.cancelsTouchesInView = false
+            longPress.delaysTouchesBegan = false
+            longPress.delegate = self
+            scrollView.addGestureRecognizer(longPress)
+            longPressRecognizer = longPress
+            logAccountSorting("scroll logger attached: \(type(of: scrollView))")
+        }
+
+        private func findVerticalScrollView(in root: UIView) -> UIScrollView? {
+            for child in root.subviews.reversed() {
+                if let scrollView = child as? UIScrollView,
+                   scrollView.isScrollEnabled,
+                   scrollView.contentSize.height > scrollView.bounds.height {
+                    return scrollView
+                }
+                if let result = findVerticalScrollView(in: child) {
+                    return result
+                }
+            }
+            return nil
+        }
+
+        deinit {
+            observedScrollView?.panGestureRecognizer.removeTarget(self, action: #selector(panChanged(_:)))
+            if let longPressRecognizer {
+                observedScrollView?.removeGestureRecognizer(longPressRecognizer)
+            }
+        }
+
+        @objc private func longPressChanged(_ recognizer: UILongPressGestureRecognizer) {
+            guard recognizer.state == .began else { return }
+            logAccountSorting("long press began")
+            onEnterSorting?()
+        }
+
+        @objc private func panChanged(_ recognizer: UIPanGestureRecognizer) {
+            switch recognizer.state {
+            case .began:
+                let translation = recognizer.translation(in: recognizer.view)
+                logAccountSorting("normal scroll began: x=\(translation.x), y=\(translation.y)")
+            case .ended:
+                let velocity = recognizer.velocity(in: recognizer.view)
+                logAccountSorting("normal scroll ended: vx=\(velocity.x), vy=\(velocity.y)")
+            case .cancelled:
+                logAccountSorting("normal scroll cancelled")
+            case .failed:
+                logAccountSorting("normal scroll failed")
+            default:
+                break
+            }
+        }
+    }
+}
+
+extension ScrollViewGestureLogger.ProbeView: UIGestureRecognizerDelegate {
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === longPressRecognizer || otherGestureRecognizer === longPressRecognizer
+    }
+}
+#endif
+
 private struct AccountGroupSection: View {
+    let group: AccountGroup
     let accounts: [Account]
     @ObservedObject var viewModel: AccountLibraryViewModel
     let selectedIDs: Set<String>
     let remarkForAccount: (Account) -> String
     let onToggleSelection: (String) -> Void
     let onLaunch: (Account) -> Void
+    @Binding var isSorting: Bool
+    @State private var draggedAccountID: String?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let tokens = DesignTokens.shared
 
         VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
-            VStack(spacing: 8) {
-                ForEach(accounts) { account in
-                    AccountRow(
-                        account: account,
-                        remark: remarkForAccount(account),
-                        isSelected: selectedIDs.contains(account.id),
-                        isOnline: account.importedAt != .distantPast,
-                        onToggle: { onToggleSelection(account.id) },
-                        onLaunch: {
-                            viewModel.recordLogin(for: account)
-                            onLaunch(account)
-                        }
-                    ) {
-                        AccountDetailView(account: account, viewModel: viewModel, onLaunch: onLaunch)
+            HStack {
+                Spacer()
+                if isSorting {
+                    Button {
+                        isSorting = false
+                        draggedAccountID = nil
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(tokens.color(.accent))
+                            .frame(width: 30, height: 30)
+                            .background(tokens.color(.accent).opacity(0.14))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("退出排序")
+                }
+            }
 
-                    .background(tokens.color(.card))
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(colorScheme == .light ? Color.gray.opacity(0.28) : tokens.color(.border), lineWidth: 1)
-                    }
-                    .opacity(account.importedAt != .distantPast ? 1 : 0.62)
+            LazyVStack(spacing: 8) {
+                ForEach(accounts) { account in
+                    accountCard(account, tokens: tokens)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func accountCard(_ account: Account, tokens: DesignTokens) -> some View {
+        let row = AccountRow(
+            account: account,
+            remark: remarkForAccount(account),
+            isSelected: selectedIDs.contains(account.id),
+            isOnline: account.importedAt != .distantPast,
+            isSorting: isSorting,
+            onToggle: { onToggleSelection(account.id) },
+            onLaunch: {
+                viewModel.recordLogin(for: account)
+                onLaunch(account)
+            }
+        ) {
+            AccountDetailView(account: account, viewModel: viewModel, onLaunch: onLaunch)
+        }
+        .background(tokens.color(.card))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(colorScheme == .light ? Color.gray.opacity(0.28) : tokens.color(.border), lineWidth: 1)
+        }
+        .opacity(account.importedAt != .distantPast ? 1 : 0.62)
+
+        if isSorting {
+            row
+                .onDrag {
+                    accountSortingLogger.info("drag started: account=\(account.id, privacy: .public), group=\(group.id, privacy: .public)")
+                    draggedAccountID = account.id
+                    return NSItemProvider(object: account.id as NSString)
+                }
+                .onDrop(of: [UTType.text], delegate: AccountDropDelegate(
+                    account: account,
+                    group: group,
+                    accounts: accounts,
+                    viewModel: viewModel,
+                    draggedAccountID: $draggedAccountID,
+                    isSorting: $isSorting
+                ))
+        } else {
+            row
+        }
+    }
+}
+
+private struct AccountDropDelegate: DropDelegate {
+    let account: Account
+    let group: AccountGroup
+    let accounts: [Account]
+    let viewModel: AccountLibraryViewModel
+    @Binding var draggedAccountID: String?
+    @Binding var isSorting: Bool
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedAccountID,
+              draggedAccountID != account.id,
+              let sourceIndex = accounts.firstIndex(where: { $0.id == draggedAccountID }),
+              let destinationIndex = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+
+        accountSortingLogger.info("drop entered: source=\(draggedAccountID, privacy: .public), target=\(account.id, privacy: .public), sourceIndex=\(sourceIndex), targetIndex=\(destinationIndex)")
+        let destination = sourceIndex < destinationIndex ? destinationIndex + 1 : destinationIndex
+        withAnimation {
+            viewModel.moveAccounts(in: group, from: IndexSet(integer: sourceIndex), to: destination)
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        accountSortingLogger.info("drop performed: target=\(account.id, privacy: .public), dragged=\(draggedAccountID ?? "nil", privacy: .public)")
+        isSorting = false
+        draggedAccountID = nil
+        return true
     }
 }
 
@@ -675,6 +923,7 @@ private struct AccountRow<Destination: View>: View {
     let remark: String
     let isSelected: Bool
     let isOnline: Bool
+    let isSorting: Bool
     let onToggle: () -> Void
     let onLaunch: () -> Void
     @ViewBuilder let destination: Destination
@@ -727,6 +976,14 @@ private struct AccountRow<Destination: View>: View {
             }
             .buttonStyle(.plain)
 
+            if isSorting {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tokens.color(.textSecondary))
+                    .frame(width: 20, height: 30)
+                    .accessibilityHidden(true)
+            }
+
             Button(action: onLaunch) {
                 Image(systemName: "play.fill")
                     .font(.system(size: 11, weight: .bold))
@@ -740,6 +997,7 @@ private struct AccountRow<Destination: View>: View {
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 }
 

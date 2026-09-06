@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+import OSLog
+
+private let accountOrderLogger = Logger(subsystem: "com.xyzw.ios2", category: "AccountSorting")
 
 @MainActor
 final class AccountLibraryViewModel: ObservableObject {
@@ -8,18 +11,21 @@ final class AccountLibraryViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var remarks: [String: String]
     @Published private(set) var lastLoginTimestamps: [String: TimeInterval]
+    @Published private(set) var accountOrder: [String: [String]]
     @Published private(set) var groups: [AccountGroup]
     @Published private(set) var defaultGroupID: String?
 
     init() {
         remarks = UserDefaults.standard.dictionary(forKey: Self.remarksKey) as? [String: String] ?? [:]
         lastLoginTimestamps = Self.loadLastLoginTimestamps()
+        accountOrder = Self.loadAccountOrder()
         groups = Self.loadGroups()
         defaultGroupID = UserDefaults.standard.string(forKey: Self.defaultGroupKey)
     }
 
     private static let remarksKey = "ios.shell.account-remarks"
     private static let lastLoginTimestampsKey = "ios.shell.account-last-login-timestamps"
+    private static let accountOrderKey = "ios.shell.account-order"
     private static let groupAssignmentsKey = "ios.shell.account-groups"
     private static let groupNamesKey = "ios.shell.groups"
     private static let groupDefinitionsKey = "ios.shell.group-definitions"
@@ -83,7 +89,27 @@ final class AccountLibraryViewModel: ObservableObject {
     }
 
     func accounts(in group: AccountGroup) -> [Account] {
-        group.id == AccountGroup.allID ? accounts : accounts.filter { $0.groupName == group.name }
+        let members = group.id == AccountGroup.allID ? accounts : accounts.filter { $0.groupName == group.name }
+        let order = accountOrder[group.id] ?? []
+        guard !order.isEmpty else { return members }
+        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        return members.sorted {
+            switch (rank[$0.id], rank[$1.id]) {
+            case let (left?, right?): return left < right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return false
+            }
+        }
+    }
+
+    func moveAccounts(in group: AccountGroup, from source: IndexSet, to destination: Int) {
+        var ordered = accounts(in: group)
+        accountOrderLogger.info("move requested: group=\(group.id, privacy: .public), count=\(ordered.count), source=\(source.description, privacy: .public), destination=\(destination)")
+        ordered.move(fromOffsets: source, toOffset: destination)
+        accountOrder[group.id] = ordered.map(\.id)
+        UserDefaults.standard.set(accountOrder, forKey: Self.accountOrderKey)
+        accountOrderLogger.info("move persisted: group=\(group.id, privacy: .public), order=\(ordered.map(\.id).joined(separator: ","), privacy: .public)")
     }
 
     func addGroup(named name: String, colorName: String = "blue", accountIDs: Set<String> = [], isDefault: Bool = false) {
@@ -297,6 +323,10 @@ final class AccountLibraryViewModel: ObservableObject {
             guard let timestamp = (entry.value as? NSNumber)?.doubleValue else { return }
             timestamps[entry.key] = timestamp
         }
+    }
+
+    private static func loadAccountOrder() -> [String: [String]] {
+        UserDefaults.standard.dictionary(forKey: accountOrderKey) as? [String: [String]] ?? [:]
     }
 }
 
