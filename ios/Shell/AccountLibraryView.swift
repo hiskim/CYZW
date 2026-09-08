@@ -4,6 +4,9 @@ import OSLog
 #if canImport(UIKit)
 import UIKit
 #endif
+#if os(macOS)
+import AppKit
+#endif
 
 private let accountSortingLogger = Logger(subsystem: "com.xyzw.ios2", category: "AccountSorting")
 
@@ -17,6 +20,7 @@ private func logAccountSorting(_ message: String) {
 struct AccountLibraryView: View {
     @StateObject private var viewModel = AccountLibraryViewModel()
     @State private var isPresentingImporter = false
+    @State private var isPresentingGroupManagement = false
     @State private var selectedGroupID = AccountGroup.allID
     @State private var isSortingAccounts = false
 
@@ -30,6 +34,24 @@ struct AccountLibraryView: View {
 
     private var visibleAccounts: [Account] {
         viewModel.accounts(in: currentGroup)
+    }
+
+    private func presentBinImporter() {
+#if os(macOS)
+        let panel = NSOpenPanel()
+        panel.title = "导入 .bin 账号"
+        panel.message = "请选择一个或多个 .bin 账号文件"
+        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.begin { result in
+            guard result == .OK else { return }
+            viewModel.importFiles(from: panel.urls)
+        }
+#else
+        isPresentingImporter = true
+#endif
     }
 
     var body: some View {
@@ -76,6 +98,7 @@ struct AccountLibraryView: View {
             }
         }
         .padding(.horizontal, tokens.spacing(.xl))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(tokens.color(.canvas).ignoresSafeArea())
         .task {
             viewModel.refresh()
@@ -89,6 +112,7 @@ struct AccountLibraryView: View {
         .onChange(of: isSortingAccounts) { sorting in
             accountSortingLogger.info("sorting state changed: \(sorting, privacy: .public), group: \(selectedGroupID, privacy: .public)")
         }
+#if os(iOS)
         .fileImporter(
             isPresented: $isPresentingImporter,
             allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
@@ -97,6 +121,13 @@ struct AccountLibraryView: View {
             if case let .success(urls) = result {
                 viewModel.importFiles(from: urls)
             }
+        }
+#endif
+        .sheet(isPresented: $isPresentingGroupManagement) {
+            GroupManagementView(viewModel: viewModel)
+#if os(macOS)
+                .frame(minWidth: 560, minHeight: 420)
+#endif
         }
     }
 
@@ -123,13 +154,23 @@ struct AccountLibraryView: View {
 
             Spacer()
 
-            Button {
-                isPresentingImporter = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(tokens.font(.lg, weight: .semibold))
+            HStack(spacing: tokens.spacing(.sm)) {
+                Button {
+                    isPresentingGroupManagement = true
+                } label: {
+                    Label("账号管理", systemImage: "person.crop.circle.badge.gearshape")
+                        .font(tokens.font(.md, weight: .semibold))
+                }
+                .buttonStyle(TokenSecondaryButtonStyle())
+
+                Button {
+                    presentBinImporter()
+                } label: {
+                    Label("导入账号", systemImage: "square.and.arrow.down")
+                        .font(tokens.font(.md, weight: .semibold))
+                }
+                .buttonStyle(TokenPrimaryButtonStyle())
             }
-            .buttonStyle(TokenIconButtonStyle())
             .accessibilityLabel("导入 .bin 账号")
         }
         .padding(.top, tokens.spacing(.xl))
@@ -208,22 +249,10 @@ struct AccountLibraryView: View {
                     .buttonStyle(.plain)
                 }
 
-                NavigationLink {
-                    GroupManagementView(viewModel: viewModel)
-                } label: {
-                    Label("管理", systemImage: "plus")
-                        .font(tokens.font(.sm, weight: .medium))
-                        .foregroundStyle(tokens.color(.accent))
-                        .padding(.horizontal, tokens.spacing(.md))
-                        .padding(.vertical, tokens.spacing(.sm))
-                        .overlay {
-                            Capsule().stroke(tokens.color(.border), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        }
-                }
-                .buttonStyle(.plain)
             }
             .padding(.vertical, tokens.spacing(.sm))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -240,7 +269,7 @@ struct AccountLibraryView: View {
                 .foregroundStyle(tokens.color(.textSecondary))
                 .multilineTextAlignment(.center)
             Button {
-                isPresentingImporter = true
+                presentBinImporter()
             } label: {
                 Label("导入账号", systemImage: "square.and.arrow.down")
             }

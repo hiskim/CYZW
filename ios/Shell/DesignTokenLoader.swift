@@ -67,10 +67,13 @@ final class DesignTokens {
 enum DesignTokenLoader {
     static func loadRootCustomProperties(bundle: Bundle = .main) -> [String: String] {
         let css = loadCSS(bundle: bundle) ?? fallbackCSS
+        let defaults = parseDeclarations(from: fallbackCSS)
         guard let rootRange = css.range(of: #":root\s*\{([\s\S]*?)\}"#, options: .regularExpression) else {
-            return parseDeclarations(from: fallbackCSS)
+            return defaults
         }
-        return parseDeclarations(from: String(css[rootRange]))
+        // The bundled web runtime can provide its own CSS variables. Keep
+        // Shell defaults for every token it does not explicitly define.
+        return defaults.merging(parseDeclarations(from: String(css[rootRange]))) { _, loaded in loaded }
     }
 
     private static func loadCSS(bundle: Bundle) -> String? {

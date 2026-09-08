@@ -61,8 +61,12 @@ final class AppCoordinator: ObservableObject {
     }
 
     func launchLegacyCocos(account: Account) {
+#if os(macOS)
+        MacWebKitGameWindowController.open(account: account)
+#else
         legacyCocosPresentation = .loggingIn(account)
         LegacyCocosLaunch.request(binFileName: account.fileName)
+#endif
     }
 }
 
@@ -93,8 +97,19 @@ struct ShellRootView: View {
 
     @ViewBuilder
     private func shellTabs(tokens: DesignTokens) -> some View {
+#if os(iOS)
         NavigationView {
-            TabView(selection: $coordinator.selectedTab) {
+            shellTabContent(tokens: tokens)
+        }
+        .navigationViewStyle(.stack)
+#else
+        shellTabContent(tokens: tokens)
+#endif
+    }
+
+    @ViewBuilder
+    private func shellTabContent(tokens: DesignTokens) -> some View {
+        TabView(selection: $coordinator.selectedTab) {
                 AccountLibraryView(
                     onLaunch: { account in
                         coordinator.launchLegacyCocos(account: account)
@@ -133,11 +148,7 @@ struct ShellRootView: View {
             .tint(tokens.color(.accent))
             .background(tokens.color(.canvas))
         }
-#if os(iOS)
-        .navigationViewStyle(.stack)
-#endif
     }
-}
 
 private struct LegacyCocosLoginView: View {
     let account: Account
