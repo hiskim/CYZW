@@ -1,5 +1,8 @@
 import Combine
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
@@ -101,6 +104,20 @@ struct SettingsView: View {
                     .font(tokens.font(.lg))
                     .tint(tokens.color(.accent))
                 }
+
+#if os(macOS)
+                TokenSettingsCard(title: "多开实例") {
+                    Text("每个 macOS 进程使用独立的 Shell 状态，可分别登录不同账号。")
+                        .font(tokens.font(.md))
+                    Button {
+                        MacOSShellInstanceLauncher.openNewInstance()
+                    } label: {
+                        Label("打开新的应用实例", systemImage: "plus.rectangle.on.rectangle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(TokenSecondaryButtonStyle())
+                }
+#endif
             }
             .padding(tokens.spacing(.xl))
         }
@@ -130,3 +147,19 @@ private struct TokenSettingsCard<Content: View>: View {
         }
     }
 }
+
+#if os(macOS)
+/// Starts another process of the installed app. This stays in the Shell layer
+/// and does not change authentication or game startup.
+enum MacOSShellInstanceLauncher {
+    static func openNewInstance() {
+        guard #available(macOS 10.15, *) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: configuration
+        )
+    }
+}
+#endif

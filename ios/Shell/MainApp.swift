@@ -2,12 +2,20 @@ import SwiftUI
 
 @main
 struct MainApp: App {
-    @StateObject private var coordinator = AppCoordinator()
-
     var body: some Scene {
         WindowGroup {
-            ShellRootView(coordinator: coordinator)
-                .preferredColorScheme(.dark)
+            ShellWindowRootView()
         }
+    }
+}
+
+/// Keep coordinator state at the window boundary. WindowGroup can then create
+/// independent shell windows on macOS (and independent scenes on iPadOS).
+private struct ShellWindowRootView: View {
+    @StateObject private var coordinator = AppCoordinator()
+
+    var body: some View {
+        ShellRootView(coordinator: coordinator)
+            .preferredColorScheme(.dark)
     }
 }

@@ -21,6 +21,7 @@ struct AccountLibraryView: View {
     @State private var isSortingAccounts = false
 
     let onLaunch: (Account) -> Void
+    let onLaunchMultiple: ([Account]) -> Void
 
     private var currentGroup: AccountGroup {
         if selectedGroupID == AccountGroup.allID { return .all }
@@ -49,13 +50,6 @@ struct AccountLibraryView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: tokens.spacing(.xl)) {
-                        if viewModel.selectedAccounts.count > 1 {
-                            Text("原生 Cocos 仅支持单实例，请选择一个账号启动。")
-                                .font(tokens.font(.sm))
-                                .foregroundStyle(tokens.color(.textSecondary))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-
                         if visibleAccounts.isEmpty {
                             groupEmptyState(tokens: tokens)
                         } else {
@@ -67,6 +61,7 @@ struct AccountLibraryView: View {
                                 remarkForAccount: { viewModel.remark(for: $0) },
                                 onToggleSelection: { viewModel.toggleSelection(id: $0) },
                                 onLaunch: onLaunch,
+                                onOpenWorkspace: { onLaunchMultiple([$0]) },
                                 isSorting: $isSortingAccounts
                             )
                         }
@@ -156,6 +151,17 @@ struct AccountLibraryView: View {
                 onLaunch(account)
             } label: {
                 Label("启动已选", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(TokenPrimaryButtonStyle())
+            .padding(.top, tokens.spacing(.md))
+        } else if viewModel.selectedAccounts.count > 1 {
+            Button {
+                let accounts = viewModel.selectedAccounts
+                accounts.forEach { viewModel.recordLogin(for: $0) }
+                onLaunchMultiple(accounts)
+            } label: {
+                Label("打开 \(viewModel.selectedAccounts.count) 个独立工位", systemImage: "square.grid.2x2")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(TokenPrimaryButtonStyle())
@@ -320,15 +326,21 @@ private struct GroupManagementView: View {
             }
             .listRowBackground(Color.clear)
         }
+#if os(macOS)
+        .listStyle(.inset)
+#else
         .listStyle(.insetGrouped)
+#endif
         .background(tokens.color(.canvas).ignoresSafeArea())
         .navigationTitle("分组管理")
+#if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton()
             }
         }
+#endif
         .sheet(isPresented: $isCreatingGroup) {
             GroupEditorSheet(viewModel: viewModel, group: nil)
         }
@@ -537,12 +549,14 @@ private struct GroupEditorSheet: View {
             }
             .background(tokens.color(.canvas).ignoresSafeArea())
             .navigationTitle(group == nil ? "新建分组" : "编辑分组")
+#if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("取消") { dismiss() }
                 }
             }
+#endif
         }
     }
 }
@@ -809,6 +823,7 @@ private struct AccountGroupSection: View {
     let remarkForAccount: (Account) -> String
     let onToggleSelection: (String) -> Void
     let onLaunch: (Account) -> Void
+    let onOpenWorkspace: (Account) -> Void
     @Binding var isSorting: Bool
     @State private var draggedAccountID: String?
     @Environment(\.colorScheme) private var colorScheme
@@ -858,7 +873,12 @@ private struct AccountGroupSection: View {
                 onLaunch(account)
             }
         ) {
-            AccountDetailView(account: account, viewModel: viewModel, onLaunch: onLaunch)
+            AccountDetailView(
+                account: account,
+                viewModel: viewModel,
+                onLaunch: onLaunch,
+                onOpenWorkspace: onOpenWorkspace
+            )
         }
         .background(tokens.color(.card))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -1005,6 +1025,7 @@ struct AccountDetailView: View {
     let account: Account
     @ObservedObject var viewModel: AccountLibraryViewModel
     let onLaunch: (Account) -> Void
+    let onOpenWorkspace: (Account) -> Void
 
     @Environment(\.presentationMode) private var presentationMode
     @State private var draftRemark = ""
@@ -1028,7 +1049,9 @@ struct AccountDetailView: View {
         }
         .background(tokens.color(.canvas).ignoresSafeArea())
         .navigationTitle("账号详情")
+#if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+#endif
         .onAppear {
             draftRemark = viewModel.remark(for: account)
             currentGroupName = account.groupName
@@ -1203,6 +1226,14 @@ struct AccountDetailView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(TokenPrimaryButtonStyle())
+
+            Button {
+                onOpenWorkspace(account)
+            } label: {
+                Label("打开独立工位", systemImage: "square.grid.2x2")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(TokenSecondaryButtonStyle())
 
             Button {
                 isPresentingDeleteConfirmation = true

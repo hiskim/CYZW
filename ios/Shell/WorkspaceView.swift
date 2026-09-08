@@ -14,7 +14,7 @@ struct WorkspaceView: View {
                         Text("多开工位")
                             .font(tokens.font(.xxl, weight: .semibold))
                             .foregroundStyle(tokens.color(.textPrimary))
-                        Text("\(viewModel.items.count) 个活跃实例")
+                        Text("\(viewModel.items.count) / \(WorkspaceViewModel.maximumInstanceCount) 个活跃实例")
                             .font(tokens.font(.md))
                             .foregroundStyle(tokens.color(.textSecondary))
                     }

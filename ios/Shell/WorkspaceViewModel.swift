@@ -10,12 +10,16 @@ struct WorkspaceItem: Identifiable {
 
 @MainActor
 final class WorkspaceViewModel: ObservableObject {
+    static let maximumInstanceCount = 4
+
     @Published private(set) var items: [WorkspaceItem] = []
     @Published var selectedID: UUID?
     @Published private(set) var revision = 0
 
     func start(accounts: [Account]) async {
-        for account in accounts where !items.contains(where: { $0.account.id == account.id }) {
+        let existingIDs = Set(items.map { $0.account.id })
+        let availableSlots = max(0, Self.maximumInstanceCount - items.count)
+        for account in accounts.filter({ !existingIDs.contains($0.id) }).prefix(availableSlots) {
             let host = MockEngineHost()
             let item = WorkspaceItem(id: host.id, account: account, host: host, latestSnapshot: nil)
             EngineHostRegistry.shared.register(host)

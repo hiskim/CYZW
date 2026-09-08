@@ -54,6 +54,12 @@ final class AppCoordinator: ObservableObject {
         selectedTab = .workspace
     }
 
+    func openWorkspace(accounts: [Account]) {
+        guard !accounts.isEmpty else { return }
+        selectedTab = .workspace
+        Task { await workspace.start(accounts: accounts) }
+    }
+
     func launchLegacyCocos(account: Account) {
         legacyCocosPresentation = .loggingIn(account)
         LegacyCocosLaunch.request(binFileName: account.fileName)
@@ -89,9 +95,14 @@ struct ShellRootView: View {
     private func shellTabs(tokens: DesignTokens) -> some View {
         NavigationView {
             TabView(selection: $coordinator.selectedTab) {
-                AccountLibraryView { account in
-                    coordinator.launchLegacyCocos(account: account)
-                }
+                AccountLibraryView(
+                    onLaunch: { account in
+                        coordinator.launchLegacyCocos(account: account)
+                    },
+                    onLaunchMultiple: { accounts in
+                        coordinator.openWorkspace(accounts: accounts)
+                    }
+                )
                 .tabItem {
                     Label("账号库", systemImage: "person.2")
                         .font(tokens.font(.sm, weight: .medium))
@@ -122,7 +133,9 @@ struct ShellRootView: View {
             .tint(tokens.color(.accent))
             .background(tokens.color(.canvas))
         }
+#if os(iOS)
         .navigationViewStyle(.stack)
+#endif
     }
 }
 
