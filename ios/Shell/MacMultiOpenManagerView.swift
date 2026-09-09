@@ -1,11 +1,19 @@
 #if os(macOS)
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MacMultiOpenManagerView: View {
     @ObservedObject var coordinator: AppCoordinator
+    @ObservedObject private var liveWorkspace: WorkspaceViewModel
     @StateObject private var accounts = AccountLibraryViewModel()
     @State private var selectedSection: Section = .accounts
     @State private var searchText = ""
+    @State private var isPresentingImporter = false
+
+    init(coordinator: AppCoordinator) {
+        self.coordinator = coordinator
+        _liveWorkspace = ObservedObject(wrappedValue: coordinator.workspace)
+    }
 
     enum Section: String, CaseIterable, Identifiable {
         case accounts, games, scripts, settings
@@ -33,6 +41,11 @@ struct MacMultiOpenManagerView: View {
         }
         .background(Color(red: 0.055, green: 0.075, blue: 0.11))
         .task { accounts.refresh() }
+        .fileImporter(isPresented: $isPresentingImporter,
+                      allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
+                      allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result { accounts.importFiles(from: urls) }
+        }
     }
 
     private var sidebar: some View {
@@ -80,7 +93,7 @@ struct MacMultiOpenManagerView: View {
                 Circle().fill(Color.green).frame(width: 8, height: 8)
                 Text("系统就绪").font(.system(size: 12)).foregroundStyle(.secondary)
                 Spacer()
-                Text("\(coordinator.workspace.items.count)/\(WorkspaceViewModel.maximumInstanceCount)")
+                Text("\(liveWorkspace.items.count)/\(WorkspaceViewModel.maximumInstanceCount)")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -92,6 +105,8 @@ struct MacMultiOpenManagerView: View {
     private var accountControls: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
+                Button { isPresentingImporter = true } label: { Label("添加账号", systemImage: "plus") }
+                    .buttonStyle(MacManagerButtonStyle(tint: .blue))
                 Button { startAll() } label: { Label("打开全部", systemImage: "play.fill") }
                     .buttonStyle(MacManagerButtonStyle(tint: .cyan))
                 Button { closeAll() } label: { Label("关闭全部", systemImage: "stop.fill") }
@@ -127,7 +142,7 @@ struct MacMultiOpenManagerView: View {
                     AccountManagerRow(
                         account: account,
                         isSelected: accounts.selectedIDs.contains(account.id),
-                        isRunning: coordinator.workspace.items.contains { $0.account.id == account.id },
+                        isRunning: liveWorkspace.items.contains { $0.account.id == account.id },
                         onToggle: { accounts.toggleSelection(id: account.id) },
                         onStart: { start(account) },
                         onStop: { stop(account) }
@@ -144,7 +159,7 @@ struct MacMultiOpenManagerView: View {
             Text(selectedSection == .games ? "运行中的游戏实例会显示在右侧矩阵。" : selectedSection == .scripts ? "脚本插件将在这里管理。" : "应用与缓存设置。")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
             if selectedSection == .settings { SettingsView().frame(maxHeight: 430) }
-            if selectedSection == .scripts { PluginPanelView(workspace: coordinator.workspace).frame(maxHeight: 430) }
+            if selectedSection == .scripts { PluginPanelView(workspace: liveWorkspace).frame(maxHeight: 430) }
         }
         .padding(18)
     }
@@ -157,19 +172,19 @@ struct MacMultiOpenManagerView: View {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("多开矩阵").font(.system(size: 24, weight: .bold))
-                            Text("\(coordinator.workspace.items.count) 个活跃实例 · 每个账号独立 WebKit 会话")
+                            Text("\(liveWorkspace.items.count) 个活跃实例 · 每个账号独立 WebKit 会话")
                                 .font(.system(size: 13)).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button { selectedSection = .accounts } label: { Label("管理账号", systemImage: "person.2") }
                             .buttonStyle(MacManagerButtonStyle(tint: .blue))
                     }
-                    if coordinator.workspace.items.isEmpty {
+                    if liveWorkspace.items.isEmpty {
                         EmptyMatrixView { selectedSection = .accounts }
                     } else {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 260), spacing: 14), count: columns), spacing: 14) {
-                            ForEach(coordinator.workspace.items) { item in
-                                MacGameMatrixCell(item: item, workspace: coordinator.workspace)
+                            ForEach(liveWorkspace.items) { item in
+                                MacGameMatrixCell(item: item, workspace: liveWorkspace)
                                     .frame(minHeight: 420)
                             }
                         }
@@ -183,8 +198,8 @@ struct MacMultiOpenManagerView: View {
 
     private func start(_ account: Account) { accounts.recordLogin(for: account); coordinator.openWorkspace(accounts: [account]) }
     private func startAll() { let all = accounts.accounts; all.forEach { accounts.recordLogin(for: $0) }; coordinator.openWorkspace(accounts: all) }
-    private func stop(_ account: Account) { if let item = coordinator.workspace.items.first(where: { $0.account.id == account.id }) { Task { await coordinator.workspace.close(id: item.id) } } }
-    private func closeAll() { let ids = coordinator.workspace.items.map(\.id); Task { for id in ids { await coordinator.workspace.close(id: id) } } }
+    private func stop(_ account: Account) { if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) { Task { await liveWorkspace.close(id: item.id) } } }
+    private func closeAll() { let ids = liveWorkspace.items.map(\.id); Task { for id in ids { await liveWorkspace.close(id: id) } } }
     private func toggleAll() { accounts.toggleSelectAll() }
 }
 

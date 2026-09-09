@@ -19,18 +19,28 @@ final class WorkspaceViewModel: ObservableObject {
     func start(accounts: [Account]) async {
         let existingIDs = Set(items.map { $0.account.id })
         let availableSlots = max(0, Self.maximumInstanceCount - items.count)
-        for account in accounts.filter({ !existingIDs.contains($0.id) }).prefix(availableSlots) {
+        let pendingAccounts = Array(accounts.filter({ !existingIDs.contains($0.id) }).prefix(availableSlots))
+        // Publish all cards before awaiting authentication/startup. The
+        // matrix should react to the click immediately, even when WebKit or
+        // CDN preparation takes time.
+        var pending: [(WorkspaceItem, MockEngineHost)] = []
+        for account in pendingAccounts {
             let host = MockEngineHost()
             let item = WorkspaceItem(id: host.id, account: account, host: host, latestSnapshot: nil)
             EngineHostRegistry.shared.register(host)
             items.append(item)
+            pending.append((item, host))
+        }
+        revision += 1
+
+        for (item, host) in pending {
 
             do {
                 try await host.start(config: EngineConfig(
                     bundleIdentifier: "com.xyzw.game",
                     initialTarget: .scene("launcher"),
                     // Legacy account identities are opaque .bin filenames, not UUIDs.
-                    authenticationToken: account.id
+                    authenticationToken: item.account.id
                 ))
                 selectedID = host.id
             } catch {
@@ -64,13 +74,16 @@ final class WorkspaceViewModel: ObservableObject {
 
     func close(id: UUID) async {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        await items[index].host.close()
-        EngineHostRegistry.shared.unregister(id: id)
+        let host = items[index].host
+        // Remove the card first so the matrix responds to the close button
+        // immediately; host/WebKit cleanup can finish asynchronously.
         items.remove(at: index)
+        EngineHostRegistry.shared.unregister(id: id)
         if selectedID == id {
             selectedID = items.first?.id
         }
         revision += 1
+        await host.close()
     }
 
     func host(for id: UUID) -> EngineHost? {

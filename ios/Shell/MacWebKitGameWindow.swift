@@ -18,6 +18,10 @@ struct MacEmbeddedGameView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: MacWebKitGameView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: MacWebKitGameView, coordinator: ()) {
+        nsView.stop()
+    }
 }
 
 @MainActor
@@ -47,6 +51,7 @@ enum MacWebKitGameWindowController {
             queue: .main
         ) { _ in
             Task { @MainActor in
+                gameView.stop()
                 windows.removeValue(forKey: identifier)
             }
         }
@@ -66,6 +71,8 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     private let loadingSpinner = NSProgressIndicator()
     private let loadingLabel = NSTextField(labelWithString: "正在准备游戏资源…")
     private var gameSessionStarted = false
+    private var startupTask: Task<Void, Never>?
+    private var isStopped = false
 
     init(account: Account) {
         self.account = account
@@ -111,9 +118,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     }
 
     deinit {
-        if gameSessionStarted {
-            Task { await MacCDNResourceManager.shared.endGameSession() }
-        }
+        stop()
     }
 
     override func layout() {
@@ -122,13 +127,15 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     }
 
     func start() {
-        Task { @MainActor [weak self] in
+        startupTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                // App launch starts the shared CDN prefetch. Awaiting the same
-                // actor task here means an early account click does not create
-                // a second download or race the cache warm-up.
-                let manifest = await MacCDNResourceManager.shared.prepareForLaunch()
+                // Do not wait for the optional full CDN prefetch here. The
+                // manifest request and account authentication can begin
+                // immediately; remaining resources are cached lazily by the
+                // scheme handler while the game is already visible.
+                let manifest = try? await MacCDNResourceManager.shared.latestManifest()
+                guard !isStopped else { return }
                 loadingLabel.stringValue = "正在登录游戏…"
                 NSLog("[ios2-macos] account authentication started: %@", account.fileName)
                 let authentication = try await MacWebKitAuth.authenticate(account: account, manifest: manifest)
@@ -146,10 +153,24 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 NSLog("[ios2-macos] loading WebKit game document: %@", entry.absoluteString)
                 webView.load(URLRequest(url: entry))
             } catch {
+                guard !isStopped else { return }
                 loadingSpinner.stopAnimation(nil)
                 loadingLabel.stringValue = "登录失败：\(error.localizedDescription)"
                 showError(title: "账号登录失败", message: error.localizedDescription)
             }
+        }
+    }
+
+    func stop() {
+        guard !isStopped else { return }
+        isStopped = true
+        startupTask?.cancel()
+        startupTask = nil
+        webView.stopLoading()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "ios2Game")
+        if gameSessionStarted {
+            gameSessionStarted = false
+            Task { await MacCDNResourceManager.shared.endGameSession() }
         }
     }
 
