@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-retina-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260910-webkit-retina-asset-lifetime-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     // Keep serial startup responsive while still allowing the previous page's
@@ -51,9 +51,12 @@
         return Math.min(3, device);
     }
 
-    // Cocos' release manager only frees assets whose reference count has
-    // reached zero. Keep this entry point shared by scene, WebKit and native
-    // lifecycle notifications so cleanup is safe to request more than once.
+    // Cocos' release manager only knows about references tracked by Cocos.
+    // WebKit pages also retain assets through FGUI/Spine, remote bundle
+    // caches and native bridges, so releasing during normal gameplay can
+    // destroy resources that the next scene still needs. Keep the state and
+    // entry point for native compatibility, but only permit it once the game
+    // is already shutting down.
     var assetReleaseState = {
         busy: false,
         sequence: 0,
@@ -73,6 +76,10 @@
     function releaseUnusedAssets(reason) {
         var manager = window.cc && window.cc.assetManager;
         if (!manager || typeof manager.releaseUnusedAssets !== 'function') return false;
+        if (!assetReleaseState.shuttingDown) {
+            console.warn('[ios2-web] ignored normal asset release request', reason || 'unknown');
+            return false;
+        }
         if (assetReleaseState.busy) return false;
 
         assetReleaseState.busy = true;
@@ -289,7 +296,6 @@
         var startedAt = Date.now();
         var previousCount = managedAssetCount();
         var stableSamples = 0;
-        var releaseRequested = false;
         if (!assetReleaseState.startupLastActivityAt) {
             assetReleaseState.startupLastActivityAt = startedAt;
         }
@@ -321,7 +327,6 @@
             var now = Date.now();
             var count = managedAssetCount();
             var pending = assetReleaseState.startupDownloadCount;
-            if (!releaseRequested) releaseRequested = releaseUnusedAssets('startup-ready');
             var quiet = now - assetReleaseState.startupLastActivityAt >= IOS2_STARTUP_QUIET_MS;
             if (pending === 0 && quiet && count >= 0 && count === previousCount) {
                 stableSamples++;
@@ -372,12 +377,8 @@
     function installAssetReleaseHooks() {
         if (window.__ios2AssetReleaseHooksInstalled) return;
         window.__ios2AssetReleaseHooksInstalled = true;
-        document.addEventListener('visibilitychange', function () {
-            if (document.hidden) releaseUnusedAssets('document-hidden');
-        });
-        window.addEventListener('pagehide', function () {
-            releaseUnusedAssets('pagehide');
-        });
+        // Do not release assets when a WebView is backgrounded or hidden.
+        // The instance can resume with the same scene and resource graph.
     }
 
     function installDirectorAssetReleaseHook() {
@@ -386,9 +387,8 @@
         if (!director || !Director || !Director.EVENT_AFTER_SCENE_LAUNCH ||
             director.__ios2AssetReleaseHookInstalled) return;
         director.__ios2AssetReleaseHookInstalled = true;
-        director.on(Director.EVENT_AFTER_SCENE_LAUNCH, function () {
-            releaseUnusedAssets('after-scene-launch');
-        });
+        // Scene transitions are not destruction boundaries. Assets loaded by
+        // the outgoing scene may still be shared by UI and future scenes.
     }
 
     function decryptJSC(data, keyText) {
