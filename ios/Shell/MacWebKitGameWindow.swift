@@ -2,7 +2,23 @@
 import AppKit
 import CryptoKit
 import Foundation
+import SwiftUI
 import WebKit
+
+/// SwiftUI bridge used by the macOS multi-open matrix. Each representable
+/// creates a fresh `MacWebKitGameView`, and therefore a fresh non-persistent
+/// website data store and isolated game session.
+struct MacEmbeddedGameView: NSViewRepresentable {
+    let account: Account
+
+    func makeNSView(context: Context) -> MacWebKitGameView {
+        let view = MacWebKitGameView(account: account)
+        view.start()
+        return view
+    }
+
+    func updateNSView(_ nsView: MacWebKitGameView, context: Context) {}
+}
 
 @MainActor
 enum MacWebKitGameWindowController {
@@ -40,7 +56,7 @@ enum MacWebKitGameWindowController {
     }
 }
 
-private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHandler {
+final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHandler {
     private let account: Account
     private let instanceID = UUID().uuidString
     private var authenticatedAccountID = ""

@@ -78,6 +78,9 @@ struct ShellRootView: View {
     @ObservedObject var coordinator: AppCoordinator
 
     var body: some View {
+#if os(macOS)
+        MacMultiOpenManagerView(coordinator: coordinator)
+#else
         let tokens = DesignTokens.shared
         ZStack {
             if coordinator.legacyCocosPresentation != .game {
@@ -97,6 +100,7 @@ struct ShellRootView: View {
         }
         .background(Color.clear)
         .allowsHitTesting(coordinator.legacyCocosPresentation != .game)
+#endif
     }
 
     @ViewBuilder

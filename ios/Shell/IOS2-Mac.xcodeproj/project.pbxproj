@@ -13,6 +13,7 @@
 		A10000000000000000000004 /* AccountLibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* AccountLibraryViewModel.swift */; };
 		A10000000000000000000005 /* DesignTokenLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DesignTokenLoader.swift */; };
 		A10000000000000000000006 /* MacWebKitGameWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* MacWebKitGameWindow.swift */; };
+		A10000000000000000000019 /* MacMultiOpenManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* MacMultiOpenManagerView.swift */; };
 		A10000000000000000000018 /* MacCDNResourceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* MacCDNResourceManager.swift */; };
 		A10000000000000000000007 /* MockEngineHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* MockEngineHost.swift */; };
 		A10000000000000000000008 /* PluginPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* PluginPanelView.swift */; };
@@ -38,6 +39,7 @@
 		A20000000000000000000004 /* AccountLibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryViewModel.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* MacWebKitGameWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWebKitGameWindow.swift; sourceTree = "<group>"; };
+		A20000000000000000000019 /* MacMultiOpenManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMultiOpenManagerView.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* MacCDNResourceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacCDNResourceManager.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* MockEngineHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockEngineHost.swift; sourceTree = "<group>"; };
 		A20000000000000000000008 /* PluginPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginPanelView.swift; sourceTree = "<group>"; };
@@ -87,6 +89,7 @@
 				A20000000000000000000004 /* AccountLibraryViewModel.swift */,
 				A20000000000000000000005 /* DesignTokenLoader.swift */,
 				A20000000000000000000006 /* MacWebKitGameWindow.swift */,
+				A20000000000000000000019 /* MacMultiOpenManagerView.swift */,
 				A20000000000000000000018 /* MacCDNResourceManager.swift */,
 				A20000000000000000000007 /* MockEngineHost.swift */,
 				A20000000000000000000008 /* PluginPanelView.swift */,
@@ -220,6 +223,7 @@
 				A10000000000000000000004,
 				A10000000000000000000005,
 				A10000000000000000000006,
+				A10000000000000000000019,
 				A10000000000000000000018,
 				A10000000000000000000007,
 				A10000000000000000000008,
