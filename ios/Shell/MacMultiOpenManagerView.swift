@@ -10,7 +10,8 @@ struct MacMultiOpenManagerView: View {
     @State private var searchText = ""
     @State private var isPresentingImporter = false
     @State private var sidebarVisible = true
-    @State private var matrixLayout: MatrixLayout = .automatic
+    @State private var fixedColumnCount: Int?
+    @State private var instanceWidth: CGFloat = 280
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -25,31 +26,6 @@ struct MacMultiOpenManagerView: View {
         }
         var icon: String {
             switch self { case .accounts: return "person.2"; case .games: return "gamecontroller"; case .scripts: return "curlybraces"; case .settings: return "gearshape" }
-        }
-    }
-
-    private enum MatrixLayout: String, CaseIterable, Identifiable {
-        case automatic
-        case one, two, three, four
-
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .automatic: return "自动"
-            case .one: return "每行 1 个"
-            case .two: return "每行 2 个"
-            case .three: return "每行 3 个"
-            case .four: return "每行 4 个"
-            }
-        }
-        var fixedCount: Int? {
-            switch self {
-            case .automatic: return nil
-            case .one: return 1
-            case .two: return 2
-            case .three: return 3
-            case .four: return 4
-            }
         }
     }
 
@@ -195,12 +171,16 @@ struct MacMultiOpenManagerView: View {
 
     private var workspace: some View {
         GeometryReader { proxy in
-            let minimumCardWidth: CGFloat = 320
-            let automaticColumns = max(1, Int((proxy.size.width + 14) / (minimumCardWidth + 14)))
-            let columnCount = min(
-                matrixLayout.fixedCount ?? automaticColumns,
-                max(1, Int((proxy.size.width + 14) / (220 + 14)))
-            )
+            let spacing: CGFloat = 14
+            let availableWidth = max(160, proxy.size.width - 48)
+            let automaticColumns = max(1, Int((availableWidth + spacing) / (instanceWidth + spacing)))
+            let columnCount = max(1, fixedColumnCount ?? automaticColumns)
+            // In a fixed-column layout, fit the requested number into the
+            // available width. The size buttons still control the preferred
+            // width, while the grid never creates an accidental landscape
+            // card or clips the game surface.
+            let fittedWidth = (availableWidth - spacing * CGFloat(max(0, columnCount - 1))) / CGFloat(columnCount)
+            let cardWidth = fixedColumnCount == nil ? instanceWidth : min(instanceWidth, max(96, fittedWidth))
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .firstTextBaseline) {
@@ -215,20 +195,50 @@ struct MacMultiOpenManagerView: View {
                                 .font(.system(size: 13)).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        HStack(spacing: 4) {
+                            Text("尺寸 \(Int(instanceWidth)) · 9:16")
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Button {
+                                instanceWidth = max(160, instanceWidth - 20)
+                            } label: {
+                                Image(systemName: "minus")
+                            }
+                            .buttonStyle(MacManagerButtonStyle(tint: .gray))
+                            Button {
+                                instanceWidth = min(720, instanceWidth + 20)
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .buttonStyle(MacManagerButtonStyle(tint: .gray))
+                        }
                         Menu {
-                            ForEach(MatrixLayout.allCases) { layout in
+                            Button {
+                                fixedColumnCount = nil
+                            } label: {
+                                if fixedColumnCount == nil {
+                                    Label("自动", systemImage: "checkmark")
+                                } else {
+                                    Text("自动")
+                                }
+                            }
+                            Divider()
+                            ForEach(1...12, id: \.self) { count in
                                 Button {
-                                    matrixLayout = layout
+                                    fixedColumnCount = count
                                 } label: {
-                                    if matrixLayout == layout {
-                                        Label(layout.title, systemImage: "checkmark")
+                                    if fixedColumnCount == count {
+                                        Label("每行 \(count) 个", systemImage: "checkmark")
                                     } else {
-                                        Text(layout.title)
+                                        Text("每行 \(count) 个")
                                     }
                                 }
                             }
                         } label: {
-                            Label("布局：\(matrixLayout.title)", systemImage: "rectangle.split.3x1")
+                            Label(
+                                fixedColumnCount.map { "布局：每行 \($0) 个" } ?? "布局：自动",
+                                systemImage: "rectangle.split.3x1"
+                            )
                         }
                         .menuStyle(.borderlessButton)
                         .buttonStyle(MacManagerButtonStyle(tint: .gray))
@@ -238,9 +248,9 @@ struct MacMultiOpenManagerView: View {
                     if liveWorkspace.items.isEmpty {
                         EmptyMatrixView { selectedSection = .accounts }
                     } else {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 220), spacing: 14), count: columnCount), spacing: 14) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount), spacing: spacing) {
                             ForEach(liveWorkspace.items) { item in
-                                MacGameMatrixCell(item: item, workspace: liveWorkspace)
+                                MacGameMatrixCell(item: item, workspace: liveWorkspace, width: cardWidth)
                             }
                         }
                     }
@@ -278,7 +288,9 @@ private struct AccountManagerRow: View {
 }
 
 private struct MacGameMatrixCell: View {
-    let item: WorkspaceItem; @ObservedObject var workspace: WorkspaceViewModel
+    let item: WorkspaceItem
+    @ObservedObject var workspace: WorkspaceViewModel
+    let width: CGFloat
     @State private var reloadKey = UUID()
     var body: some View {
         VStack(spacing: 0) {
@@ -301,7 +313,7 @@ private struct MacGameMatrixCell: View {
                 // out as a landscape rectangle with side bars.
                 .aspectRatio(9.0 / 16.0, contentMode: .fit)
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: width)
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .overlay { RoundedRectangle(cornerRadius: 9).stroke(Color.cyan.opacity(0.55), lineWidth: 1) }
         .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
