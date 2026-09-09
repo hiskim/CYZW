@@ -68,7 +68,11 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let authentication = try await MacWebKitAuth.authenticate(account: account)
+                // App launch starts the shared CDN prefetch. Awaiting the same
+                // actor task here means an early account click does not create
+                // a second download or race the cache warm-up.
+                let manifest = await MacCDNResourceManager.shared.prepareForLaunch()
+                let authentication = try await MacWebKitAuth.authenticate(account: account, manifest: manifest)
                 authenticatedAccountID = authentication.accountID
                 schemeHandler.setBundleVersions(authentication.bundleVersions)
                 webView.configuration.userContentController.addUserScript(
@@ -351,7 +355,6 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
 }
 
 private enum MacWebKitAuth {
-    private static let manifestVersion = "0.33.0-ios"
     private static let gameServer = "https://xxz-xyzw.hortorgames.com"
 
     struct Result {
@@ -371,7 +374,7 @@ private enum MacWebKitAuth {
         }
     }
 
-    static func authenticate(account: Account) async throws -> Result {
+    static func authenticate(account: Account, manifest: MacCDNManifest? = nil) async throws -> Result {
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             throw AuthError.missingFile
         }
@@ -392,59 +395,24 @@ private enum MacWebKitAuth {
             throw AuthError.invalidResponse("认证服务返回异常（HTTP \(status)）。")
         }
 
-        // The bundled settings contain only a fallback resource version. The
-        // production iOS flow refreshes it before loading remote Cocos
-        // bundles, so do the same for every macOS WebKit instance.
-        let encodedVersion = manifestVersion.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? manifestVersion
-        var manifestRequest = URLRequest(
-            url: URL(string: "\(gameServer)/login/manifest?platform=hortor&version=\(encodedVersion)")!
-        )
-        manifestRequest.httpMethod = "POST"
-        manifestRequest.httpBody = Data()
-        manifestRequest.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        manifestRequest.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        manifestRequest.setValue("close", forHTTPHeaderField: "Connection")
-        let (manifestData, manifestResponse) = try await URLSession.shared.data(for: manifestRequest)
-        guard let manifestHTTP = manifestResponse as? HTTPURLResponse,
-              (200...299).contains(manifestHTTP.statusCode),
-              !manifestData.isEmpty,
-              let manifestObject = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
-              let manifestBody = manifestObject["body"] as? [String: Any],
-              let bundleVers = manifestBody["bundleVers"] else {
-            let status = (manifestResponse as? HTTPURLResponse)?.statusCode ?? 0
-            throw AuthError.invalidResponse("游戏资源版本清单异常（HTTP \(status)）。")
-        }
-
-        let bundleVersions: [String: String]
-        if let bundleVersJSON = bundleVers as? String,
-           let bundleVersData = bundleVersJSON.data(using: .utf8),
-           let decoded = try? JSONSerialization.jsonObject(with: bundleVersData) as? [String: Any] {
-            bundleVersions = decoded.reduce(into: [:]) { result, item in
-                if let value = item.value as? String, !value.isEmpty { result[item.key] = value }
-            }
-        } else if let decoded = bundleVers as? [String: Any] {
-            bundleVersions = decoded.reduce(into: [:]) { result, item in
-                if let value = item.value as? String, !value.isEmpty { result[item.key] = value }
-            }
+        let liveManifest: MacCDNManifest
+        if let manifest {
+            liveManifest = manifest
         } else {
-            bundleVersions = [:]
+            liveManifest = try await MacCDNResourceManager.shared.latestManifest()
         }
-        guard !bundleVersions.isEmpty, bundleVersions["launcher"] != nil else {
-            throw AuthError.invalidResponse("游戏资源版本清单缺少 launcher 版本。")
-        }
+        let bundleVersions = liveManifest.bundleVersions
 
         let digest = SHA256.hash(data: binData)
         let accountID = "ios2-" + digest.map { String(format: "%02x", $0) }.joined()
-        let manifestBodyData = try JSONSerialization.data(withJSONObject: manifestBody)
         return Result(authResponse: data.base64EncodedString(), accountID: accountID,
-                      manifestJSON: String(data: manifestBodyData, encoding: .utf8) ?? "{}",
+                      manifestJSON: liveManifest.json,
                       bundleVersions: bundleVersions)
     }
 }
 
 private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     private let remoteBaseURL = URL(string: "https://xxz-xyzw-res.hortorgames.com")!
-    private let session = URLSession(configuration: .ephemeral)
     private var bundleVersions: [String: String] = [:]
 
     func setBundleVersions(_ versions: [String: String]) {
@@ -474,32 +442,22 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
             fail(urlSchemeTask, code: NSURLErrorFileDoesNotExist)
             return
         }
-        NSLog("[ios2-macos] remote request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
-        session.dataTask(with: remoteURL) { [weak self] data, response, error in
-            if let error {
-                NSLog("[ios2-macos] remote error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
-                urlSchemeTask.didFailWithError(error)
-                return
+        NSLog("[ios2-macos] CDN request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
+        Task { @MainActor [weak self] in
+            do {
+                let data = try await MacCDNResourceManager.shared.data(for: remoteURL)
+                self?.respond(urlSchemeTask, data: data, url: requestURL)
+            } catch {
+                NSLog("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
+                self?.fail(urlSchemeTask, code: (error as NSError).code)
             }
-            guard let self, let data,
-                  let response = response as? HTTPURLResponse else {
-                NSLog("[ios2-macos] remote invalid response: %@", remoteURL.absoluteString)
-                self?.fail(urlSchemeTask, code: NSURLErrorBadServerResponse)
-                return
-            }
-            NSLog("[ios2-macos] remote response: %@ HTTP %ld (%lld bytes)", remoteURL.absoluteString,
-                  response.statusCode, Int64(data.count))
-            guard (200...299).contains(response.statusCode) else {
-                self.fail(urlSchemeTask, code: NSURLErrorBadServerResponse)
-                return
-            }
-            self.respond(urlSchemeTask, data: data, url: requestURL)
-        }.resume()
+        }
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        // URLSession tasks are short-lived resource fetches. WebKit ignores
-        // callbacks for stopped scheme tasks, so no shared task bookkeeping is needed.
+        // The shared actor may still finish a request for another window.
+        // WebKit ignores callbacks for a stopped scheme task, so no per-window
+        // cancellation or cache bookkeeping is needed here.
     }
 
     private func localResource(for url: URL) -> URL? {

@@ -49,10 +49,56 @@ final class SettingsViewModel: ObservableObject {
     @Published var accentChoice: AccentChoice = .accent
     @Published var fontToken: DesignFontToken = .lg
     @Published var performanceProfile: PerformanceProfile = .balanced
+
+#if os(macOS)
+    @Published var cdnCacheStatus: MacCDNCacheStatus?
+    @Published var isCDNBusy = false
+    @Published var cdnMessage = ""
+
+    func refreshCDNCacheStatus() {
+        Task { @MainActor in
+            cdnCacheStatus = await MacCDNResourceManager.shared.cacheStatus()
+        }
+    }
+
+    func synchronizeCDNCache() {
+        guard !isCDNBusy else { return }
+        isCDNBusy = true
+        cdnMessage = "正在同步 CDN 缓存..."
+        Task { @MainActor in
+            let success = await MacCDNResourceManager.shared.synchronizeCache()
+            cdnCacheStatus = await MacCDNResourceManager.shared.cacheStatus()
+            isCDNBusy = false
+            cdnMessage = success ? "同步完成" : "同步失败，请查看 Xcode 控制台日志"
+        }
+    }
+
+    func clearCDNCache() {
+        guard !isCDNBusy else { return }
+        isCDNBusy = true
+        cdnMessage = "正在清理 CDN 缓存..."
+        Task { @MainActor in
+            cdnCacheStatus = await MacCDNResourceManager.shared.clearCache()
+            isCDNBusy = false
+            cdnMessage = "缓存已清理"
+        }
+    }
+
+    func openCDNCacheDirectory() {
+        Task { @MainActor in
+            let url = await MacCDNResourceManager.shared.cacheDirectoryURL()
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+        }
+    }
+#endif
 }
 
 struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
+    #if os(macOS)
+    @State private var showingClearCDNConfirmation = false
+    #endif
 
     var body: some View {
         let tokens = DesignTokens.shared
@@ -117,11 +163,86 @@ struct SettingsView: View {
                     }
                     .buttonStyle(TokenSecondaryButtonStyle())
                 }
+
+                TokenSettingsCard(title: "CDN 缓存") {
+                    VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
+                        Text("所有账号和实例共享同一份 CDN 缓存。")
+                            .font(tokens.font(.md))
+
+                        if let status = viewModel.cdnCacheStatus {
+                            Text("已缓存 \(status.fileCount) 个文件 · \(ByteCountFormatter.string(fromByteCount: status.byteCount, countStyle: .file))")
+                                .font(tokens.font(.md, weight: .medium))
+                                .foregroundStyle(tokens.color(.textPrimary))
+                            Text(status.directoryPath)
+                                .font(.system(size: tokens.fontSize(.sm), design: .monospaced))
+                                .foregroundStyle(tokens.color(.textMuted))
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                        } else {
+                            Text("正在读取缓存状态...")
+                                .font(tokens.font(.md))
+                        }
+
+                        HStack(spacing: tokens.spacing(.sm)) {
+                            Button {
+                                viewModel.synchronizeCDNCache()
+                            } label: {
+                                Label("同步缓存", systemImage: "arrow.triangle.2.circlepath")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(TokenPrimaryButtonStyle())
+
+                            Button {
+                                showingClearCDNConfirmation = true
+                            } label: {
+                                Label("清理缓存", systemImage: "trash")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(TokenSecondaryButtonStyle())
+
+                            Button {
+                                viewModel.openCDNCacheDirectory()
+                            } label: {
+                                Label("打开目录", systemImage: "folder")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(TokenSecondaryButtonStyle())
+                        }
+                        .disabled(viewModel.isCDNBusy)
+
+                        if viewModel.isCDNBusy {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        if !viewModel.cdnMessage.isEmpty {
+                            Text(viewModel.cdnMessage)
+                                .font(tokens.font(.sm))
+                                .foregroundStyle(tokens.color(.textSecondary))
+                        }
+                    }
+                }
 #endif
             }
             .padding(tokens.spacing(.xl))
         }
         .background(tokens.color(.canvas))
+#if os(macOS)
+        .task {
+            viewModel.refreshCDNCacheStatus()
+        }
+        .confirmationDialog(
+            "确认清理 CDN 缓存？",
+            isPresented: $showingClearCDNConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清理缓存", role: .destructive) {
+                viewModel.clearCDNCache()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("清理后，下次同步或进入游戏时会重新下载资源。")
+        }
+#endif
     }
 }
 

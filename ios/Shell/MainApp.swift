@@ -17,5 +17,10 @@ private struct ShellWindowRootView: View {
     var body: some View {
         ShellRootView(coordinator: coordinator)
             .preferredColorScheme(.dark)
+            .task {
+#if os(macOS)
+                _ = await MacCDNResourceManager.shared.prepareForLaunch()
+#endif
+            }
     }
 }
