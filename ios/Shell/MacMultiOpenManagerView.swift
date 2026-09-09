@@ -9,6 +9,7 @@ struct MacMultiOpenManagerView: View {
     @State private var selectedSection: Section = .accounts
     @State private var searchText = ""
     @State private var isPresentingImporter = false
+    @State private var sidebarVisible = true
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -34,9 +35,11 @@ struct MacMultiOpenManagerView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            sidebar
-                .frame(width: 304)
-            Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1)
+            if sidebarVisible {
+                sidebar
+                    .frame(width: 304)
+                Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1)
+            }
             workspace
         }
         .background(Color(red: 0.055, green: 0.075, blue: 0.11))
@@ -93,7 +96,7 @@ struct MacMultiOpenManagerView: View {
                 Circle().fill(Color.green).frame(width: 8, height: 8)
                 Text("系统就绪").font(.system(size: 12)).foregroundStyle(.secondary)
                 Spacer()
-                Text("\(liveWorkspace.items.count)/\(WorkspaceViewModel.maximumInstanceCount)")
+                Text("\(liveWorkspace.items.count) 个实例 · 不限数量")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -170,6 +173,11 @@ struct MacMultiOpenManagerView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .firstTextBaseline) {
+                        Button { withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible.toggle() } } label: {
+                            Image(systemName: sidebarVisible ? "sidebar.left" : "sidebar.right")
+                        }
+                        .buttonStyle(MacManagerButtonStyle(tint: .gray))
+                        .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
                         VStack(alignment: .leading, spacing: 4) {
                             Text("多开矩阵").font(.system(size: 24, weight: .bold))
                             Text("\(liveWorkspace.items.count) 个活跃实例 · 每个账号独立 WebKit 会话")

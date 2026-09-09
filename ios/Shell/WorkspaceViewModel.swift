@@ -12,14 +12,25 @@ struct WorkspaceItem: Identifiable {
 final class WorkspaceViewModel: ObservableObject {
     static let maximumInstanceCount = 4
 
+    #if os(macOS)
+    private let instanceLimit: Int? = nil
+    #else
+    private let instanceLimit: Int? = maximumInstanceCount
+    #endif
+
     @Published private(set) var items: [WorkspaceItem] = []
     @Published var selectedID: UUID?
     @Published private(set) var revision = 0
 
     func start(accounts: [Account]) async {
         let existingIDs = Set(items.map { $0.account.id })
-        let availableSlots = max(0, Self.maximumInstanceCount - items.count)
-        let pendingAccounts = Array(accounts.filter({ !existingIDs.contains($0.id) }).prefix(availableSlots))
+        let candidates = accounts.filter { !existingIDs.contains($0.id) }
+        let pendingAccounts: [Account]
+        if let instanceLimit {
+            pendingAccounts = Array(candidates.prefix(max(0, instanceLimit - items.count)))
+        } else {
+            pendingAccounts = candidates
+        }
         // Publish all cards before awaiting authentication/startup. The
         // matrix should react to the click immediately, even when WebKit or
         // CDN preparation takes time.

@@ -1168,6 +1168,14 @@
                         cc.view._maxPixelRatio = webPixelRatio;
                     }
                     cc.view.enableRetina(webPixelRatio > 1);
+                    // Desktop matrix cells are resizable surfaces. Use
+                    // EXACT_FIT in multi-open mode so the game canvas fills
+                    // the whole cell instead of preserving a phone ratio and
+                    // showing black bars at the sides.
+                    if (multiOpen && cc.ResolutionPolicy &&
+                        typeof cc.view.setResolutionPolicy === 'function') {
+                        cc.view.setResolutionPolicy(cc.ResolutionPolicy.EXACT_FIT);
+                    }
                     cc.view.resizeWithBrowserSize(true);
                     console.log('[ios2-web] pixel ratio',
                         'device=' + devicePixelRatio,

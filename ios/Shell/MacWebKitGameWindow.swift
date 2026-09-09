@@ -214,7 +214,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
           frameRate: 60,
           qualitySingle: 'high',
           qualityMulti: 'medium',
-          multiOpen: false,
+          // macOS matrix cells are resizable multi-open surfaces. This also
+          // enables the web bootstrap's EXACT_FIT policy to avoid side bars.
+          multiOpen: true,
           startupMode: 'serial',
           scripts: [],
           manifest: \(manifestValue),
