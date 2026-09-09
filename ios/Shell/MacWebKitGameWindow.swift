@@ -134,8 +134,16 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
         window.jsb.reflection.callStaticMethod = function() {
           var args = Array.prototype.slice.call(arguments), klass = args.shift(), method = args.shift();
           if (klass === 'IOS2Native' && method === 'runtimeBackend') return 'webkit';
-          if (klass === 'SDKMessager' && method === 'callNative:withMessage:') {
-            try { window.webkit.messageHandlers.ios2Game.postMessage({type:'hsdk', instance: window.__IOS2_GAME_INSTANCE__.id, channel: args[0] || 'sdk', message: String(args[1] || '{}')}); } catch (error) { console.error(error); }
+          // HSDK selects the iOS class only when cc.sys reports iOS. A
+          // macOS WebKit page reports macOS, so the same SDK build otherwise
+          // falls back to its Android-style class/method pair and the request
+          // silently disappears. Accept both native entry points here; the
+          // payload format is identical.
+          if ((klass === 'SDKMessager' && method === 'callNative:withMessage:') ||
+              (klass === 'com/hortorgames/gamesdk/SDKBridge' && method === 'receiveMsgFromHSDK')) {
+            var hsdkChannel = method === 'receiveMsgFromHSDK' ? 'sdk' : (args[0] || 'sdk');
+            var hsdkMessage = method === 'receiveMsgFromHSDK' ? args[1] : args[1];
+            try { window.webkit.messageHandlers.ios2Game.postMessage({type:'hsdk', instance: window.__IOS2_GAME_INSTANCE__.id, channel: hsdkChannel, message: String(hsdkMessage || '{}')}); } catch (error) { console.error(error); }
           }
           return null;
         };
@@ -157,24 +165,31 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
           this._response = null; this._responseType = ''; this._listeners = {};
           var self = this;
           ['readystatechange','load','error','timeout','abort','loadend','progress'].forEach(function(type) {
-            self._native['on' + type] = function(event) { var handler = self['on' + type]; if (typeof handler === 'function') handler.call(self, event); };
+            self._native['on' + type] = function(event) { self._emit(type, event); };
           });
         }
         __ios2XHR.prototype.open = function(method, url) {
           this._fake = /\\/login\\/authuser(?:\\?|$)/.test(String(url || ''));
-          if (this._fake) { this._readyState = 1; if (typeof this.onreadystatechange === 'function') this.onreadystatechange({target:this}); }
+          if (this._fake) { this._readyState = 1; this._emit('readystatechange'); }
           else this._native.open.apply(this._native, arguments);
         };
         __ios2XHR.prototype.send = function(body) {
           if (!this._fake) return this._native.send(body);
-          var self = this; setTimeout(function() { self._status = 200; self._response = __ios2AuthBytes(); self._readyState = 4;
-            if (typeof self.onreadystatechange === 'function') self.onreadystatechange({target:self});
-            if (typeof self.onload === 'function') self.onload({target:self}); if (typeof self.onloadend === 'function') self.onloadend({target:self}); }, 0);
+          var self = this; setTimeout(function() {
+            self._status = 200; self._response = __ios2AuthBytes();
+            self._readyState = 2; self._emit('readystatechange');
+            self._readyState = 3; self._emit('readystatechange');
+            self._readyState = 4; self._emit('readystatechange'); self._emit('load'); self._emit('loadend');
+          }, 0);
         };
-        __ios2XHR.prototype.abort = function() { if (this._fake) { this._readyState = 0; if (typeof this.onabort === 'function') this.onabort({target:this}); } else this._native.abort(); };
+        __ios2XHR.prototype.abort = function() { if (this._fake) { this._readyState = 0; this._emit('abort'); this._emit('loadend'); } else this._native.abort(); };
         __ios2XHR.prototype.setRequestHeader = function(name, value) { if (!this._fake) this._native.setRequestHeader(name, value); };
         __ios2XHR.prototype.getAllResponseHeaders = function() { return this._fake ? 'Content-Type: application/octet-stream\\r\\n' : this._native.getAllResponseHeaders(); };
         __ios2XHR.prototype.getResponseHeader = function(name) { return this._fake && String(name).toLowerCase() === 'content-type' ? 'application/octet-stream' : (this._fake ? null : this._native.getResponseHeader(name)); };
+        __ios2XHR.prototype.overrideMimeType = function(value) { if (!this._fake && this._native.overrideMimeType) this._native.overrideMimeType(value); };
+        __ios2XHR.prototype.addEventListener = function(type, listener) { if (typeof listener === 'function') (this._listeners[type] || (this._listeners[type] = [])).push(listener); };
+        __ios2XHR.prototype.removeEventListener = function(type, listener) { var list = this._listeners[type] || [], index = list.indexOf(listener); if (index >= 0) list.splice(index, 1); };
+        __ios2XHR.prototype._emit = function(type, event) { event = event || {type:type, target:this}; var handler = this['on' + type]; if (typeof handler === 'function') handler.call(this, event); var list = (this._listeners[type] || []).slice(); for (var i = 0; i < list.length; i++) list[i].call(this, event); };
         Object.defineProperties(__ios2XHR.prototype, {
           readyState:{get:function(){return this._fake ? this._readyState : this._native.readyState;}},
           status:{get:function(){return this._fake ? this._status : this._native.status;}},
@@ -185,19 +200,45 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
           timeout:{get:function(){return this._native.timeout;},set:function(value){this._native.timeout=value;}},
           withCredentials:{get:function(){return this._fake ? false : this._native.withCredentials;},set:function(value){if(!this._fake)this._native.withCredentials=value;}}
         });
+        __ios2XHR.UNSENT = 0; __ios2XHR.OPENED = 1; __ios2XHR.HEADERS_RECEIVED = 2; __ios2XHR.LOADING = 3; __ios2XHR.DONE = 4;
         window.XMLHttpRequest = __ios2XHR;
+        window.addEventListener('error', function(event) {
+          try { window.webkit.messageHandlers.ios2Game.postMessage({type:'error', instance:window.__IOS2_GAME_INSTANCE__.id, message:String(event.error && event.error.stack || event.message || 'Web game error')}); } catch (ignored) {}
+        });
+        window.addEventListener('unhandledrejection', function(event) {
+          try { window.webkit.messageHandlers.ios2Game.postMessage({type:'error', instance:window.__IOS2_GAME_INSTANCE__.id, message:String(event.reason && event.reason.stack || event.reason || 'Unhandled rejection')}); } catch (ignored) {}
+        });
+        ['log','warn','error'].forEach(function(level) {
+          var original = console[level];
+          console[level] = function() {
+            var args = Array.prototype.slice.call(arguments);
+            try { window.webkit.messageHandlers.ios2Game.postMessage({type:'console', level:level, instance:window.__IOS2_GAME_INSTANCE__.id, message:args.map(function(value){ return String(value && value.stack || value); }).join(' ')}); } catch (ignored) {}
+            return original.apply(console, args);
+          };
+        });
         """
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "ios2Game" else { return }
-        guard let body = message.body as? [String: Any],
-              body["type"] as? String == "hsdk",
-              let requestJSON = body["message"] as? String else {
+        guard let body = message.body as? [String: Any], let type = body["type"] as? String else {
             NSLog("[ios2-macos] WebKit event: %@", String(describing: message.body))
             return
         }
-        handleHSDKRequest(requestJSON)
+        switch type {
+        case "hsdk":
+            guard let requestJSON = body["message"] as? String else {
+                NSLog("[ios2-macos] malformed HSDK event: %@", String(describing: body))
+                return
+            }
+            handleHSDKRequest(requestJSON)
+        case "console":
+            NSLog("[ios2-macos] JS %@: %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
+        case "error":
+            NSLog("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
+        default:
+            NSLog("[ios2-macos] WebKit event: %@", String(describing: body))
+        }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation?, withError error: Error) {
@@ -287,9 +328,19 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
         let payload: [String: Any] = ["action": action, "meta": ["errCode": errorCode], "extra": extra]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let message = String(data: data, encoding: .utf8),
-              let messageData = try? JSONSerialization.data(withJSONObject: message),
+              // JSONSerialization rejects a top-level Swift String on newer
+              // Foundation implementations (and throws an Obj-C exception
+              // that Swift try? cannot catch). JSONEncoder safely produces
+              // the quoted JS string literal needed by HSDK.onMessage.
+              let messageData = try? JSONEncoder().encode(message),
               let argument = String(data: messageData, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("if(window.HSDK&&typeof window.HSDK.onMessage==='function'){window.HSDK.onMessage('sdk',\(argument));}")
+        webView.evaluateJavaScript("if(window.HSDK&&typeof window.HSDK.onMessage==='function'){window.HSDK.onMessage('sdk',\(argument));}else{throw new Error('HSDK.onMessage is unavailable while responding to \(action)');}") { _, error in
+            if let error {
+                NSLog("[ios2-macos] HSDK response %@ failed: %@", action, error.localizedDescription)
+            } else {
+                NSLog("[ios2-macos] HSDK response sent: %@", action)
+            }
+        }
     }
 
     private func accountID() -> String {
