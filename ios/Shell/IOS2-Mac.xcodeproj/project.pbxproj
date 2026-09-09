@@ -1,0 +1,334 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* MainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* MainApp.swift */; };
+		A10000000000000000000002 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppCoordinator.swift */; };
+		A10000000000000000000003 /* AccountLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* AccountLibraryView.swift */; };
+		A10000000000000000000004 /* AccountLibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* AccountLibraryViewModel.swift */; };
+		A10000000000000000000005 /* DesignTokenLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DesignTokenLoader.swift */; };
+		A10000000000000000000006 /* MacWebKitGameWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* MacWebKitGameWindow.swift */; };
+		A10000000000000000000007 /* MockEngineHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* MockEngineHost.swift */; };
+		A10000000000000000000008 /* PluginPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* PluginPanelView.swift */; };
+		A10000000000000000000009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* SettingsView.swift */; };
+		A1000000000000000000000A /* ShellModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* ShellModels.swift */; };
+		A1000000000000000000000B /* TokenButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* TokenButtonStyles.swift */; };
+		A1000000000000000000000C /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* WorkspaceView.swift */; };
+		A1000000000000000000000D /* WorkspaceViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* WorkspaceViewModel.swift */; };
+		A1000000000000000000000E /* EngineConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* EngineConfig.swift */; };
+		A1000000000000000000000F /* EngineEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* EngineEvent.swift */; };
+		A10000000000000000000010 /* EngineHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* EngineHost.swift */; };
+		A10000000000000000000011 /* EngineHostError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* EngineHostError.swift */; };
+		A10000000000000000000012 /* EngineHostRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* EngineHostRegistry.swift */; };
+		A10000000000000000000013 /* EngineState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* EngineState.swift */; };
+		A10000000000000000000014 /* ResourceRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* ResourceRef.swift */; };
+		A10000000000000000000015 /* Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* Snapshot.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* MainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* AccountLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryView.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* AccountLibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryViewModel.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* MacWebKitGameWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWebKitGameWindow.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* MockEngineHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockEngineHost.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* PluginPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginPanelView.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000A /* ShellModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellModels.swift; sourceTree = "<group>"; };
+		A2000000000000000000000B /* TokenButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenButtonStyles.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* WorkspaceViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceViewModel.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* EngineConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineConfig.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* EngineEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineEvent.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* EngineHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHost.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* EngineHostError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHostError.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* EngineHostRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHostRegistry.swift; sourceTree = "<group>"; };
+		A20000000000000000000013 /* EngineState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineState.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* ResourceRef.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceRef.swift; sourceTree = "<group>"; };
+		A20000000000000000000015 /* Snapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshot.swift; sourceTree = "<group>"; };
+		A20000000000000000000016 /* IOS2-Mac-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = IOS2-Mac-Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000017 /* IOS2-Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IOS2-Mac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A40000000000000000000002 /* Shell */,
+				A40000000000000000000003 /* EngineHost */,
+				A40000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A40000000000000000000002 /* Shell */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* MainApp.swift */,
+				A20000000000000000000002 /* AppCoordinator.swift */,
+				A20000000000000000000003 /* AccountLibraryView.swift */,
+				A20000000000000000000004 /* AccountLibraryViewModel.swift */,
+				A20000000000000000000005 /* DesignTokenLoader.swift */,
+				A20000000000000000000006 /* MacWebKitGameWindow.swift */,
+				A20000000000000000000007 /* MockEngineHost.swift */,
+				A20000000000000000000008 /* PluginPanelView.swift */,
+				A20000000000000000000009 /* SettingsView.swift */,
+				A2000000000000000000000A /* ShellModels.swift */,
+				A2000000000000000000000B /* TokenButtonStyles.swift */,
+				A2000000000000000000000C /* WorkspaceView.swift */,
+				A2000000000000000000000D /* WorkspaceViewModel.swift */,
+				A20000000000000000000016 /* IOS2-Mac-Info.plist */,
+			);
+			path = .;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000003 /* EngineHost */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000E /* EngineConfig.swift */,
+				A2000000000000000000000F /* EngineEvent.swift */,
+				A20000000000000000000010 /* EngineHost.swift */,
+				A20000000000000000000011 /* EngineHostError.swift */,
+				A20000000000000000000012 /* EngineHostRegistry.swift */,
+				A20000000000000000000013 /* EngineState.swift */,
+				A20000000000000000000014 /* ResourceRef.swift */,
+				A20000000000000000000015 /* Snapshot.swift */,
+			);
+			name = EngineHost;
+			path = ../EngineHost;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000017 /* IOS2-Mac.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* IOS2-Mac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A60000000000000000000001 /* Build configuration list for PBXNativeTarget "IOS2-Mac" */;
+			buildPhases = (
+				A30000000000000000000002 /* Sources */,
+				A30000000000000000000001 /* Frameworks */,
+				A30000000000000000000003 /* Resources */,
+				A30000000000000000000004 /* Copy WebRuntime */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "IOS2-Mac";
+			productName = "IOS2-Mac";
+			productReference = A20000000000000000000017 /* IOS2-Mac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A70000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					A50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = A60000000000000000000002 /* Build configuration list for PBXProject "IOS2-Mac" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A40000000000000000000001;
+			productRefGroup = A40000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A50000000000000000000001 /* IOS2-Mac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A30000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A30000000000000000000004 /* Copy WebRuntime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../ios-cocos/cocos-project/src/ios2-web-index.html",
+				"$(SRCROOT)/../../ios-cocos/cocos-project/src/ios2-web-boot.js",
+				"$(SRCROOT)/../../ios-cocos/cocos-project/assets/internal",
+			);
+			name = "Copy WebRuntime";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/src/ios2-web-index.html",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nRUNTIME=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/WebRuntime\"\nmkdir -p \"$RUNTIME\"\nditto \"${SRCROOT}/../../ios-cocos/cocos-project/src\" \"$RUNTIME/src\"\nditto \"${SRCROOT}/../../ios-cocos/cocos-project/assets\" \"$RUNTIME/assets\"\nmkdir -p \"$RUNTIME/jsb-adapter\"\nditto \"${SRCROOT}/../../ios-cocos/cocos-project/jsb-adapter/game-defines.js\" \"$RUNTIME/jsb-adapter/game-defines.js\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A30000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001,
+				A10000000000000000000002,
+				A10000000000000000000003,
+				A10000000000000000000004,
+				A10000000000000000000005,
+				A10000000000000000000006,
+				A10000000000000000000007,
+				A10000000000000000000008,
+				A10000000000000000000009,
+				A1000000000000000000000A,
+				A1000000000000000000000B,
+				A1000000000000000000000C,
+				A1000000000000000000000D,
+				A1000000000000000000000E,
+				A1000000000000000000000F,
+				A10000000000000000000010,
+				A10000000000000000000011,
+				A10000000000000000000012,
+				A10000000000000000000013,
+				A10000000000000000000014,
+				A10000000000000000000015,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_PREVIEWS = NO;
+				ARCHS = "arm64 x86_64";
+				GCC_OPTIMIZATION_LEVEL = 0;
+				INFOPLIST_FILE = "$(SRCROOT)/IOS2-Mac-Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2.webkit.macos;
+				PRODUCT_NAME = "IOS2-Mac";
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_PREVIEWS = NO;
+				ARCHS = "arm64 x86_64";
+				INFOPLIST_FILE = "$(SRCROOT)/IOS2-Mac-Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xyzw.ios2.webkit.macos;
+				PRODUCT_NAME = "IOS2-Mac";
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A80000000000000000000003 /* Project Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A80000000000000000000004 /* Project Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A60000000000000000000001 /* Build configuration list for PBXNativeTarget "IOS2-Mac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000001 /* Debug */,
+				A80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A60000000000000000000002 /* Build configuration list for PBXProject "IOS2-Mac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000003 /* Project Debug */,
+				A80000000000000000000004 /* Project Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A70000000000000000000001 /* Project object */;
+}

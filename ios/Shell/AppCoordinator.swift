@@ -62,7 +62,15 @@ final class AppCoordinator: ObservableObject {
 
     func launchLegacyCocos(account: Account) {
         legacyCocosPresentation = .loggingIn(account)
+#if os(macOS)
+        // The macOS target is WebKit-only. It does not host the legacy Cocos
+        // runtime or its notification bridge, so open the game window
+        // directly. Keep the iOS notification-based launch path unchanged.
+        MacWebKitGameWindowController.open(account: account)
+        legacyCocosPresentation = .shell
+#else
         LegacyCocosLaunch.request(binFileName: account.fileName)
+#endif
     }
 }
 
