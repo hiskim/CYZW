@@ -10,6 +10,7 @@ struct MacMultiOpenManagerView: View {
     @State private var searchText = ""
     @State private var isPresentingImporter = false
     @State private var sidebarVisible = true
+    @State private var matrixLayout: MatrixLayout = .automatic
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -24,6 +25,31 @@ struct MacMultiOpenManagerView: View {
         }
         var icon: String {
             switch self { case .accounts: return "person.2"; case .games: return "gamecontroller"; case .scripts: return "curlybraces"; case .settings: return "gearshape" }
+        }
+    }
+
+    private enum MatrixLayout: String, CaseIterable, Identifiable {
+        case automatic
+        case one, two, three, four
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .automatic: return "自动"
+            case .one: return "每行 1 个"
+            case .two: return "每行 2 个"
+            case .three: return "每行 3 个"
+            case .four: return "每行 4 个"
+            }
+        }
+        var fixedCount: Int? {
+            switch self {
+            case .automatic: return nil
+            case .one: return 1
+            case .two: return 2
+            case .three: return 3
+            case .four: return 4
+            }
         }
     }
 
@@ -169,7 +195,12 @@ struct MacMultiOpenManagerView: View {
 
     private var workspace: some View {
         GeometryReader { proxy in
-            let columns = max(1, Int(proxy.size.width / 310))
+            let minimumCardWidth: CGFloat = 320
+            let automaticColumns = max(1, Int((proxy.size.width + 14) / (minimumCardWidth + 14)))
+            let columnCount = min(
+                matrixLayout.fixedCount ?? automaticColumns,
+                max(1, Int((proxy.size.width + 14) / (220 + 14)))
+            )
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .firstTextBaseline) {
@@ -184,16 +215,32 @@ struct MacMultiOpenManagerView: View {
                                 .font(.system(size: 13)).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Menu {
+                            ForEach(MatrixLayout.allCases) { layout in
+                                Button {
+                                    matrixLayout = layout
+                                } label: {
+                                    if matrixLayout == layout {
+                                        Label(layout.title, systemImage: "checkmark")
+                                    } else {
+                                        Text(layout.title)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label("布局：\(matrixLayout.title)", systemImage: "rectangle.split.3x1")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .buttonStyle(MacManagerButtonStyle(tint: .gray))
                         Button { selectedSection = .accounts } label: { Label("管理账号", systemImage: "person.2") }
                             .buttonStyle(MacManagerButtonStyle(tint: .blue))
                     }
                     if liveWorkspace.items.isEmpty {
                         EmptyMatrixView { selectedSection = .accounts }
                     } else {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 260), spacing: 14), count: columns), spacing: 14) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 220), spacing: 14), count: columnCount), spacing: 14) {
                             ForEach(liveWorkspace.items) { item in
                                 MacGameMatrixCell(item: item, workspace: liveWorkspace)
-                                    .frame(minHeight: 420)
                             }
                         }
                     }
@@ -248,8 +295,13 @@ private struct MacGameMatrixCell: View {
             }
             .padding(.horizontal, 10).frame(height: 38).background(Color(red: 0.08, green: 0.56, blue: 0.57))
             MacEmbeddedGameView(account: item.account).id(reloadKey)
-                .background(Color.black)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The game is a portrait surface: width:height = 9:16.
+                // Keeping this ratio prevents the WebView from being laid
+                // out as a landscape rectangle with side bars.
+                .aspectRatio(9.0 / 16.0, contentMode: .fit)
         }
+        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .overlay { RoundedRectangle(cornerRadius: 9).stroke(Color.cyan.opacity(0.55), lineWidth: 1) }
         .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
