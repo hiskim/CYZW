@@ -46,6 +46,10 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
     private var authenticatedAccountID = ""
     private let schemeHandler = MacGameSchemeHandler()
     private lazy var webView: WKWebView = makeWebView()
+    private let loadingOverlay = NSView()
+    private let loadingSpinner = NSProgressIndicator()
+    private let loadingLabel = NSTextField(labelWithString: "正在准备游戏资源…")
+    private var gameSessionStarted = false
 
     init(account: Account) {
         self.account = account
@@ -53,10 +57,47 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         addSubview(webView)
+
+        // Do not leave an empty white WebKit surface visible while the shared
+        // CDN warm-up and account authentication are in flight.
+        loadingOverlay.wantsLayer = true
+        loadingOverlay.layer?.backgroundColor = NSColor(calibratedRed: 0.063, green: 0.075, blue: 0.094, alpha: 1).cgColor
+        loadingOverlay.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(loadingOverlay)
+
+        loadingSpinner.style = .spinning
+        loadingSpinner.controlSize = .regular
+        loadingSpinner.isIndeterminate = true
+        loadingSpinner.startAnimation(nil)
+        loadingSpinner.translatesAutoresizingMaskIntoConstraints = false
+        loadingOverlay.addSubview(loadingSpinner)
+
+        loadingLabel.textColor = .secondaryLabelColor
+        loadingLabel.font = .systemFont(ofSize: 14)
+        loadingLabel.alignment = .center
+        loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+        loadingOverlay.addSubview(loadingLabel)
+
+        NSLayoutConstraint.activate([
+            loadingOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            loadingOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            loadingOverlay.topAnchor.constraint(equalTo: topAnchor),
+            loadingOverlay.bottomAnchor.constraint(equalTo: bottomAnchor),
+            loadingSpinner.centerXAnchor.constraint(equalTo: loadingOverlay.centerXAnchor),
+            loadingSpinner.centerYAnchor.constraint(equalTo: loadingOverlay.centerYAnchor, constant: -14),
+            loadingLabel.topAnchor.constraint(equalTo: loadingSpinner.bottomAnchor, constant: 12),
+            loadingLabel.centerXAnchor.constraint(equalTo: loadingOverlay.centerXAnchor)
+        ])
     }
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    deinit {
+        if gameSessionStarted {
+            Task { await MacCDNResourceManager.shared.endGameSession() }
+        }
     }
 
     override func layout() {
@@ -72,7 +113,12 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
                 // actor task here means an early account click does not create
                 // a second download or race the cache warm-up.
                 let manifest = await MacCDNResourceManager.shared.prepareForLaunch()
+                loadingLabel.stringValue = "正在登录游戏…"
+                NSLog("[ios2-macos] account authentication started: %@", account.fileName)
                 let authentication = try await MacWebKitAuth.authenticate(account: account, manifest: manifest)
+                NSLog("[ios2-macos] account authentication complete: %@", account.fileName)
+                await MacCDNResourceManager.shared.beginGameSession()
+                gameSessionStarted = true
                 authenticatedAccountID = authentication.accountID
                 schemeHandler.setBundleVersions(authentication.bundleVersions)
                 webView.configuration.userContentController.addUserScript(
@@ -81,8 +127,11 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
                                   injectionTime: .atDocumentStart, forMainFrameOnly: true)
                 )
                 let entry = URL(string: "ios2-game://app/index.html?revision=macos-webkit-2")!
+                NSLog("[ios2-macos] loading WebKit game document: %@", entry.absoluteString)
                 webView.load(URLRequest(url: entry))
             } catch {
+                loadingSpinner.stopAnimation(nil)
+                loadingLabel.stringValue = "登录失败：\(error.localizedDescription)"
                 showError(title: "账号登录失败", message: error.localizedDescription)
             }
         }
@@ -253,7 +302,14 @@ private final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMes
         showNavigationError(error)
     }
 
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loadingOverlay.isHidden = true
+        NSLog("[ios2-macos] WebKit game document loaded")
+    }
+
     private func showNavigationError(_ error: Error) {
+        loadingSpinner.stopAnimation(nil)
+        loadingLabel.stringValue = "游戏页面加载失败：\(error.localizedDescription)"
         let alert = NSAlert(error: error)
         alert.beginSheetModal(for: window ?? NSApp.mainWindow ?? NSWindow())
     }
@@ -445,7 +501,7 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         NSLog("[ios2-macos] CDN request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
         Task { @MainActor [weak self] in
             do {
-                let data = try await MacCDNResourceManager.shared.data(for: remoteURL)
+                let data = try await MacCDNResourceManager.shared.data(for: remoteURL, source: "game")
                 self?.respond(urlSchemeTask, data: data, url: requestURL)
             } catch {
                 NSLog("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)

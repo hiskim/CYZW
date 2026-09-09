@@ -98,6 +98,8 @@ struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
     #if os(macOS)
     @State private var showingClearCDNConfirmation = false
+    @AppStorage(MacCDNResourceManager.automaticCachingKey) private var automaticCachingEnabled = true
+    @AppStorage(MacCDNResourceManager.idleOnlyCachingKey) private var idleOnlyCachingEnabled = false
     #endif
 
     var body: some View {
@@ -169,6 +171,19 @@ struct SettingsView: View {
                         Text("所有账号和实例共享同一份 CDN 缓存。")
                             .font(tokens.font(.md))
 
+                        Toggle("自动缓存 CDN 资源", isOn: $automaticCachingEnabled)
+                            .font(tokens.font(.md, weight: .medium))
+                        Text("开启后，应用会自动准备 CDN 资源；关闭后只由游戏进入后按需缓存。")
+                            .font(tokens.font(.sm))
+                            .foregroundStyle(tokens.color(.textMuted))
+
+                        Toggle("仅空闲时自动缓存", isOn: $idleOnlyCachingEnabled)
+                            .font(tokens.font(.md, weight: .medium))
+                            .disabled(!automaticCachingEnabled)
+                        Text("开启后，仅在没有登录账号时后台预缓存；登录后暂停，改由游戏自身按需缓存。")
+                            .font(tokens.font(.sm))
+                            .foregroundStyle(tokens.color(.textMuted))
+
                         if let status = viewModel.cdnCacheStatus {
                             Text("已缓存 \(status.fileCount) 个文件 · \(ByteCountFormatter.string(fromByteCount: status.byteCount, countStyle: .file))")
                                 .font(tokens.font(.md, weight: .medium))
@@ -229,6 +244,12 @@ struct SettingsView: View {
 #if os(macOS)
         .task {
             viewModel.refreshCDNCacheStatus()
+        }
+        .onChange(of: automaticCachingEnabled) { _ in
+            Task { await MacCDNResourceManager.shared.updateCachingSettings() }
+        }
+        .onChange(of: idleOnlyCachingEnabled) { _ in
+            Task { await MacCDNResourceManager.shared.updateCachingSettings() }
         }
         .confirmationDialog(
             "确认清理 CDN 缓存？",
