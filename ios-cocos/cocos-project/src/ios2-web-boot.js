@@ -74,6 +74,8 @@
     var IOS2_RUNTIME_CLEANUP_DELAY_MS = 5000;
     var IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS = 15000;
     var IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS = 2500;
+    var IOS2_RUNTIME_MEMORY_ROOT_LIMIT = 6;
+    var IOS2_RUNTIME_MEMORY_BRANCH_DEPTH = 3;
     var IOS2_RUNTIME_MEMORY_PAGE_NAMES = {
         Home: true,
         MainPanel: true,
@@ -90,7 +92,8 @@
         lastSample: 0,
         pendingCleanupReason: '',
         pendingSampleReason: '',
-        switchCount: 0
+        switchCount: 0,
+        lastSnapshot: null
     };
     var runtimeLoadingState = {
         configured: false,
@@ -105,40 +108,132 @@
         return assets && typeof assets.count === 'number' ? assets.count : -1;
     }
 
-    function sceneNodeCount() {
+    function nodeMemoryLabel(node) {
+        var name = node && (node.name || node._name);
+        if (!name && node && node.constructor) name = node.constructor.name;
+        name = String(name || '<unnamed>');
+        return name.length > 48 ? name.slice(0, 45) + '...' : name;
+    }
+
+    function incrementNodeMemoryCount(counts, key) {
+        counts[key] = (counts[key] || 0) + 1;
+    }
+
+    function sceneNodeProfile() {
         try {
             var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
-            if (!scene) return -1;
-            var count = 0;
-            var stack = [scene];
+            if (!scene) return { nodes: -1, activeNodes: -1, inactiveNodes: -1, pendingDestroyNodes: -1 };
+            var profile = {
+                nodes: 0,
+                activeNodes: 0,
+                inactiveNodes: 0,
+                pendingDestroyNodes: 0,
+                rootCounts: {},
+                branchCounts: {}
+            };
+            var stack = [{ node: scene, depth: 0, root: '', branch: '' }];
             while (stack.length) {
-                var node = stack.pop();
+                var entry = stack.pop();
+                var node = entry.node;
                 if (!node) continue;
-                count++;
+                profile.nodes++;
+                if (node.activeInHierarchy !== false && node.active !== false) profile.activeNodes++;
+                else profile.inactiveNodes++;
+                try {
+                    if (cc.isValid && cc.isValid(node) && !cc.isValid(node, true)) {
+                        profile.pendingDestroyNodes++;
+                    }
+                } catch (ignored) {}
+
+                var depth = entry.depth;
+                var root = entry.root;
+                var branch = entry.branch;
+                if (depth === 1) {
+                    root = nodeMemoryLabel(node);
+                    branch = root;
+                    incrementNodeMemoryCount(profile.rootCounts, root);
+                } else if (depth > 1) {
+                    if (depth <= IOS2_RUNTIME_MEMORY_BRANCH_DEPTH) {
+                        branch += '/' + nodeMemoryLabel(node);
+                    }
+                    incrementNodeMemoryCount(profile.rootCounts, root || '<scene>');
+                    incrementNodeMemoryCount(profile.branchCounts, branch || root || '<scene>');
+                }
                 var children = node._children || node.children || [];
-                for (var index = 0; index < children.length; index++) stack.push(children[index]);
+                for (var index = 0; index < children.length; index++) {
+                    stack.push({ node: children[index], depth: depth + 1, root: root, branch: branch });
+                }
             }
-            return count;
+            return profile;
         } catch (error) {
-            return -1;
+            return { nodes: -1, activeNodes: -1, inactiveNodes: -1, pendingDestroyNodes: -1 };
         }
     }
 
+    function sortedNodeMemoryCounts(counts, limit) {
+        if (!counts) return [];
+        return Object.keys(counts).sort(function (left, right) {
+            var difference = counts[right] - counts[left];
+            return difference || (left < right ? -1 : left > right ? 1 : 0);
+        }).slice(0, limit || IOS2_RUNTIME_MEMORY_ROOT_LIMIT).map(function (key) {
+            return key + ':' + counts[key];
+        });
+    }
+
+    function nodeMemoryGrowth(counts, previousCounts) {
+        if (!counts || !previousCounts) return [];
+        var keys = {};
+        Object.keys(counts).forEach(function (key) { keys[key] = true; });
+        Object.keys(previousCounts).forEach(function (key) { keys[key] = true; });
+        return Object.keys(keys).map(function (key) {
+            return { key: key, value: (counts[key] || 0) - (previousCounts[key] || 0) };
+        }).filter(function (item) {
+            return item.value !== 0;
+        }).sort(function (left, right) {
+            var difference = Math.abs(right.value) - Math.abs(left.value);
+            return difference || (left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+        }).slice(0, IOS2_RUNTIME_MEMORY_ROOT_LIMIT).map(function (item) {
+            return item.key + (item.value > 0 ? ':+' : ':') + item.value;
+        });
+    }
+
     function runtimeMemorySnapshot() {
+        var profile = sceneNodeProfile();
         return {
             assets: managedAssetCount(),
-            nodes: sceneNodeCount()
+            nodes: profile.nodes,
+            activeNodes: profile.activeNodes,
+            inactiveNodes: profile.inactiveNodes,
+            pendingDestroyNodes: profile.pendingDestroyNodes,
+            rootCounts: profile.rootCounts,
+            branchCounts: profile.branchCounts
         };
     }
 
-    function formatRuntimeMemorySnapshot(snapshot) {
-        return 'assets=' + snapshot.assets + ', nodes=' + snapshot.nodes;
+    function formatRuntimeMemorySnapshot(snapshot, previousSnapshot) {
+        var parts = [
+            'assets=' + snapshot.assets,
+            'nodes=' + snapshot.nodes,
+            'active=' + snapshot.activeNodes,
+            'inactive=' + snapshot.inactiveNodes,
+            'pendingDestroy=' + snapshot.pendingDestroyNodes
+        ];
+        var roots = sortedNodeMemoryCounts(snapshot.rootCounts);
+        var branches = sortedNodeMemoryCounts(snapshot.branchCounts);
+        var growth = nodeMemoryGrowth(snapshot.branchCounts, previousSnapshot && previousSnapshot.branchCounts);
+        if (roots.length) parts.push('roots=[' + roots.join(', ') + ']');
+        if (branches.length) parts.push('branches=[' + branches.join(', ') + ']');
+        if (growth.length) parts.push('growth=[' + growth.join(', ') + ']');
+        return parts.join(', ');
     }
 
     function postRuntimeMemorySnapshot(reason, phase, snapshot) {
         snapshot = snapshot || runtimeMemorySnapshot();
+        var previousSnapshot = runtimeMemoryState.lastSnapshot;
+        var formatted = formatRuntimeMemorySnapshot(snapshot, previousSnapshot);
         console.log('[ios2-web] runtime memory (' + (reason || 'sample') + ')' +
-            (phase ? ' ' + phase : '') + ' ' + formatRuntimeMemorySnapshot(snapshot));
+            (phase ? ' ' + phase : '') + ' ' + formatted);
+        runtimeMemoryState.lastSnapshot = snapshot;
         var handlers = window.webkit && window.webkit.messageHandlers;
         var handler = handlers && handlers.ios2Game;
         if (handler && typeof handler.postMessage === 'function') {
@@ -149,7 +244,11 @@
                     reason: reason || 'sample',
                     phase: phase || 'sample',
                     assets: snapshot.assets,
-                    nodes: snapshot.nodes
+                    nodes: snapshot.nodes,
+                    activeNodes: snapshot.activeNodes,
+                    inactiveNodes: snapshot.inactiveNodes,
+                    pendingDestroyNodes: snapshot.pendingDestroyNodes,
+                    nodeDetails: formatted
                 });
             } catch (ignored) {}
         }
