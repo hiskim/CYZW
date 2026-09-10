@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260910-webkit-retina-asset-lifetime-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260910-webgl-pvr-recovery-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     // Keep serial startup responsive while still allowing the previous page's
@@ -13,6 +13,23 @@
     var IOS2_STARTUP_QUIET_MS = 250;
     var IOS2_STARTUP_MIN_SETTLE_MS = 400;
     var IOS2_STARTUP_MAX_SETTLE_MS = 1200;
+    var IOS2_PVR_RECOVERY_CONCURRENCY = 2;
+    var IOS2_PVR_RECOVERY_RESUME_DELAY_MS = 250;
+
+    // A WebGL context loss invalidates GPU texture contents, while keeping
+    // JavaScript Texture2D assets alive. PVR source bytes are intentionally
+    // not retained after their initial upload, so the recovery path fetches
+    // them from the app's native CDN cache only when the context returns.
+    var astcPVRRecoveryState = {
+        installed: false,
+        contextLost: false,
+        documentWasHidden: false,
+        scheduled: false,
+        recovering: false,
+        rerunRequested: false,
+        pendingReason: '',
+        sequence: 0
+    };
 
     function showFatal(message) {
         var panel = document.getElementById('ios2WebError');
@@ -1273,6 +1290,338 @@
     }
     window.__ios2InstallEncryptedBundleLoader = installEncryptedBundleLoader;
 
+    function postWebGraphicsLog(event, message, details) {
+        console.log('[ios2-web] ' + message);
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        var handler = handlers && handlers.ios2Game;
+        if (!handler || typeof handler.postMessage !== 'function') return;
+        try {
+            var payload = {
+                type: 'graphics',
+                instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                event: event,
+                message: message
+            };
+            if (details) {
+                Object.keys(details).forEach(function (key) {
+                    var value = details[key];
+                    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                        payload[key] = value;
+                    }
+                });
+            }
+            handler.postMessage(payload);
+        } catch (ignored) {}
+    }
+
+    function parseASTCPVRBuffer(file) {
+        var bytes;
+        if (file instanceof ArrayBuffer) {
+            bytes = new Uint8Array(file);
+        } else if (file && file.buffer instanceof ArrayBuffer) {
+            bytes = new Uint8Array(file.buffer, file.byteOffset || 0,
+                file.byteLength === undefined ? file.length : file.byteLength);
+        }
+        if (!bytes || bytes.length < 16 || bytes[0] !== 0x13 || bytes[1] !== 0xAB ||
+            bytes[2] !== 0xA1 || bytes[3] !== 0x5C) {
+            throw new Error('Unsupported PVR texture header');
+        }
+        var blockX = bytes[4];
+        var blockY = bytes[5];
+        var blockZ = bytes[6];
+        var width = bytes[7] | bytes[8] << 8 | bytes[9] << 16;
+        var height = bytes[10] | bytes[11] << 8 | bytes[12] << 16;
+        var formats = {
+            '4x4': 0x93B0, '5x4': 0x93B1, '5x5': 0x93B2,
+            '6x5': 0x93B3, '6x6': 0x93B4, '8x5': 0x93B5,
+            '8x6': 0x93B6, '8x8': 0x93B7, '10x5': 0x93B8,
+            '10x6': 0x93B9, '10x8': 0x93BA, '10x10': 0x93BB,
+            '12x10': 0x93BC, '12x12': 0x93BD
+        };
+        var internalFormat = formats[blockX + 'x' + blockY];
+        if (blockZ !== 1 || !width || !height || !internalFormat) {
+            throw new Error('Unsupported ASTC texture header');
+        }
+        var payloadLength = Math.ceil(width / blockX) * Math.ceil(height / blockY) * 16;
+        if (16 + payloadLength > bytes.length) {
+            throw new Error('Truncated ASTC texture payload');
+        }
+        return {
+            _compressed: true,
+            _data: new Uint8Array(bytes.buffer, bytes.byteOffset + 16, payloadLength),
+            width: width,
+            height: height,
+            __ios2ASTCFormat: internalFormat
+        };
+    }
+
+    function isRecoverableASTCPVRTexture(texture) {
+        if (!texture || !texture.loaded || !texture.__ios2ASTCPVRRecovery) return false;
+        try {
+            if (window.cc && cc.isValid && !cc.isValid(texture)) return false;
+        } catch (ignored) {
+            return false;
+        }
+        var url = texture.__ios2ASTCPVRRecovery.url;
+        return typeof url === 'string' && url.indexOf('ios2-game://') === 0;
+    }
+
+    function collectRecoverableASTCPVRTextures() {
+        var manager = window.cc && cc.assetManager;
+        var assets = manager && manager.assets;
+        if (!assets || typeof assets.forEach !== 'function') return [];
+        var textures = [];
+        assets.forEach(function (asset) {
+            if (isRecoverableASTCPVRTexture(asset)) textures.push(asset);
+        });
+        return textures;
+    }
+
+    function uploadASTCPVRTexture(textureAsset, data, preserveTextureIdentity) {
+        var renderer = cc.renderer;
+        var device = renderer && renderer.device;
+        var gl = device && device._gl;
+        if (!renderer || !device || !gl) throw new Error('WebGL device is unavailable');
+        if (typeof gl.isContextLost === 'function' && gl.isContextLost()) {
+            throw new Error('WebGL context is lost');
+        }
+        var extension = gl.getExtension('WEBGL_compressed_texture_astc');
+        if (!extension) throw new Error('ASTC WebGL extension is unavailable');
+
+        var previous = textureAsset._texture;
+        var reusedTextureIdentity = preserveTextureIdentity && previous && previous._device === device;
+        var replacement = reusedTextureIdentity ? previous : null;
+        if (replacement) {
+            // Materials retain the renderer Texture2D, not the Cocos asset.
+            // Keep that object stable so active Sprite/FGUI/Spine material
+            // properties automatically see the recreated WebGL handle.
+            try {
+                if (replacement._glID) gl.deleteTexture(replacement._glID);
+            } catch (ignored) {}
+            replacement._glID = gl.createTexture();
+            if (!replacement._glID) throw new Error('Unable to recreate WebGL texture');
+            replacement._width = data.width;
+            replacement._height = data.height;
+            replacement._genMipmap = false;
+        } else {
+            replacement = new renderer.Texture2D(device, {
+                images: [],
+                width: data.width,
+                height: data.height,
+                format: cc.Texture2D.PixelFormat.RGBA8888,
+                genMipmaps: false
+            });
+        }
+        try {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, replacement._glID);
+            gl.compressedTexImage2D(gl.TEXTURE_2D, 0, data.__ios2ASTCFormat,
+                data.width, data.height, 0, data._data);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            device._restoreTexture(0);
+        } catch (error) {
+            if (!reusedTextureIdentity) replacement.destroy();
+            throw error;
+        }
+
+        if (previous && previous !== replacement) previous.destroy();
+        textureAsset._texture = replacement;
+        // Do not retain data._data here. This image marker keeps the existing
+        // Cocos Texture2D contract without pinning the PVR ArrayBuffer.
+        textureAsset._image = { width: data.width, height: data.height, __ios2Compressed: true };
+        textureAsset.width = data.width;
+        textureAsset.height = data.height;
+        textureAsset._packable = false;
+        textureAsset.loaded = true;
+        textureAsset.emit('load');
+    }
+
+    function rememberASTCPVRRecoverySource(textureAsset, data) {
+        var url = textureAsset && (textureAsset._nativeUrl || textureAsset.nativeUrl);
+        if (typeof url !== 'string' || url.indexOf('ios2-game://') !== 0) return;
+        // Deliberately retain metadata only. PVR bytes are refetched from the
+        // native CDN cache after a context loss instead of remaining in JS.
+        textureAsset.__ios2ASTCPVRRecovery = {
+            url: url,
+            width: data.width,
+            height: data.height
+        };
+    }
+
+    function recoverASTCPVRTexture(texture) {
+        if (!isRecoverableASTCPVRTexture(texture)) return Promise.resolve({ skipped: true });
+        var url = texture.__ios2ASTCPVRRecovery.url;
+        return fetch(url, { cache: 'force-cache' })
+            .then(function (response) {
+                if (!response || !response.ok) {
+                    throw new Error('PVR recovery request failed: ' + (response && response.status || 'unknown'));
+                }
+                return response.arrayBuffer();
+            })
+            .then(function (buffer) {
+                var data = null;
+                try {
+                    if (!isRecoverableASTCPVRTexture(texture)) return { skipped: true };
+                    data = parseASTCPVRBuffer(buffer);
+                    uploadASTCPVRTexture(texture, data, true);
+                    return { restored: true };
+                } finally {
+                    // The temporary view is the final reference to the PVR
+                    // bytes once this callback returns.
+                    if (data) data._data = null;
+                    data = null;
+                    buffer = null;
+                }
+            });
+    }
+
+    function scheduleASTCPVRRecovery(reason) {
+        var state = astcPVRRecoveryState;
+        reason = reason || 'manual';
+        state.pendingReason = reason;
+        if (state.recovering) {
+            state.rerunRequested = true;
+            return true;
+        }
+        if (state.contextLost || (window.document && document.hidden)) {
+            return false;
+        }
+        if (state.scheduled) return true;
+        state.scheduled = true;
+        postWebGraphicsLog('pvr-recovery-scheduled',
+            'PVR recovery scheduled (reason=' + reason + ')', { reason: reason });
+        window.setTimeout(function () {
+            state.scheduled = false;
+            runASTCPVRRecovery(state.pendingReason || reason);
+        }, IOS2_PVR_RECOVERY_RESUME_DELAY_MS);
+        return true;
+    }
+
+    function runASTCPVRRecovery(reason) {
+        var state = astcPVRRecoveryState;
+        reason = reason || 'manual';
+        state.pendingReason = '';
+        if (state.recovering) {
+            state.rerunRequested = true;
+            return;
+        }
+        if (state.contextLost || (window.document && document.hidden)) {
+            state.pendingReason = reason;
+            postWebGraphicsLog('pvr-recovery-deferred',
+                'PVR recovery deferred (reason=' + reason + ', contextLost=' + state.contextLost + ')', {
+                    reason: reason,
+                    contextLost: state.contextLost
+                });
+            return;
+        }
+
+        var textures = collectRecoverableASTCPVRTextures();
+        var startedAt = Date.now();
+        var restored = 0;
+        var failed = 0;
+        var skipped = 0;
+        var cursor = 0;
+        var examples = [];
+        state.recovering = true;
+        state.rerunRequested = false;
+        var sequence = ++state.sequence;
+        postWebGraphicsLog('pvr-recovery-start',
+            'PVR recovery started (reason=' + reason + ', targets=' + textures.length + ')', {
+                reason: reason,
+                targets: textures.length
+            });
+
+        function finish() {
+            state.recovering = false;
+            var elapsedMs = Date.now() - startedAt;
+            var message = 'PVR recovery complete (reason=' + reason + ', targets=' + textures.length +
+                ', restored=' + restored + ', failed=' + failed + ', skipped=' + skipped +
+                ', elapsedMs=' + elapsedMs + ')';
+            if (examples.length) message += ' failures=[' + examples.join(' | ') + ']';
+            postWebGraphicsLog('pvr-recovery-complete', message, {
+                reason: reason,
+                targets: textures.length,
+                restored: restored,
+                failed: failed,
+                skipped: skipped,
+                elapsedMs: elapsedMs
+            });
+            if (state.rerunRequested && !state.contextLost && !(window.document && document.hidden)) {
+                state.rerunRequested = false;
+                scheduleASTCPVRRecovery('queued after recovery ' + sequence);
+            }
+        }
+
+        function next() {
+            if (cursor >= textures.length) return Promise.resolve();
+            var texture = textures[cursor++];
+            return recoverASTCPVRTexture(texture).then(function (result) {
+                if (result && result.restored) restored++;
+                else skipped++;
+            }, function (error) {
+                failed++;
+                if (examples.length < 3) {
+                    examples.push(String(error && (error.message || error) || 'unknown'));
+                }
+            }).then(next);
+        }
+
+        var workers = [];
+        var workerCount = Math.min(IOS2_PVR_RECOVERY_CONCURRENCY, textures.length);
+        for (var index = 0; index < workerCount; index++) workers.push(next());
+        Promise.all(workers).then(finish, function (error) {
+            failed++;
+            if (examples.length < 3) examples.push(String(error && (error.message || error) || 'unknown'));
+            finish();
+        });
+    }
+
+    function installWebGLContextRecovery() {
+        var state = astcPVRRecoveryState;
+        var canvas = window.cc && cc.game && cc.game.canvas || document.getElementById('GameCanvas');
+        if (!canvas || state.installed) return;
+        state.installed = true;
+        state.documentWasHidden = !!(window.document && document.hidden);
+        canvas.addEventListener('webglcontextlost', function (event) {
+            if (event && typeof event.preventDefault === 'function') event.preventDefault();
+            state.contextLost = true;
+            state.rerunRequested = true;
+            var status = event && event.statusMessage || 'unknown';
+            postWebGraphicsLog('webgl-context-lost', 'WebGL context lost (status=' + status + ')', {
+                status: status
+            });
+        }, false);
+        canvas.addEventListener('webglcontextrestored', function () {
+            state.contextLost = false;
+            postWebGraphicsLog('webgl-context-restored', 'WebGL context restored');
+            scheduleASTCPVRRecovery('webgl context restored');
+        }, false);
+        canvas.addEventListener('webglcontextcreationerror', function (event) {
+            var status = event && event.statusMessage || 'unknown';
+            postWebGraphicsLog('webgl-context-creation-error',
+                'WebGL context creation error (status=' + status + ')', { status: status });
+        }, false);
+        if (window.document && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) {
+                    state.documentWasHidden = true;
+                    return;
+                }
+                if (state.documentWasHidden) {
+                    state.documentWasHidden = false;
+                    scheduleASTCPVRRecovery('document visible after hidden');
+                }
+            });
+        }
+        window.__ios2RecoverPVRTextures = function (reason) {
+            return scheduleASTCPVRRecovery(reason || 'manual');
+        };
+        postWebGraphicsLog('webgl-context-recovery-installed', 'WebGL context recovery installed');
+    }
+
     function installASTCTextureSupport() {
         var downloader = cc.assetManager && cc.assetManager.downloader;
         var parser = cc.assetManager && cc.assetManager.parser;
@@ -1284,6 +1633,7 @@
             if (parser.__ios2ASTCPVRParser) {
                 parser.register('.pvr', parser.__ios2ASTCPVRParser);
             }
+            installWebGLContextRecovery();
             return;
         }
         parser.__ios2ASTCInstalled = true;
@@ -1310,10 +1660,15 @@
 
         var originalPVRParser = parser.parsePVRTex;
         var astcPVRParser = function (file, options, onComplete) {
-            var buffer = file instanceof ArrayBuffer ? file : file && file.buffer;
-            var bytes = buffer ? new Uint8Array(buffer) : null;
-            if (!bytes || bytes.length < 16 || bytes[0] !== 0x13 || bytes[1] !== 0xAB ||
-                bytes[2] !== 0xA1 || bytes[3] !== 0x5C) {
+            var isASTC = false;
+            try {
+                var bytes = file instanceof ArrayBuffer ? new Uint8Array(file) :
+                    file && file.buffer instanceof ArrayBuffer && new Uint8Array(file.buffer,
+                        file.byteOffset || 0, file.byteLength === undefined ? file.length : file.byteLength);
+                isASTC = !!(bytes && bytes.length >= 4 && bytes[0] === 0x13 && bytes[1] === 0xAB &&
+                    bytes[2] === 0xA1 && bytes[3] === 0x5C);
+            } catch (ignored) {}
+            if (!isASTC) {
                 if (typeof originalPVRParser === 'function') {
                     originalPVRParser(file, options, onComplete);
                 } else {
@@ -1321,35 +1676,11 @@
                 }
                 return;
             }
-            var blockX = bytes[4];
-            var blockY = bytes[5];
-            var blockZ = bytes[6];
-            var width = bytes[7] | bytes[8] << 8 | bytes[9] << 16;
-            var height = bytes[10] | bytes[11] << 8 | bytes[12] << 16;
-            var formats = {
-                '4x4': 0x93B0, '5x4': 0x93B1, '5x5': 0x93B2,
-                '6x5': 0x93B3, '6x6': 0x93B4, '8x5': 0x93B5,
-                '8x6': 0x93B6, '8x8': 0x93B7, '10x5': 0x93B8,
-                '10x6': 0x93B9, '10x8': 0x93BA, '10x10': 0x93BB,
-                '12x10': 0x93BC, '12x12': 0x93BD
-            };
-            var internalFormat = formats[blockX + 'x' + blockY];
-            if (blockZ !== 1 || !width || !height || !internalFormat) {
-                onComplete(new Error('Unsupported ASTC texture header'));
-                return;
+            try {
+                onComplete(null, parseASTCPVRBuffer(file));
+            } catch (error) {
+                onComplete(error);
             }
-            var payloadLength = Math.ceil(width / blockX) * Math.ceil(height / blockY) * 16;
-            if (16 + payloadLength > bytes.length) {
-                onComplete(new Error('Truncated ASTC texture payload'));
-                return;
-            }
-            onComplete(null, {
-                _compressed: true,
-                _data: new Uint8Array(buffer, 16, payloadLength),
-                width: width,
-                height: height,
-                __ios2ASTCFormat: internalFormat
-            });
         };
         parser.__ios2ASTCPVRParser = astcPVRParser;
         parser.register('.pvr', astcPVRParser);
@@ -1365,41 +1696,14 @@
                     descriptor.set.call(this, data);
                     return;
                 }
-                var renderer = cc.renderer;
-                var device = renderer && renderer.device;
-                var gl = device && device._gl;
-                var extension = gl && gl.getExtension('WEBGL_compressed_texture_astc');
-                if (!extension) throw new Error('ASTC WebGL extension is unavailable');
-                if (this._texture) this._texture.destroy();
-                var texture = new renderer.Texture2D(device, {
-                    images: [],
-                    width: data.width,
-                    height: data.height,
-                    format: cc.Texture2D.PixelFormat.RGBA8888,
-                    genMipmaps: false
-                });
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, texture._glID);
-                gl.compressedTexImage2D(gl.TEXTURE_2D, 0, data.__ios2ASTCFormat,
-                    data.width, data.height, 0, data._data);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                device._restoreTexture(0);
-                this._texture = texture;
-                // The compressed payload has already been uploaded to GL. Keep
-                // only dimensions as the image handle; retaining every PVR
-                // ArrayBuffer here duplicates CPU memory for every texture and
-                // every WebKit instance.
-                this._image = { width: data.width, height: data.height, __ios2Compressed: true };
-                this.width = data.width;
-                this.height = data.height;
-                this._packable = false;
-                this.loaded = true;
-                this.emit('load');
+                uploadASTCPVRTexture(this, data);
+                rememberASTCPVRRecoverySource(this, data);
+                // The uploader stores dimensions only. Drop the temporary
+                // parser view promptly so the source ArrayBuffer can be GCed.
+                data._data = null;
             }
         });
+        installWebGLContextRecovery();
     }
 
     function reportCapabilities(gl) {

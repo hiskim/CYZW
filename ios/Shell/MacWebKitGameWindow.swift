@@ -332,6 +332,10 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                   body["phase"] as? String ?? "sample",
                   String(describing: body["assets"] ?? "?"),
                   String(describing: body["nodes"] ?? "?"))
+        case "graphics":
+            NSLog("[ios2-macos] WebGL %@: %@",
+                  body["event"] as? String ?? "event",
+                  body["message"] as? String ?? "")
         case "error":
             NSLog("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
         default:

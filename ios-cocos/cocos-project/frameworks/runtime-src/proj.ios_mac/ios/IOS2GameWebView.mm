@@ -1873,6 +1873,9 @@ static NSString *IOS2PVRBootstrap(NSString *instanceID, NSString *accountName, N
         NSLog(@"[ios2][web][%@] runtime memory (%@, %@): assets=%@ nodes=%@",
               body[@"instance"], body[@"reason"] ?: @"sample", body[@"phase"] ?: @"sample",
               body[@"assets"] ?: @"?", body[@"nodes"] ?: @"?");
+    } else if ([body[@"type"] isEqualToString:@"graphics"]) {
+        NSLog(@"[ios2][web][%@] WebGL %@: %@",
+              body[@"instance"], body[@"event"] ?: @"event", body[@"message"] ?: @"");
     } else if ([body[@"type"] isEqualToString:@"hsdk"]) {
         NSString *channel = [body[@"channel"] isKindOfClass:[NSString class]] ? body[@"channel"] : @"sdk";
         NSString *message = [body[@"message"] isKindOfClass:[NSString class]] ? body[@"message"] : @"{}";
