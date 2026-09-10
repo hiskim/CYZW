@@ -324,23 +324,61 @@ private struct AccountDeletionRequest: Identifiable {
 private struct AccountManagerRow: View {
     let account: Account; let isSelected: Bool; let isRunning: Bool
     let onToggle: () -> Void; let onStart: () -> Void; let onStop: () -> Void; let onDelete: () -> Void
+    @State private var isDeleteRevealed = false
+    @State private var dragOffset: CGFloat = 0
+
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: onToggle) { Image(systemName: isSelected ? "checkmark.square.fill" : "square").foregroundStyle(.cyan) }.buttonStyle(.plain)
-            Text(account.nickname).lineLimit(1).font(.system(size: 13, weight: .medium))
-            Spacer(minLength: 4)
-            Circle().fill(isRunning ? Color.green : Color.gray.opacity(0.55)).frame(width: 7, height: 7)
-            Button(action: isRunning ? onStop : onStart) { Image(systemName: isRunning ? "stop.fill" : "play.fill") }
-                .buttonStyle(.plain).foregroundStyle(isRunning ? .orange : .green)
-            Button(action: onDelete) { Image(systemName: "trash") }
-                .buttonStyle(.plain)
-                .foregroundStyle(.red)
-                .disabled(isRunning)
-                .help(isRunning ? "请先关闭实例" : "删除账号")
+        ZStack(alignment: .trailing) {
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 52, height: 34)
+                    .foregroundStyle(.white)
+                    .background(Color.red.opacity(isRunning ? 0.35 : 0.9))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .disabled(isRunning)
+            .help(isRunning ? "请先关闭实例" : "删除账号")
+            .opacity(isDeleteRevealed ? 1 : 0)
+            .zIndex(2)
+
+            HStack(spacing: 8) {
+                Button(action: onToggle) { Image(systemName: isSelected ? "checkmark.square.fill" : "square").foregroundStyle(.cyan) }.buttonStyle(.plain)
+                Text(account.nickname).lineLimit(1).font(.system(size: 13, weight: .medium))
+                Spacer(minLength: 4)
+                Circle().fill(isRunning ? Color.green : Color.gray.opacity(0.55)).frame(width: 7, height: 7)
+                Button(action: isRunning ? onStop : onStart) { Image(systemName: isRunning ? "stop.fill" : "play.fill") }
+                    .buttonStyle(.plain).foregroundStyle(isRunning ? .orange : .green)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
+            .background(isSelected ? Color.cyan.opacity(0.12) : Color.white.opacity(0.035))
+            .offset(x: dragOffset)
+            .contentShape(Rectangle())
+            .allowsHitTesting(!isDeleteRevealed)
+            .gesture(
+                DragGesture(minimumDistance: 8)
+                    .onChanged { value in
+                        guard value.translation.width < 0 || isDeleteRevealed else { return }
+                        let baseOffset: CGFloat = isDeleteRevealed ? -60 : 0
+                        dragOffset = max(-60, baseOffset + value.translation.width)
+                    }
+                    .onEnded { value in
+                        let shouldReveal = isDeleteRevealed
+                            ? value.translation.width > -24 ? false : true
+                            : value.translation.width < -34
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            isDeleteRevealed = shouldReveal
+                            dragOffset = shouldReveal ? -60 : 0
+                        }
+                    }
+            )
         }
-        .padding(.horizontal, 9).padding(.vertical, 9)
-        .background(isSelected ? Color.cyan.opacity(0.12) : Color.white.opacity(0.035))
+        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
     }
 }
 
