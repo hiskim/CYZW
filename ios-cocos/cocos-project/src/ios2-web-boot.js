@@ -67,10 +67,228 @@
         startupLastActivityAt: 0
     };
 
+    // WebKit runs the actual game in this shared boot path. Keep the normal
+    // cleanup conservative: deferred Cocos destruction and JavaScript GC are
+    // safe at a page transition, while releaseUnusedAssets() is not because
+    // FGUI/Spine and bridge code can retain resources outside Cocos' counter.
+    var IOS2_RUNTIME_CLEANUP_DELAY_MS = 5000;
+    var IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS = 15000;
+    var IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS = 2500;
+    var IOS2_RUNTIME_MEMORY_PAGE_NAMES = {
+        Home: true,
+        MainPanel: true,
+        LegionRoomPanel: true,
+        LegionScene: true,
+        legion: true,
+        NormalLoadingPanel: true
+    };
+    var runtimeMemoryState = {
+        cleanupTimer: null,
+        sampleTimer: null,
+        cleanupBusy: false,
+        lastCleanup: 0,
+        lastSample: 0,
+        pendingCleanupReason: '',
+        pendingSampleReason: '',
+        switchCount: 0
+    };
+    var runtimeLoadingState = {
+        configured: false,
+        relaxed: false,
+        presets: null,
+        downloader: null
+    };
+
     function managedAssetCount() {
         var manager = window.cc && window.cc.assetManager;
         var assets = manager && manager.assets;
         return assets && typeof assets.count === 'number' ? assets.count : -1;
+    }
+
+    function sceneNodeCount() {
+        try {
+            var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+            if (!scene) return -1;
+            var count = 0;
+            var stack = [scene];
+            while (stack.length) {
+                var node = stack.pop();
+                if (!node) continue;
+                count++;
+                var children = node._children || node.children || [];
+                for (var index = 0; index < children.length; index++) stack.push(children[index]);
+            }
+            return count;
+        } catch (error) {
+            return -1;
+        }
+    }
+
+    function runtimeMemorySnapshot() {
+        return {
+            assets: managedAssetCount(),
+            nodes: sceneNodeCount()
+        };
+    }
+
+    function formatRuntimeMemorySnapshot(snapshot) {
+        return 'assets=' + snapshot.assets + ', nodes=' + snapshot.nodes;
+    }
+
+    function postRuntimeMemorySnapshot(reason, phase, snapshot) {
+        snapshot = snapshot || runtimeMemorySnapshot();
+        console.log('[ios2-web] runtime memory (' + (reason || 'sample') + ')' +
+            (phase ? ' ' + phase : '') + ' ' + formatRuntimeMemorySnapshot(snapshot));
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        var handler = handlers && handlers.ios2Game;
+        if (handler && typeof handler.postMessage === 'function') {
+            try {
+                handler.postMessage({
+                    type: 'memory',
+                    instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                    reason: reason || 'sample',
+                    phase: phase || 'sample',
+                    assets: snapshot.assets,
+                    nodes: snapshot.nodes
+                });
+            } catch (ignored) {}
+        }
+        return snapshot;
+    }
+
+    function runRuntimeSoftCleanup(reason) {
+        if (runtimeMemoryState.cleanupBusy || !window.cc) return false;
+        runtimeMemoryState.cleanupBusy = true;
+        runtimeMemoryState.lastCleanup = Date.now();
+        reason = reason || 'page transition';
+        var before = postRuntimeMemorySnapshot(reason, 'before');
+        try {
+            if (cc.Object && typeof cc.Object._deferredDestroy === 'function') {
+                cc.Object._deferredDestroy();
+            }
+        } catch (error) {
+            console.warn('[ios2-web] deferred destroy failed', reason, error);
+        }
+        window.setTimeout(function () {
+            try {
+                if (cc.sys && typeof cc.sys.garbageCollect === 'function') {
+                    cc.sys.garbageCollect();
+                }
+            } catch (error) {
+                console.warn('[ios2-web] JavaScript garbageCollect failed', reason, error);
+            }
+            window.setTimeout(function () {
+                runtimeMemoryState.cleanupBusy = false;
+                var after = postRuntimeMemorySnapshot(reason, 'after');
+                console.log('[ios2-web] runtime soft cleanup complete (' + reason + ') ' +
+                    formatRuntimeMemorySnapshot(before) + ' -> ' + formatRuntimeMemorySnapshot(after));
+            }, 0);
+        }, 0);
+        return true;
+    }
+
+    function scheduleRuntimeSoftCleanup(reason, delayMs) {
+        if (!window.cc) return false;
+        reason = reason || 'page transition';
+        runtimeMemoryState.pendingCleanupReason = reason;
+        if (runtimeMemoryState.cleanupTimer) {
+            window.clearTimeout(runtimeMemoryState.cleanupTimer);
+            runtimeMemoryState.cleanupTimer = null;
+        }
+        var delay = delayMs === undefined ? IOS2_RUNTIME_CLEANUP_DELAY_MS : Number(delayMs) || 0;
+        var elapsed = runtimeMemoryState.lastCleanup ? Date.now() - runtimeMemoryState.lastCleanup : Infinity;
+        if (elapsed < IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS) {
+            delay = Math.max(delay, IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS - elapsed);
+        }
+        runtimeMemoryState.cleanupTimer = window.setTimeout(function () {
+            runtimeMemoryState.cleanupTimer = null;
+            var pendingReason = runtimeMemoryState.pendingCleanupReason || reason;
+            runtimeMemoryState.pendingCleanupReason = '';
+            runRuntimeSoftCleanup(pendingReason);
+        }, delay);
+        return true;
+    }
+
+    function scheduleRuntimeMemorySample(reason, delayMs) {
+        if (!window.cc) return false;
+        reason = reason || 'page transition';
+        runtimeMemoryState.pendingSampleReason = reason;
+        if (runtimeMemoryState.sampleTimer) return true;
+        var now = Date.now();
+        var elapsed = runtimeMemoryState.lastSample ? now - runtimeMemoryState.lastSample : Infinity;
+        var delay = delayMs === undefined ? 1000 : Number(delayMs) || 0;
+        if (elapsed < IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS) {
+            delay = Math.max(delay, IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS - elapsed);
+        }
+        runtimeMemoryState.sampleTimer = window.setTimeout(function () {
+            runtimeMemoryState.sampleTimer = null;
+            runtimeMemoryState.lastSample = Date.now();
+            var pendingReason = runtimeMemoryState.pendingSampleReason || reason;
+            runtimeMemoryState.pendingSampleReason = '';
+            postRuntimeMemorySnapshot(pendingReason, 'sample');
+        }, delay);
+        return true;
+    }
+
+    function isTrackedRuntimePage(name) {
+        if (typeof name !== 'string' || !name) return false;
+        if (IOS2_RUNTIME_MEMORY_PAGE_NAMES[name]) return true;
+        return /^(Home|Main|Legion).*(Panel|Scene)$/.test(name);
+    }
+
+    function installRuntimeMemoryHooks() {
+        if (window.__ios2RuntimeMemoryHooksInstalled) return;
+        window.__ios2RuntimeMemoryHooksInstalled = true;
+
+        // The remote launcher reports page transitions through console.log.
+        // Observe those messages without changing their original output.
+        if (window.console && typeof console.log === 'function' && !console.__ios2RuntimeMemoryHook) {
+            var originalLog = console.log;
+            console.__ios2RuntimeMemoryHook = true;
+            console.log = function () {
+                try {
+                    var parts = [];
+                    for (var index = 0; index < arguments.length && index < 4; index++) {
+                        var value = arguments[index];
+                        if (typeof value === 'string' || typeof value === 'number') parts.push(String(value));
+                    }
+                    var message = parts.join(' ');
+                    var pageMatch = /^(hide|show)\s+([^\s]+)/.exec(message);
+                    if (pageMatch && isTrackedRuntimePage(pageMatch[2])) {
+                        runtimeMemoryState.switchCount++;
+                        scheduleRuntimeMemorySample(pageMatch[1] + ' ' + pageMatch[2]);
+                        if (pageMatch[1] === 'hide' && runtimeMemoryState.switchCount >= 4) {
+                            scheduleRuntimeSoftCleanup('page switches=' + runtimeMemoryState.switchCount);
+                        }
+                    } else if (/\bc_battle(Pause|Resume)\b/.test(message)) {
+                        scheduleRuntimeMemorySample('battle transition');
+                    }
+                } catch (ignored) {}
+                return originalLog.apply(this, arguments);
+            };
+        }
+
+        if (window.document && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) scheduleRuntimeSoftCleanup('document hidden', 0);
+                scheduleRuntimeMemorySample(document.hidden ? 'document hidden' : 'document visible', 0);
+            });
+        }
+
+        try {
+            if (cc.game && cc.game.EVENT_HIDE && typeof cc.game.on === 'function') {
+                cc.game.on(cc.game.EVENT_HIDE, function () {
+                    scheduleRuntimeSoftCleanup('game hidden', 0);
+                });
+            }
+        } catch (error) {
+            console.warn('[ios2-web] runtime memory lifecycle hook unavailable', error);
+        }
+
+        window.__ios2RuntimeMemorySnapshot = function (reason) {
+            return postRuntimeMemorySnapshot(reason || 'manual', 'sample');
+        };
+        window.__ios2RuntimeSoftCleanup = runRuntimeSoftCleanup;
     }
 
     function releaseUnusedAssets(reason) {
@@ -264,8 +482,14 @@
         // independent WebContent heaps turn those queues into a large burst of
         // encrypted bytes, decoded source, image buffers and GPU uploads.
         var presets = manager.presets || {};
+        runtimeLoadingState.configured = true;
+        runtimeLoadingState.presets = {};
         function limitPreset(name, concurrency, requestsPerFrame) {
             if (!presets[name]) return;
+            runtimeLoadingState.presets[name] = {
+                maxConcurrency: presets[name].maxConcurrency,
+                maxRequestsPerFrame: presets[name].maxRequestsPerFrame
+            };
             presets[name].maxConcurrency = concurrency;
             presets[name].maxRequestsPerFrame = requestsPerFrame;
         }
@@ -277,6 +501,10 @@
 
         var downloader = manager.downloader;
         if (downloader) {
+            runtimeLoadingState.downloader = {
+                maxConcurrency: downloader.maxConcurrency,
+                maxRequestsPerFrame: downloader.maxRequestsPerFrame
+            };
             downloader.maxConcurrency = Math.min(Number(downloader.maxConcurrency) || 6, 2);
             downloader.maxRequestsPerFrame = Math.min(Number(downloader.maxRequestsPerFrame) || 6, 1);
         }
@@ -284,6 +512,42 @@
             'mode=' + (serial ? 'serial' : 'parallel'),
             'scene=' + (serial ? 1 : 2),
             'bundle=' + (serial ? 1 : 2), 'script=1');
+    }
+
+    function relaxInteractiveLoadingLimits() {
+        if (!runtimeLoadingState.configured || runtimeLoadingState.relaxed) return;
+        runtimeLoadingState.relaxed = true;
+        var presets = window.cc && cc.assetManager && cc.assetManager.presets;
+        var interactiveLimits = {
+            preload: [2, 2],
+            scene: [4, 4],
+            bundle: [4, 4],
+            script: [16, 16]
+        };
+        if (presets) {
+            Object.keys(interactiveLimits).forEach(function (name) {
+                var preset = presets[name];
+                if (!preset) return;
+                var limits = interactiveLimits[name];
+                var original = runtimeLoadingState.presets && runtimeLoadingState.presets[name];
+                var originalConcurrency = Number(original && original.maxConcurrency);
+                var originalRequests = Number(original && original.maxRequestsPerFrame);
+                preset.maxConcurrency = Math.min(originalConcurrency || limits[0], limits[0]);
+                preset.maxRequestsPerFrame = Math.min(originalRequests || limits[1], limits[1]);
+            });
+        }
+        var downloader = window.cc && cc.assetManager && cc.assetManager.downloader;
+        var originalDownloader = runtimeLoadingState.downloader;
+        if (downloader) {
+            var originalConcurrency = Number(originalDownloader && originalDownloader.maxConcurrency);
+            var originalRequests = Number(originalDownloader && originalDownloader.maxRequestsPerFrame);
+            downloader.maxConcurrency = Math.min(originalConcurrency || 4, 4);
+            downloader.maxRequestsPerFrame = Math.min(originalRequests || 4, 4);
+        }
+        console.log('[ios2-web] interactive loading limits restored',
+            'scene=' + (presets && presets.scene && presets.scene.maxRequestsPerFrame || 0),
+            'bundle=' + (presets && presets.bundle && presets.bundle.maxRequestsPerFrame || 0),
+            'downloader=' + (downloader && downloader.maxRequestsPerFrame || 0));
     }
 
     function notifyStartupReadyAfterSettling(sceneError) {
@@ -303,6 +567,9 @@
         function sendReady(forced) {
             if (assetReleaseState.startupReadySent) return;
             assetReleaseState.startupReadySent = true;
+            // Startup is now complete. Relax the multi-open safety throttle so
+            // interactive bundle loads do not process only one request/frame.
+            relaxInteractiveLoadingLimits();
             var elapsedMs = Date.now() - startedAt;
             var message = {
                 type: 'ready',
@@ -377,6 +644,7 @@
     function installAssetReleaseHooks() {
         if (window.__ios2AssetReleaseHooksInstalled) return;
         window.__ios2AssetReleaseHooksInstalled = true;
+        installRuntimeMemoryHooks();
         // Do not release assets when a WebView is backgrounded or hidden.
         // The instance can resume with the same scene and resource graph.
     }

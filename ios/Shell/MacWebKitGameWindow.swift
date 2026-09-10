@@ -326,6 +326,12 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
             handleHSDKRequest(requestJSON)
         case "console":
             NSLog("[ios2-macos] JS %@: %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
+        case "memory":
+            NSLog("[ios2-macos] Web runtime memory (%@, %@): assets=%@ nodes=%@",
+                  body["reason"] as? String ?? "sample",
+                  body["phase"] as? String ?? "sample",
+                  String(describing: body["assets"] ?? "?"),
+                  String(describing: body["nodes"] ?? "?"))
         case "error":
             NSLog("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
         default:
