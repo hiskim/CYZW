@@ -251,23 +251,41 @@ final class AccountLibraryViewModel: ObservableObject {
     }
 
     func delete(id: String) {
-        guard let account = accounts.first(where: { $0.id == id }) else { return }
-        do {
-            try LegacyBinAccountStore.deleteAccount(named: account.fileName)
-            accounts.removeAll { $0.id == id }
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        selectedIDs.remove(id)
+        delete(ids: [id])
+    }
 
-        remarks.removeValue(forKey: id)
+    func delete(ids: Set<String>) {
+        let targets = accounts.filter { ids.contains($0.id) }
+        guard !targets.isEmpty else { return }
+
+        var deletedIDs = Set<String>()
+        var failures: [String] = []
+        for account in targets {
+            do {
+                try LegacyBinAccountStore.deleteAccount(named: account.fileName)
+                deletedIDs.insert(account.id)
+            } catch {
+                failures.append(account.nickname)
+            }
+        }
+
+        guard !deletedIDs.isEmpty else {
+            errorMessage = "无法删除所选账号。"
+            return
+        }
+
+        accounts.removeAll { deletedIDs.contains($0.id) }
+        selectedIDs.subtract(deletedIDs)
+        remarks = remarks.filter { !deletedIDs.contains($0.key) }
         UserDefaults.standard.set(remarks, forKey: Self.remarksKey)
-        lastLoginTimestamps.removeValue(forKey: id)
+        lastLoginTimestamps = lastLoginTimestamps.filter { !deletedIDs.contains($0.key) }
         UserDefaults.standard.set(lastLoginTimestamps, forKey: Self.lastLoginTimestampsKey)
+        accountOrder = accountOrder.mapValues { $0.filter { !deletedIDs.contains($0) } }
+        UserDefaults.standard.set(accountOrder, forKey: Self.accountOrderKey)
         var assignments = groupAssignments
-        assignments.removeValue(forKey: id)
+        for id in deletedIDs { assignments.removeValue(forKey: id) }
         groupAssignments = assignments
+        errorMessage = failures.isEmpty ? nil : "以下账号未能删除：\(failures.joined(separator: "、"))。"
     }
 
     func toggleSelection(id: String) {

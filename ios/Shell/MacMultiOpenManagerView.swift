@@ -12,6 +12,8 @@ struct MacMultiOpenManagerView: View {
     @State private var sidebarVisible = true
     @State private var fixedColumnCount: Int?
     @State private var instanceWidth: CGFloat = 280
+    @State private var deletionRequest: AccountDeletionRequest?
+    @State private var deletionBlockedMessage: String?
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -50,6 +52,24 @@ struct MacMultiOpenManagerView: View {
                       allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
                       allowsMultipleSelection: true) { result in
             if case let .success(urls) = result { accounts.importFiles(from: urls) }
+        }
+        .alert(item: $deletionRequest) { request in
+            Alert(
+                title: Text(request.accounts.count == 1 ? "删除 \(request.accounts[0].nickname)？" : "删除 \(request.accounts.count) 个账号？"),
+                message: Text("删除后将移除本地 .bin 文件及账号记录，且无法恢复。"),
+                primaryButton: .destructive(Text("删除")) {
+                    accounts.delete(ids: Set(request.accounts.map(\.id)))
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+        .alert("无法删除账号", isPresented: Binding(
+            get: { deletionBlockedMessage != nil },
+            set: { if !$0 { deletionBlockedMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) { deletionBlockedMessage = nil }
+        } message: {
+            Text(deletionBlockedMessage ?? "")
         }
     }
 
@@ -118,6 +138,14 @@ struct MacMultiOpenManagerView: View {
                     .buttonStyle(MacManagerButtonStyle(tint: .red))
             }
             .controlSize(.small)
+            if !accounts.selectedAccounts.isEmpty {
+                Button { requestDeletion(of: accounts.selectedAccounts) } label: {
+                    Label("删除已选 \(accounts.selectedAccounts.count) 个", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(MacManagerButtonStyle(tint: .red))
+                .accessibilityLabel("删除已选账号")
+            }
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索账号", text: $searchText).textFieldStyle(.plain)
@@ -125,6 +153,12 @@ struct MacMultiOpenManagerView: View {
             .padding(8)
             .background(Color.white.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 7))
+            if let errorMessage = accounts.errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
@@ -150,7 +184,8 @@ struct MacMultiOpenManagerView: View {
                         isRunning: liveWorkspace.items.contains { $0.account.id == account.id },
                         onToggle: { accounts.toggleSelection(id: account.id) },
                         onStart: { start(account) },
-                        onStop: { stop(account) }
+                        onStop: { stop(account) },
+                        onDelete: { requestDeletion(of: [account]) }
                     )
                 }
             }
@@ -266,11 +301,29 @@ struct MacMultiOpenManagerView: View {
     private func stop(_ account: Account) { if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) { Task { await liveWorkspace.close(id: item.id) } } }
     private func closeAll() { let ids = liveWorkspace.items.map(\.id); Task { for id in ids { await liveWorkspace.close(id: id) } } }
     private func toggleAll() { accounts.toggleSelectAll() }
+
+    private func requestDeletion(of targets: [Account]) {
+        let runningCount = targets.filter { account in
+            liveWorkspace.items.contains { $0.account.id == account.id }
+        }.count
+        guard runningCount == 0 else {
+            deletionBlockedMessage = runningCount == 1
+                ? "请先关闭该账号的游戏实例，再删除账号。"
+                : "请先关闭这 \(runningCount) 个账号的游戏实例，再批量删除。"
+            return
+        }
+        deletionRequest = AccountDeletionRequest(accounts: targets)
+    }
+}
+
+private struct AccountDeletionRequest: Identifiable {
+    let id = UUID()
+    let accounts: [Account]
 }
 
 private struct AccountManagerRow: View {
     let account: Account; let isSelected: Bool; let isRunning: Bool
-    let onToggle: () -> Void; let onStart: () -> Void; let onStop: () -> Void
+    let onToggle: () -> Void; let onStart: () -> Void; let onStop: () -> Void; let onDelete: () -> Void
     var body: some View {
         HStack(spacing: 8) {
             Button(action: onToggle) { Image(systemName: isSelected ? "checkmark.square.fill" : "square").foregroundStyle(.cyan) }.buttonStyle(.plain)
@@ -279,7 +332,11 @@ private struct AccountManagerRow: View {
             Circle().fill(isRunning ? Color.green : Color.gray.opacity(0.55)).frame(width: 7, height: 7)
             Button(action: isRunning ? onStop : onStart) { Image(systemName: isRunning ? "stop.fill" : "play.fill") }
                 .buttonStyle(.plain).foregroundStyle(isRunning ? .orange : .green)
-            Button(action: {}) { Image(systemName: "ellipsis") }.buttonStyle(.plain).foregroundStyle(.secondary)
+            Button(action: onDelete) { Image(systemName: "trash") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .disabled(isRunning)
+                .help(isRunning ? "请先关闭实例" : "删除账号")
         }
         .padding(.horizontal, 9).padding(.vertical, 9)
         .background(isSelected ? Color.cyan.opacity(0.12) : Color.white.opacity(0.035))
