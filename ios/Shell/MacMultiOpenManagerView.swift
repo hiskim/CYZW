@@ -227,22 +227,16 @@ struct MacMultiOpenManagerView: View {
                     isPresentingImporter = true
                 } label: { Label("添加账号", systemImage: "plus") }
                     .buttonStyle(MacManagerButtonStyle(tint: .cyan))
-                Button { startAll() } label: {
-                    Label("启动全部", systemImage: "play.fill")
+                Button { startSelected() } label: {
+                    Label(accounts.selectedAccounts.isEmpty ? "启动已选" : "启动已选 \(accounts.selectedAccounts.count)", systemImage: "play.fill")
                 }
                     .buttonStyle(MacManagerButtonStyle(tint: .green))
+                    .disabled(accounts.selectedAccounts.isEmpty)
+                    .help(accounts.selectedAccounts.isEmpty ? "先勾选要启动的账号" : "启动勾选的账号（已运行实例自动跳过）")
                 Button { closeAll() } label: { Label("关闭全部", systemImage: "stop.fill") }
                     .buttonStyle(MacManagerButtonStyle(tint: .red))
             }
             .controlSize(.small)
-            if !accounts.selectedAccounts.isEmpty {
-                Button { requestDeletion(of: accounts.selectedAccounts) } label: {
-                    Label("删除已选 \(accounts.selectedAccounts.count) 个", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(MacManagerButtonStyle(tint: .red))
-                .accessibilityLabel("删除已选账号")
-            }
             // 分组列表移到搜索栏上方：分组标签 + 行尾「增加分组」按钮（见 groupFilterRow）。
             groupFilterRow
             HStack {
@@ -349,6 +343,11 @@ struct MacMultiOpenManagerView: View {
                             .foregroundStyle(.secondary)
                     }
                     sortModeButton
+                    // 删除勾选账号的入口：嵌在列表头行尾（行高固定），出现/消失
+                    // 不挤占控制区布局，避免整个列表上下跳动。
+                    if !accounts.selectedAccounts.isEmpty {
+                        deleteSelectedButton
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -401,6 +400,23 @@ struct MacMultiOpenManagerView: View {
         }
         .buttonStyle(.plain)
         .help(isSortingAccounts ? "完成排序" : "拖动排序（在当前分组内生效，重启保留）")
+    }
+
+    /// 删除勾选账号的小入口：图标 + 数量的描边小按钮（红色低视觉权重，防误触；
+    /// 点击后仍有二次确认弹窗兜底）。放在列表头行尾，勾选变化不引起页面跳动。
+    private var deleteSelectedButton: some View {
+        Button { requestDeletion(of: accounts.selectedAccounts) } label: {
+            Label("\(accounts.selectedAccounts.count)", systemImage: "trash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.red.opacity(0.9))
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(Color.red.opacity(0.10))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.red.opacity(0.30), lineWidth: 0.8))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("删除已选账号")
+        .help("删除勾选的账号（弹出确认后才会删除）")
     }
 
     /// 拖动排序的目标分组：当前过滤视图；未选分组 = "全部"伪分组。
@@ -497,11 +513,12 @@ struct MacMultiOpenManagerView: View {
         }
     }
 
-    private func startAll() {
-        let allAccounts = accounts.accounts
-        guard !allAccounts.isEmpty else { return }
-        allAccounts.forEach { accounts.recordLogin(for: $0) }
-        coordinator.openWorkspace(accounts: allAccounts)
+    /// 启动勾选的账号（卡片复选框选中项）；已运行实例由 WorkspaceViewModel.start 自动跳过。
+    private func startSelected() {
+        let targets = accounts.selectedAccounts
+        guard !targets.isEmpty else { return }
+        targets.forEach { accounts.recordLogin(for: $0) }
+        coordinator.openWorkspace(accounts: targets)
     }
 
     private func closeAll() {
