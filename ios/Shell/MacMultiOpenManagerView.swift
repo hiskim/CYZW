@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -46,15 +47,69 @@ struct MacMultiOpenManagerView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if sidebarVisible {
-                sidebar
+        ZStack {
+            // ── 第 0 层 · 底层氛围光（配方 01）：深色底 + 超大径向色斑。
+            // 玻璃的观感 = 对背后内容的高斯采样；没有这层，透出来的永远是
+            // 同一块纯色，玻璃只会变成灰板。顺序必须反过来：先铺氛围光，再做玻璃。
+            AmbientGlowBackground()
+                .ignoresSafeArea()
+
+            // ── 第 1 层 · 玻璃面板层。材质档位就是模糊半径的层级语言：
+            // 侧栏/面板 ≈ blur 50 → .thinMaterial；卡片 ≈ 28 → .ultraThinMaterial。
+            HStack(spacing: 0) {
+                if sidebarVisible {
+                    ZStack {
+                        Rectangle()
+                            .fill(.thinMaterial)                     // 03 侧栏模糊 ≈50
+                        Rectangle()
+                            .fill(Color.white.opacity(0.06))         // 02 玻璃填充 白 6%
+                    }
                     .frame(width: 304)
-                Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1)
+                    // 04 右缘 1px 描边（上亮下暗）——玻璃的「厚度感」全靠这条线
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.white.opacity(0.07)],
+                                                 startPoint: .top, endPoint: .bottom))
+                            .frame(width: 1)
+                    }
+                    // 06 外投影：黑 40%，向右偏移，把侧栏从大厅上「抬起」
+                    .shadow(color: .black.opacity(0.40), radius: 22, x: 6, y: 0)
+                    .zIndex(1)
+                }
+                ZStack {
+                    Rectangle()
+                        .fill(.thinMaterial)                         // 03 面板模糊 ≈50
+                    Rectangle()
+                        .fill(Color.white.opacity(0.04))             // 02 玻璃填充 白 4%
+                }
             }
-            workspace
+            .ignoresSafeArea()
+            // 05 窗口顶边 1px 内高光：整块玻璃的「顶面」受光线（左亮右暗）
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.white.opacity(0.05)],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(height: 1)
+                    .frame(maxWidth: .infinity)
+            }
+
+            // ── 内容层：尊重安全区，列宽与背景层一一对应。
+            HStack(spacing: 0) {
+                if sidebarVisible {
+                    sidebar
+                        .frame(width: 304)
+                    Color.clear.frame(width: 1)
+                }
+                workspace
+            }
         }
-        .background(Color(red: 0.055, green: 0.075, blue: 0.11))
+        .overlay(alignment: .top) {
+            // hiddenTitleBar 顶部拖拽兜底：一条 28pt 的隐形拖拽区，
+            // 按住可拖动窗口；条带内没有交互控件，不影响点击。
+            TitleBarDragRegion()
+                .frame(height: 28)
+                .frame(maxWidth: .infinity)
+        }
         .task { accounts.refresh() }
         .fileImporter(isPresented: $isPresentingImporter,
                       allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
@@ -101,7 +156,8 @@ struct MacMultiOpenManagerView: View {
                 Spacer()
             }
             .padding(.horizontal, 20)
-            .padding(.top, 20)
+            // 顶部额外留白：hiddenTitleBar 下红黄绿交通灯悬浮在侧栏上，为它们让位。
+            .padding(.top, 36)
             .padding(.bottom, 16)
 
             HStack(spacing: 4) {
@@ -774,7 +830,8 @@ private struct MacGameMatrixCell: View {
                 Button { reloadKey = UUID() } label: { Image(systemName: "arrow.clockwise") }
                 Button { Task { await workspace.close(id: item.id) } } label: { Image(systemName: "xmark") }.foregroundStyle(.red)
             }
-            .padding(.horizontal, 10).frame(height: 38).background(Color(red: 0.08, green: 0.56, blue: 0.57))
+            // 品牌青降为半透明 tint：卡片本体是玻璃，让氛围光透出来（配方 02）
+            .padding(.horizontal, 10).frame(height: 38).background(Color(red: 0.08, green: 0.56, blue: 0.57).opacity(0.45))
             MacEmbeddedGameView(account: item.account).id(reloadKey)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // The game is a portrait surface: width:height = 9:16.
@@ -783,9 +840,21 @@ private struct MacGameMatrixCell: View {
                 .aspectRatio(9.0 / 16.0, contentMode: .fit)
         }
         .frame(width: width)
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay { RoundedRectangle(cornerRadius: 9).stroke(Color.cyan.opacity(0.55), lineWidth: 1) }
-        .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
+        // 卡片叠在已模糊 50 档的面板上，游戏 WebView 又几乎铺满卡面，
+        // 再叠一层材质只会在圆角缝隙里可见、白耗一层模糊合成——只做 02/04/05/06。
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // 04 1px 白描边（Inside 对齐）+ 05 顶边内高光：上亮下暗渐变描边
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.10)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
+        }
+        // 06 外投影：黑 38% / y 18 / blur≈40（负 spread 由紧凑阴影近似）
+        .shadow(color: .black.opacity(0.38), radius: 20, x: 0, y: 18)
     }
 }
 
@@ -797,7 +866,8 @@ private struct EmptyMatrixView: View {
             Text("暂无运行中的账号").font(.system(size: 18, weight: .semibold))
             Button("选择账号并启动", action: onManage).buttonStyle(MacManagerButtonStyle(tint: .cyan))
         }
-        .frame(maxWidth: .infinity, minHeight: 420).background(Color.white.opacity(0.04)).clipShape(RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, minHeight: 420)
+        .glassCard(cornerRadius: 10)
     }
 }
 
@@ -807,5 +877,99 @@ private struct MacManagerButtonStyle: ButtonStyle {
         configuration.label.font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
             .padding(.horizontal, 11).padding(.vertical, 7).background(tint.opacity(configuration.isPressed ? 0.65 : 0.85)).clipShape(RoundedRectangle(cornerRadius: 6))
     }
+}
+
+// MARK: - 毛玻璃六步配方
+
+/// 配方 01 · 底层氛围光：深色底 + 5 个超大径向色斑（蓝/紫/青，30–60%）。
+/// 玻璃 = 对背后内容的高斯采样，这层就是被折射的「内容」；色斑错落布置，
+/// 避免叠成均匀色。如需更柔可用 .blur(60)（GPU 代价换更奶的边缘）。
+private struct AmbientGlowBackground: View {
+    var body: some View {
+        ZStack {
+            // 深色底（近黑、带蓝相），给色斑做画布
+            Color(red: 0.016, green: 0.024, blue: 0.047)
+            glow(0x3B82F6, opacity: 0.55, center: UnitPoint(x: 0.16, y: 0.10), radius: 780) // 蓝 · 左上主光
+            glow(0x8B5CF6, opacity: 0.48, center: UnitPoint(x: 0.88, y: 0.34), radius: 860) // 紫 · 右侧
+            glow(0x22D3EE, opacity: 0.40, center: UnitPoint(x: 0.26, y: 0.92), radius: 720) // 青 · 左下
+            glow(0x3B82F6, opacity: 0.30, center: UnitPoint(x: 0.62, y: 0.80), radius: 640) // 蓝 · 中下补光
+            glow(0x22D3EE, opacity: 0.30, center: UnitPoint(x: 0.78, y: 0.06), radius: 520) // 青 · 顶缘补光
+        }
+    }
+
+    private func glow(_ rgb: UInt32, opacity: Double, center: UnitPoint, radius: CGFloat) -> some View {
+        RadialGradient(
+            colors: [Color(rgb: rgb).opacity(opacity), Color(rgb: rgb).opacity(0)],
+            center: center,
+            startRadius: 0,
+            endRadius: radius
+        )
+    }
+}
+
+private extension Color {
+    init(rgb: UInt32) {
+        self.init(.sRGB,
+                  red: Double((rgb >> 16) & 0xFF) / 255.0,
+                  green: Double((rgb >> 8) & 0xFF) / 255.0,
+                  blue: Double(rgb & 0xFF) / 255.0,
+                  opacity: 1)
+    }
+}
+
+/// 配方 02–06 · 卡片级玻璃面：
+/// 02 玻璃填充 白 5%；03 ultraThin 模糊（≈28px 档，与面板 .thin≈50 拉开层级）；
+/// 04 1px 白描边（strokeBorder = Inside 对齐）；05 顶边内高光（上亮下暗渐变描边，
+/// 等效 Inner Shadow 白 16% / y=1 / blur=1）；06 外投影 黑 38% / y 18 / blur≈40
+/// （「负 spread / 关闭投影穿透」在 SwiftUI 中天然成立：投影不会穿透半透明填充）。
+private struct GlassCardModifier: ViewModifier {
+    var cornerRadius: CGFloat
+    var fillOpacity: Double
+    /// nil = 不加材质：小卡片叠在已模糊的面板上时，省一层模糊合成
+    var material: Material? = .ultraThin
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(
+                ZStack {
+                    if let material {
+                        shape.fill(material)
+                    }
+                    shape.fill(Color.white.opacity(fillOpacity))
+                }
+            )
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.10), Color.white.opacity(0.07)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
+            }
+            .shadow(color: .black.opacity(0.38), radius: 20, x: 0, y: 18)
+    }
+}
+
+private extension View {
+    /// 按六步配方给卡片挂玻璃面；fillOpacity 取 0.04–0.07。
+    func glassCard(cornerRadius: CGFloat = 12, fillOpacity: Double = 0.05, material: Material? = .ultraThin) -> some View {
+        modifier(GlassCardModifier(cornerRadius: cornerRadius, fillOpacity: fillOpacity, material: material))
+    }
+}
+
+/// 隐形窗口拖拽区：NSView 的 mouseDownCanMoveWindow=true 时，AppKit 会把
+/// 该区域的「按下并拖动」识别为移动窗口（双击 = 缩放）。红黄绿交通灯属于
+/// 窗口框架层，永远浮在内容之上，不会被此视图遮挡。
+/// 注意：mouseDownCanMoveWindow 是只读属性，必须子类化重写，不能直接赋值。
+private struct TitleBarDragRegion: NSViewRepresentable {
+    private final class DragRegionView: NSView {
+        override var mouseDownCanMoveWindow: Bool { true }
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        DragRegionView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 #endif

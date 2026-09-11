@@ -14,6 +14,11 @@ struct MainApp: App {
         }
         .defaultSize(width: 1280, height: 800)
         .windowResizability(.contentMinSize)
+        #if os(macOS)
+        // 沉浸式无框窗口：隐藏标题栏文字，让毛玻璃材质能一直延伸到
+        // 窗口最顶部的红黄绿交通灯区域（配合大厅视图里的 .ignoresSafeArea()）。
+        .windowStyle(.hiddenTitleBar)
+        #endif
     }
 }
 

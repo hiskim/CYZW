@@ -240,7 +240,7 @@ struct SettingsView: View {
             }
             .padding(tokens.spacing(.xl))
         }
-        .background(tokens.color(.canvas))
+        // 背景保持透明：macOS 下让侧栏毛玻璃材质透出来（iOS 由外层 TabView 统一铺底色）。
 #if os(macOS)
         .task {
             viewModel.refreshCDNCacheStatus()

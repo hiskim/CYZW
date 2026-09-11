@@ -41,7 +41,7 @@ struct WorkspaceView: View {
             }
             .padding(tokens.spacing(.xl))
         }
-        .background(tokens.color(.canvas))
+        // 背景由外层 TabView 统一提供（iOS），保持透明避免叠色。
     }
 }
 
