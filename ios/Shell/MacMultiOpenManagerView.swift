@@ -179,23 +179,10 @@ struct MacMultiOpenManagerView: View {
             .padding(.top, 36)
             .padding(.bottom, 16)
 
-            HStack(spacing: 4) {
-                ForEach(Section.allCases) { section in
-                    Button { selectedSection = section } label: {
-                        VStack(spacing: 5) {
-                            Image(systemName: section.icon).font(.system(size: 14, weight: .semibold))
-                            Text(section.title).font(.system(size: 12, weight: .medium))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .foregroundStyle(selectedSection == section ? .white : .secondary)
-                        .background(selectedSection == section ? Color.cyan.opacity(0.2) : .clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                    }
-                    .buttonStyle(.plain)
-                    .hoverHighlight(cornerRadius: 7, intensity: 0.08)
-                }
-            }
+            // 分节切换条抽成独立子视图（SectionSwitcher）：稳定身份 + 显式命中区域。
+            // 修复「账号/脚本/设置要点几次才响应」——配合新版 AppKit 悬停层，
+            // 点击链路里不再有任何 SwiftUI 状态翻转引起的视图重算。
+            SectionSwitcher(selection: $selectedSection)
             .padding(.horizontal, 12)
 
             Divider().overlay(Color.white.opacity(0.1)).padding(.vertical, 12)
@@ -1162,8 +1149,20 @@ private struct EmptyMatrixView: View {
 /// macOS 悬停高亮：鼠标移入时在控件上叠加一层白色薄层，给 .plain 按钮/卡片
 /// 补上原生按钮式的 hover 反馈（plain 样式在深色玻璃上默认几乎无悬停表现）。
 /// internal：脚本管理页（MacScriptManagerView）复用同一悬停配方。
+///
+/// ## 为什么必须用 AppKit tracking area，而不是 SwiftUI onHover（点击可靠性修复）
+/// 旧实现是 `@State isHovering + .onHover`：鼠标移入控件的瞬间（正是用户按下
+/// 鼠标前的一刻）触发 SwiftUI 状态翻转 → 控件子树在 mouseDown 同一事件周期内
+/// 被重算/换层，macOS 上这次 mouseDown 会被丢弃——表现为「按钮要点几次才响应」
+/// （第二次点击时指针已在控件内、不再触发翻转，所以总能成功）。
+/// 中控台的 账号/脚本/设置 三个切换按钮首当其冲。
+/// 新实现把悬停检测与高亮绘制完全下沉到 AppKit：
+/// - NSTrackingArea 负责 enter/exit，不产生任何 SwiftUI 状态更新；
+/// - 高亮直接改自身 layer 背景色（单次 CATransaction 提交），无视图重算；
+/// - `hitTest` 恒返回 nil + SwiftUI 层 `allowsHitTesting(false)` 双保险，
+///   本层永远不会拦截/吃掉点击。
+/// 视觉效果与旧实现一致（白色薄层 + 圆角裁剪），所有调用点无需改动。
 struct HoverHighlightModifier: ViewModifier {
-    @State private var isHovering = false
     var cornerRadius: CGFloat = 6
     /// 高亮强度（白色叠加透明度）。
     var intensity: Double = 0.08
@@ -1171,12 +1170,87 @@ struct HoverHighlightModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(isHovering ? intensity : 0))
-                    // 关键：高亮层不参与 hit test，否则会挡住下层按钮的点击。
+                HoverHighlightNSViewRepresentable(cornerRadius: cornerRadius,
+                                                  intensity: intensity)
+                    // 第一重保险：SwiftUI 命中测试直接跳过本层。
                     .allowsHitTesting(false)
             )
-            .onHover { isHovering = $0 }
+    }
+}
+
+private struct HoverHighlightNSViewRepresentable: NSViewRepresentable {
+    var cornerRadius: CGFloat
+    var intensity: Double
+
+    func makeNSView(context: Context) -> HoverHighlightNSView {
+        let view = HoverHighlightNSView()
+        view.cornerRadius = cornerRadius
+        view.intensity = intensity
+        return view
+    }
+
+    func updateNSView(_ nsView: HoverHighlightNSView, context: Context) {
+        nsView.cornerRadius = cornerRadius
+        nsView.intensity = intensity
+    }
+}
+
+/// 自绘悬停高亮的 AppKit 层：永不参与事件命中（hitTest -> nil），
+/// 悬停状态也不回写 SwiftUI——点击链路里不存在本层引起的视图重建。
+private final class HoverHighlightNSView: NSView {
+    var cornerRadius: CGFloat = 6 {
+        didSet {
+            guard oldValue != cornerRadius else { return }
+            layer?.cornerRadius = cornerRadius
+        }
+    }
+    var intensity: Double = 0.08 {
+        didSet {
+            guard oldValue != intensity else { return }
+            syncHighlight()
+        }
+    }
+    private var isHovering = false {
+        didSet {
+            guard oldValue != isHovering else { return }
+            syncHighlight()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        wantsLayer = true
+        // 白色高亮裁进圆角，与旧版 RoundedRectangle 填充观感一致。
+        layer?.masksToBounds = true
+        layer?.cornerRadius = cornerRadius
+        syncHighlight()
+        // 重新挂窗（窗口/层级变化）时重建 tracking area，避免悬停失效。
+        for area in trackingAreas { removeTrackingArea(area) }
+        guard window != nil else { return }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    /// 关键：本层不接收任何鼠标事件。tracking area 的 enter/exit 通知不走
+    /// hitTest（由窗口按区域矩形直接派发），因此既能收到悬停、又永远吃不到点击。
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func mouseEntered(with event: NSEvent) { isHovering = true }
+    override func mouseExited(with event: NSEvent) { isHovering = false }
+
+    /// 直接在自身 layer 上叠加白色薄层：单次事务提交，绕开 SwiftUI 渲染管线。
+    private func syncHighlight() {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)   // 悬停高亮即时切换，不做隐式动画
+        layer.backgroundColor = NSColor.white
+            .withAlphaComponent(isHovering ? intensity : 0)
+            .cgColor
+        CATransaction.commit()
     }
 }
 
@@ -1184,6 +1258,44 @@ extension View {
     /// 鼠标悬停时叠加白色薄高亮；胶囊形控件传大圆角（如 50）即可。
     func hoverHighlight(cornerRadius: CGFloat = 6, intensity: Double = 0.08) -> some View {
         modifier(HoverHighlightModifier(cornerRadius: cornerRadius, intensity: intensity))
+    }
+}
+
+// MARK: - 中控台分节切换条（账号 / 脚本 / 设置）
+
+/// 中控台侧栏顶部的三个分节切换按钮。
+/// 从 sidebar VStack 里抽成独立子视图（点击可靠性修复的一部分）：
+/// - 身份稳定：父视图任意 @Published（账号列表、运行实例数…）变化重算 body 时，
+///   本视图作为独立节点保留身份，只有 selection 真正变化才重算自身，
+///   点击瞬间不存在「整棵侧栏重建」把 mouseDown 吞掉的风险；
+/// - 命中区域显式化：label 挂 `contentShape(RoundedRectangle)`，
+///   整个单元格（含上下 padding）都是可点区域，不再依赖默认内容形状推断；
+/// - 悬停反馈走新版 AppKit 悬停层（见 HoverHighlightModifier），
+///   移入按钮瞬间零 SwiftUI 状态翻转。
+private struct SectionSwitcher: View {
+    @Binding var selection: MacMultiOpenManagerView.Section
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(MacMultiOpenManagerView.Section.allCases) { section in
+                Button { selection = section } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: section.icon).font(.system(size: 14, weight: .semibold))
+                        Text(section.title).font(.system(size: 12, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .foregroundStyle(selection == section ? .white : .secondary)
+                    .background(selection == section ? Color.cyan.opacity(0.2) : .clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    // 显式命中形状：圆角矩形整面都可点，语义与视觉边界一致。
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(cornerRadius: 7, intensity: 0.08)
+                .help("切换到\(section.title)分节")
+            }
+        }
     }
 }
 
