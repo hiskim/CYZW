@@ -181,7 +181,7 @@ struct AccountLibraryView: View {
                         isSortingAccounts = false
                     } label: {
                         HStack(spacing: 6) {
-                            Text(group.name)
+                            Text(group.groupName)
                             Text("\(viewModel.accounts(in: group).count)")
                                 .foregroundStyle(
                                     isSelected
@@ -274,6 +274,8 @@ struct GroupManagementView: View {
     @State private var isCreatingGroup = false
     @State private var editingGroup: AccountGroup?
     @State private var deletingGroup: AccountGroup?
+    /// macOS 专用：内联创建/编辑状态（无第二层弹窗）。
+    @State private var inlineEditorMode: GroupEditorMode?
 
     var body: some View {
         Group {
@@ -324,7 +326,8 @@ struct GroupManagementView: View {
             Divider()
             HStack {
                 Button {
-                    isCreatingGroup = true
+                    // macOS：直接在列表内联创建，不再弹第二层编辑窗。
+                    inlineEditorMode = .create
                 } label: {
                     Label("新建分组", systemImage: "plus")
                 }
@@ -338,7 +341,7 @@ struct GroupManagementView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 14)
         }
-        .frame(width: 500, height: 360)
+        .frame(width: 560, height: 470)
         .background(tokens.color(.canvas).ignoresSafeArea())
     }
 #endif
@@ -375,13 +378,36 @@ struct GroupManagementView: View {
             }
 
             Section("我的分组") {
+                #if os(macOS)
+                if inlineEditorMode == .create {
+                    GroupInlineEditor(
+                        viewModel: viewModel,
+                        mode: .create,
+                        onCancel: { inlineEditorMode = nil },
+                        onSaved: { inlineEditorMode = nil }
+                    )
+                }
+                #endif
                 if viewModel.visibleGroups.isEmpty {
                     Text("还没有自定义分组")
                         .font(tokens.font(.md))
                         .foregroundStyle(tokens.color(.textSecondary))
                 } else {
                     ForEach(viewModel.visibleGroups) { group in
+                        #if os(macOS)
+                        if inlineEditorMode == .edit(group) {
+                            GroupInlineEditor(
+                                viewModel: viewModel,
+                                mode: .edit(group),
+                                onCancel: { inlineEditorMode = nil },
+                                onSaved: { inlineEditorMode = nil }
+                            )
+                        } else {
+                            groupRow(group)
+                        }
+                        #else
                         groupRow(group)
+                        #endif
                     }
                     .onMove(perform: viewModel.moveGroups)
                 }
@@ -426,7 +452,13 @@ struct GroupManagementView: View {
             memberCount: viewModel.accounts(in: group).count,
             isLocked: false,
             isDefault: viewModel.defaultGroupID == group.id,
-            onEdit: { editingGroup = group },
+            onEdit: {
+                #if os(macOS)
+                inlineEditorMode = .edit(group)
+                #else
+                editingGroup = group
+                #endif
+            },
             onToggleHidden: { viewModel.setHidden(!group.isHidden, for: group) },
             onDelete: { deletingGroup = group }
         )
@@ -457,7 +489,7 @@ private struct GroupManagementRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: tokens.spacing(.sm)) {
-                    Text(group.name)
+                    Text(group.groupName)
                         .font(tokens.font(.lg, weight: .semibold))
                         .foregroundStyle(tokens.color(.textPrimary))
                     if isLocked || isDefault {
@@ -502,6 +534,36 @@ private struct GroupManagementRow: View {
     }
 }
 
+/// 分组编辑共用的账号选择行（内联编辑器与 iOS 编辑弹窗共用）。
+private func groupAccountSelectionRow(
+    _ account: Account,
+    tokens: DesignTokens,
+    isSelected: Bool,
+    onToggle: @escaping () -> Void
+) -> some View {
+    Button(action: onToggle) {
+        HStack(spacing: tokens.spacing(.md)) {
+            Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                .foregroundStyle(isSelected ? tokens.color(.accent) : tokens.color(.textMuted))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(account.nickname)
+                    .lineLimit(1)
+                Text(account.fileName)
+                    .font(tokens.font(.sm))
+                    .foregroundStyle(tokens.color(.textSecondary))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tokens.color(.textPrimary))
+        .padding(tokens.spacing(.md))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.color(.card))
+        .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+    }
+    .buttonStyle(.plain)
+}
+
 private struct GroupEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: AccountLibraryViewModel
@@ -516,7 +578,7 @@ private struct GroupEditorSheet: View {
     init(viewModel: AccountLibraryViewModel, group: AccountGroup?) {
         self.viewModel = viewModel
         self.group = group
-        _name = State(initialValue: group?.name ?? "")
+        _name = State(initialValue: group?.groupName ?? "")
         _colorName = State(initialValue: group?.colorName ?? "blue")
         _selectedAccountIDs = State(initialValue: Set(group.map { viewModel.accounts(in: $0).map(\.id) } ?? []))
         _isDefault = State(initialValue: group.map { viewModel.defaultGroupID == $0.id } ?? false)
@@ -630,7 +692,7 @@ private struct GroupEditorSheet: View {
 
     private func save() {
         if let group {
-            viewModel.updateGroup(group, name: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
+            viewModel.updateGroup(group, groupName: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
         } else {
             viewModel.addGroup(named: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
         }
@@ -638,33 +700,218 @@ private struct GroupEditorSheet: View {
     }
 
     private func accountSelectionRow(_ account: Account, tokens: DesignTokens) -> some View {
-        Button {
-            if selectedAccountIDs.contains(account.id) {
-                selectedAccountIDs.remove(account.id)
-            } else {
-                selectedAccountIDs.insert(account.id)
-            }
-        } label: {
-            HStack(spacing: tokens.spacing(.md)) {
-                Image(systemName: selectedAccountIDs.contains(account.id) ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(selectedAccountIDs.contains(account.id) ? tokens.color(.accent) : tokens.color(.textMuted))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(account.nickname)
-                        .lineLimit(1)
-                    Text(account.fileName)
-                        .font(tokens.font(.sm))
-                        .foregroundStyle(tokens.color(.textSecondary))
-                        .lineLimit(1)
+        groupAccountSelectionRow(
+            account,
+            tokens: tokens,
+            isSelected: selectedAccountIDs.contains(account.id),
+            onToggle: {
+                if selectedAccountIDs.contains(account.id) {
+                    selectedAccountIDs.remove(account.id)
+                } else {
+                    selectedAccountIDs.insert(account.id)
                 }
-                Spacer(minLength: 0)
             }
-            .foregroundStyle(tokens.color(.textPrimary))
-            .padding(tokens.spacing(.md))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(tokens.color(.card))
-            .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+        )
+    }
+}
+
+/// macOS 分组管理专用：内联编辑模式（替代第二层弹窗）。
+enum GroupEditorMode: Equatable {
+    case create
+    case edit(AccountGroup)
+}
+
+/// macOS 分组管理的内联创建/编辑表单：直接嵌在分组列表中，
+/// 避免「分组管理 → 新建分组 → 编辑弹窗」的两层弹窗嵌套。
+private struct GroupInlineEditor: View {
+    @ObservedObject var viewModel: AccountLibraryViewModel
+    let mode: GroupEditorMode
+    let onCancel: () -> Void
+    let onSaved: () -> Void
+
+    @State private var name: String
+    @State private var colorName: String
+    @State private var selectedAccountIDs: Set<String>
+    @State private var isDefault: Bool
+    @State private var isAccountPickerExpanded = false
+    @State private var searchText = ""
+    @FocusState private var isNameFocused: Bool
+
+    init(
+        viewModel: AccountLibraryViewModel,
+        mode: GroupEditorMode,
+        onCancel: @escaping () -> Void,
+        onSaved: @escaping () -> Void
+    ) {
+        self.viewModel = viewModel
+        self.mode = mode
+        self.onCancel = onCancel
+        self.onSaved = onSaved
+        switch mode {
+        case .create:
+            _name = State(initialValue: "")
+            _colorName = State(initialValue: "blue")
+            _selectedAccountIDs = State(initialValue: [])
+            _isDefault = State(initialValue: false)
+        case .edit(let group):
+            _name = State(initialValue: group.groupName)
+            _colorName = State(initialValue: group.colorName)
+            _selectedAccountIDs = State(initialValue: Set(viewModel.accounts(in: group).map(\.id)))
+            _isDefault = State(initialValue: viewModel.defaultGroupID == group.id)
         }
-        .buttonStyle(.plain)
+    }
+
+    private var isCreating: Bool { mode == .create }
+
+    private var editingID: String? {
+        if case .edit(let group) = mode { return group.id }
+        return nil
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isDuplicateName: Bool {
+        viewModel.groups.contains { $0.groupName == trimmedName && $0.id != editingID }
+    }
+
+    private var canSave: Bool {
+        !trimmedName.isEmpty && !isDuplicateName
+    }
+
+    private var filteredAccounts: [Account] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return viewModel.accounts }
+        return viewModel.accounts.filter {
+            $0.nickname.localizedCaseInsensitiveContains(query) || $0.fileName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        let tokens = DesignTokens.shared
+
+        VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
+            HStack(spacing: tokens.spacing(.md)) {
+                Text(isCreating ? "新建分组" : "编辑分组")
+                    .font(tokens.font(.lg, weight: .semibold))
+                    .foregroundStyle(tokens.color(.textPrimary))
+                Spacer()
+                HStack(spacing: 6) {
+                    ForEach(AccountGroup.swatchNames, id: \.self) { color in
+                        Button {
+                            colorName = color
+                        } label: {
+                            Circle()
+                                .fill(AccountGroup.swatchColor(named: color))
+                                .frame(width: 18, height: 18)
+                                .overlay {
+                                    if colorName == color {
+                                        Circle().stroke(tokens.color(.textPrimary), lineWidth: 2)
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("选择\(color)色")
+                    }
+                }
+            }
+
+            HStack(spacing: tokens.spacing(.md)) {
+                TextField("分组名称，例如：日常挂机", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isNameFocused)
+                    .onSubmit { if canSave { save() } }
+                Toggle("设为默认分组", isOn: $isDefault)
+                    .font(tokens.font(.sm))
+                    .tint(tokens.color(.accent))
+                    #if os(macOS)
+                    .toggleStyle(.checkbox)
+                    #endif
+            }
+
+            if isDuplicateName {
+                Text("分组名称已存在，请换一个。")
+                    .font(tokens.font(.sm))
+                    .foregroundStyle(tokens.color(.danger))
+            }
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isAccountPickerExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isAccountPickerExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("选择账号")
+                        .font(tokens.font(.sm, weight: .semibold))
+                    Text("已选 \(selectedAccountIDs.count) 个")
+                        .font(tokens.font(.sm))
+                    Spacer()
+                }
+                .foregroundStyle(tokens.color(.textSecondary))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isAccountPickerExpanded {
+                TextField("搜索账号", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(minimum: 200), spacing: tokens.spacing(.sm)),
+                        GridItem(.flexible(minimum: 200), spacing: tokens.spacing(.sm))
+                    ],
+                    spacing: tokens.spacing(.sm)
+                ) {
+                    ForEach(filteredAccounts) { account in
+                        groupAccountSelectionRow(
+                            account,
+                            tokens: tokens,
+                            isSelected: selectedAccountIDs.contains(account.id),
+                            onToggle: {
+                                if selectedAccountIDs.contains(account.id) {
+                                    selectedAccountIDs.remove(account.id)
+                                } else {
+                                    selectedAccountIDs.insert(account.id)
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            HStack(spacing: tokens.spacing(.md)) {
+                Spacer()
+                Button("取消", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(isCreating ? "创建分组" : "保存修改", action: save)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.top, tokens.spacing(.sm))
+        }
+        .padding(tokens.spacing(.lg))
+        .background(tokens.color(.card))
+        .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.card)))
+        .overlay {
+            RoundedRectangle(cornerRadius: tokens.radius(.card))
+                .stroke(tokens.color(.border), lineWidth: 1)
+        }
+        .onAppear { isNameFocused = true }
+    }
+
+    private func save() {
+        guard canSave else { return }
+        switch mode {
+        case .create:
+            viewModel.addGroup(named: trimmedName, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
+        case .edit(let group):
+            viewModel.updateGroup(group, groupName: trimmedName, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
+        }
+        onSaved()
     }
 }
 
@@ -683,7 +930,7 @@ private struct GroupDeletionSheet: View {
                 .fill(tokens.color(.border))
                 .frame(width: 36, height: 4)
                 .frame(maxWidth: .infinity)
-            Label("删除 \(group.name)", systemImage: "trash")
+            Label("删除 \(group.groupName)", systemImage: "trash")
                 .font(tokens.font(.xl, weight: .semibold))
                 .foregroundStyle(tokens.color(.danger))
             Text("请选择如何处理分组内的 \(memberCount) 个账号。")

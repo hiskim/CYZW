@@ -14,8 +14,9 @@ struct MacMultiOpenManagerView: View {
     @State private var instanceWidth: CGFloat = 280
     @State private var deletionRequest: AccountDeletionRequest?
     @State private var deletionBlockedMessage: String?
-    @State private var selectedGroupID = AccountGroup.allID
     @State private var isPresentingGroupManagement = false
+    /// 记录本次文件导入的目标分组（nil = 走默认分组逻辑）。
+    @State private var importTargetGroupID: String?
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -33,21 +34,15 @@ struct MacMultiOpenManagerView: View {
         }
     }
 
-    private var filteredAccounts: [Account] {
-        let source = accounts.accounts(in: selectedGroup)
-        guard !searchText.isEmpty else { return source }
-        return source.filter { $0.nickname.localizedCaseInsensitiveContains(searchText) }
+    // MARK: - 运行状态
+
+    /// 右侧矩阵数据源：展平所有分组中处于运行中的账号（树序 = 分组顺序）。
+    private var allRunningAccounts: [Account] {
+        accounts.runningAccounts { isRunning($0) }
     }
 
-    private var selectedGroup: AccountGroup {
-        selectedGroupID == AccountGroup.allID
-            ? .all
-            : accounts.visibleGroups.first(where: { $0.id == selectedGroupID }) ?? .all
-    }
-
-    private var currentGroupAllSelected: Bool {
-        let members = accounts.accounts(in: selectedGroup)
-        return !members.isEmpty && members.allSatisfy { accounts.selectedIDs.contains($0.id) }
+    private func isRunning(_ account: Account) -> Bool {
+        liveWorkspace.items.contains { $0.account.id == account.id }
     }
 
     var body: some View {
@@ -64,7 +59,10 @@ struct MacMultiOpenManagerView: View {
         .fileImporter(isPresented: $isPresentingImporter,
                       allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
                       allowsMultipleSelection: true) { result in
-            if case let .success(urls) = result { accounts.importFiles(from: urls) }
+            if case let .success(urls) = result {
+                accounts.importFiles(from: urls, targetGroupID: importTargetGroupID)
+                importTargetGroupID = nil
+            }
         }
         .alert(item: $deletionRequest) { request in
             Alert(
@@ -85,14 +83,10 @@ struct MacMultiOpenManagerView: View {
             Text(deletionBlockedMessage ?? "")
         }
         .sheet(isPresented: $isPresentingGroupManagement) {
+            // 尺寸由 GroupManagementView 的 macBody 内部定义（560×470）。
+            // 此处不要再套 frame，否则双层 frame 会把底部「新建分组/完成」
+            // 工具栏裁剪出可视区域。
             GroupManagementView(viewModel: accounts)
-                .frame(width: 500, height: 360)
-        }
-        .onChange(of: accounts.visibleGroups) { groups in
-            let visibleIDs = Set(groups.map(\.id)).union([AccountGroup.allID])
-            if !visibleIDs.contains(selectedGroupID) {
-                selectedGroupID = AccountGroup.allID
-            }
         }
     }
 
@@ -132,7 +126,7 @@ struct MacMultiOpenManagerView: View {
 
             if selectedSection == .accounts {
                 accountControls
-                accountList
+                groupedAccountList
             } else {
                 secondarySection
             }
@@ -150,13 +144,18 @@ struct MacMultiOpenManagerView: View {
         .foregroundStyle(.white)
     }
 
+    // MARK: - 顶部控制区
+
     private var accountControls: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
-                Button { isPresentingImporter = true } label: { Label("添加账号", systemImage: "plus") }
+                Button {
+                    importTargetGroupID = nil
+                    isPresentingImporter = true
+                } label: { Label("添加账号", systemImage: "plus") }
                     .buttonStyle(MacManagerButtonStyle(tint: .blue))
                 Button { startAll() } label: {
-                    Label(selectedGroupID == AccountGroup.allID ? "打开全部" : "打开本组", systemImage: "play.fill")
+                    Label("启动全部", systemImage: "play.fill")
                 }
                     .buttonStyle(MacManagerButtonStyle(tint: .cyan))
                 Button { closeAll() } label: { Label("关闭全部", systemImage: "stop.fill") }
@@ -173,28 +172,10 @@ struct MacMultiOpenManagerView: View {
             }
             HStack(spacing: 8) {
                 Text("分组").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ForEach([accounts.allGroup] + accounts.visibleGroups) { group in
-                            let isSelected = selectedGroup.id == group.id
-                            Button { selectedGroupID = group.id } label: {
-                                HStack(spacing: 4) {
-                                    Circle().fill(group.macSwatchColor).frame(width: 6, height: 6)
-                                    Text(group.name)
-                                    Text("\(accounts.accounts(in: group).count)")
-                                        .foregroundStyle(isSelected ? .white.opacity(0.75) : .secondary)
-                                }
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(isSelected ? .white : .primary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(isSelected ? group.macSwatchColor.opacity(0.78) : Color.white.opacity(0.06))
-                                .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
+                Text("\(accounts.visibleGroups.count) 个自定义分组")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
                 Button { isPresentingGroupManagement = true } label: {
                     Image(systemName: "slider.horizontal.3")
                 }
@@ -206,6 +187,15 @@ struct MacMultiOpenManagerView: View {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索账号", text: $searchText).textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清除搜索")
+                }
             }
             .padding(8)
             .background(Color.white.opacity(0.08))
@@ -221,36 +211,96 @@ struct MacMultiOpenManagerView: View {
         .padding(.bottom, 10)
     }
 
-    private var accountList: some View {
+    // MARK: - 树形分组账号列表
+
+    private var groupedAccountList: some View {
         ScrollView {
-            LazyVStack(spacing: 4) {
-                HStack {
-                    Button { toggleCurrentGroup() } label: {
-                        Image(systemName: currentGroupAllSelected ? "checkmark.square.fill" : "square")
-                            .foregroundStyle(.cyan)
-                    }.buttonStyle(.plain)
-                    Text(selectedGroup.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(filteredAccounts.count)").font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 6)
-                ForEach(filteredAccounts) { account in
-                    AccountManagerRow(
-                        account: account,
-                        isSelected: accounts.selectedIDs.contains(account.id),
-                        isRunning: liveWorkspace.items.contains { $0.account.id == account.id },
-                        onToggle: { accounts.toggleSelection(id: account.id) },
-                        onStart: { start(account) },
-                        onStop: { stop(account) },
-                        onDelete: { requestDeletion(of: [account]) },
-                        groupNames: accounts.groupNames,
-                        currentGroupName: account.groupName,
-                        onMoveToGroup: { accounts.updateGroup($0, for: account) }
+            LazyVStack(spacing: 8) {
+                ForEach(accounts.groups) { group in
+                    AccountGroupSection(
+                        group: group,
+                        searchText: searchText,
+                        viewModel: accounts,
+                        isRunning: isRunning,
+                        onToggleSelection: { accounts.toggleSelection(id: $0) },
+                        onStart: { start($0) },
+                        onStop: { stop($0) },
+                        onDelete: { requestDeletion(of: [$0]) },
+                        onMoveToGroup: { account, groupName in accounts.updateGroup(groupName, for: account) },
+                        onAddAccount: { importIntoGroup(group.id) },
+                        onStartGroup: { startGroup(group) },
+                        onStopGroup: { stopGroup(group) }
                     )
                 }
             }
             .padding(.horizontal, 8)
         }
+    }
+
+    // MARK: - 批量启停
+
+    private func start(_ account: Account) {
+        accounts.recordLogin(for: account)
+        coordinator.openWorkspace(accounts: [account])
+    }
+
+    private func stop(_ account: Account) {
+        if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) {
+            Task { await liveWorkspace.close(id: item.id) }
+        }
+    }
+
+    /// 一键启动分组：遍历组内账号并批量拉起实例。
+    /// WorkspaceViewModel.start 会自动跳过已运行的账号，因此可以全量传入。
+    private func startGroup(_ group: AccountGroup) {
+        guard !group.accounts.isEmpty else { return }
+        group.accounts.forEach { accounts.recordLogin(for: $0) }
+        coordinator.openWorkspace(accounts: group.accounts)
+    }
+
+    /// 一键停止分组：遍历组内账号，逐个关闭其运行中的实例。
+    private func stopGroup(_ group: AccountGroup) {
+        let memberIDs = Set(group.accounts.map(\.id))
+        let itemIDs = liveWorkspace.items
+            .filter { memberIDs.contains($0.account.id) }
+            .map(\.id)
+        guard !itemIDs.isEmpty else { return }
+        Task {
+            for id in itemIDs {
+                await liveWorkspace.close(id: id)
+            }
+        }
+    }
+
+    private func startAll() {
+        let allAccounts = accounts.accounts
+        guard !allAccounts.isEmpty else { return }
+        allAccounts.forEach { accounts.recordLogin(for: $0) }
+        coordinator.openWorkspace(accounts: allAccounts)
+    }
+
+    private func closeAll() {
+        let ids = liveWorkspace.items.map(\.id)
+        Task { for id in ids { await liveWorkspace.close(id: id) } }
+    }
+
+    /// 从分组表头的 ➕ 触发：导入账号并直接归入该分组。
+    private func importIntoGroup(_ groupID: String) {
+        importTargetGroupID = groupID
+        isPresentingImporter = true
+    }
+
+    private func requestDeletion(of targets: [Account]) {
+        let runningCount = targets.filter { account in
+            liveWorkspace.items.contains { $0.account.id == account.id }
+        }.count
+        guard runningCount == 0 else {
+            deletionBlockedMessage = runningCount == 1
+                ? "请先关闭该账号的游戏实例，再删除账号。"
+                : "请先关闭这 \(runningCount) 个账号的游戏实例，再批量删除。"
+            return
+        }
+        deletionRequest = AccountDeletionRequest(accounts: targets)
     }
 
     private var secondarySection: some View {
@@ -286,7 +336,7 @@ struct MacMultiOpenManagerView: View {
                         .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
                         VStack(alignment: .leading, spacing: 4) {
                             Text("多开矩阵").font(.system(size: 24, weight: .bold))
-                            Text("\(liveWorkspace.items.count) 个活跃实例 · 每个账号独立 WebKit 会话")
+                            Text("\(allRunningAccounts.count) 个活跃实例 · 每个账号独立 WebKit 会话")
                                 .font(.system(size: 13)).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -340,12 +390,16 @@ struct MacMultiOpenManagerView: View {
                         Button { selectedSection = .accounts } label: { Label("管理账号", systemImage: "person.2") }
                             .buttonStyle(MacManagerButtonStyle(tint: .blue))
                     }
-                    if liveWorkspace.items.isEmpty {
+                    if allRunningAccounts.isEmpty {
                         EmptyMatrixView { selectedSection = .accounts }
                     } else {
+                        // 矩阵数据源绑定 allRunningAccounts（flatMap 展平所有分组的运行中账号），
+                        // 单元格仍复用 WorkspaceItem 以保留暂停/恢复/关闭等实例控制。
                         LazyVGrid(columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount), spacing: spacing) {
-                            ForEach(liveWorkspace.items) { item in
-                                MacGameMatrixCell(item: item, workspace: liveWorkspace, width: cardWidth)
+                            ForEach(allRunningAccounts) { account in
+                                if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) {
+                                    MacGameMatrixCell(item: item, workspace: liveWorkspace, width: cardWidth)
+                                }
                             }
                         }
                     }
@@ -355,37 +409,149 @@ struct MacMultiOpenManagerView: View {
             .background(Color(red: 0.075, green: 0.095, blue: 0.135))
         }
     }
-
-    private func start(_ account: Account) { accounts.recordLogin(for: account); coordinator.openWorkspace(accounts: [account]) }
-    private func startAll() {
-        let members = accounts.accounts(in: selectedGroup)
-        members.forEach { accounts.recordLogin(for: $0) }
-        coordinator.openWorkspace(accounts: members)
-    }
-    private func stop(_ account: Account) { if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) { Task { await liveWorkspace.close(id: item.id) } } }
-    private func closeAll() { let ids = liveWorkspace.items.map(\.id); Task { for id in ids { await liveWorkspace.close(id: id) } } }
-    private func toggleCurrentGroup() {
-        accounts.toggleSelection(in: selectedGroup)
-    }
-
-    private func requestDeletion(of targets: [Account]) {
-        let runningCount = targets.filter { account in
-            liveWorkspace.items.contains { $0.account.id == account.id }
-        }.count
-        guard runningCount == 0 else {
-            deletionBlockedMessage = runningCount == 1
-                ? "请先关闭该账号的游戏实例，再删除账号。"
-                : "请先关闭这 \(runningCount) 个账号的游戏实例，再批量删除。"
-            return
-        }
-        deletionRequest = AccountDeletionRequest(accounts: targets)
-    }
 }
 
 private struct AccountDeletionRequest: Identifiable {
     let id = UUID()
     let accounts: [Account]
 }
+
+// MARK: - 分组节点（DisclosureGroup）
+
+/// 单个分组的树形节点：可展开表头 + 组内账号行。
+/// 表头展示「分组名 [运行中/总数]」与快捷操作（添加账号 / 一键启动 / 一键停止）。
+private struct AccountGroupSection: View {
+    let group: AccountGroup
+    let searchText: String
+    @ObservedObject var viewModel: AccountLibraryViewModel
+    let isRunning: (Account) -> Bool
+    let onToggleSelection: (String) -> Void
+    let onStart: (Account) -> Void
+    let onStop: (Account) -> Void
+    let onDelete: (Account) -> Void
+    let onMoveToGroup: (Account, String) -> Void
+    let onAddAccount: () -> Void
+    let onStartGroup: () -> Void
+    let onStopGroup: () -> Void
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 搜索时在组内过滤；无搜索时展示全组账号。
+    private var displayAccounts: [Account] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return group.accounts }
+        return group.accounts.filter { $0.nickname.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var runningCount: Int {
+        group.accounts.filter { isRunning($0) }.count
+    }
+
+    /// 展开状态绑定：搜索时强制展开，其余读写持久化的 isExpanded。
+    private var expansionBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if isSearching { return true }
+                return viewModel.groups.first(where: { $0.id == group.id })?.isExpanded ?? true
+            },
+            set: { viewModel.setExpanded($0, forGroupID: group.id) }
+        )
+    }
+
+    var body: some View {
+        if isSearching && displayAccounts.isEmpty {
+            EmptyView()
+        } else {
+            DisclosureGroup(isExpanded: expansionBinding) {
+                LazyVStack(spacing: 4) {
+                    ForEach(displayAccounts) { account in
+                        AccountManagerRow(
+                            account: account,
+                            isSelected: viewModel.selectedIDs.contains(account.id),
+                            isRunning: isRunning(account),
+                            onToggle: { onToggleSelection(account.id) },
+                            onStart: { onStart(account) },
+                            onStop: { onStop(account) },
+                            onDelete: { onDelete(account) },
+                            groupNames: viewModel.groupNames,
+                            currentGroupName: account.groupName,
+                            onMoveToGroup: { onMoveToGroup(account, $0) }
+                        )
+                    }
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 4)
+                .padding(.bottom, 6)
+            } label: {
+                header
+            }
+            .background(Color.white.opacity(0.035))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(group.macSwatchColor)
+                .frame(width: 8, height: 8)
+            Text(group.groupName)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            Text("[\(runningCount)/\(group.accounts.count)]")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(runningCount > 0 ? Color.green : Color.secondary)
+            Spacer(minLength: 6)
+            quickActions
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+    }
+
+    /// 表头快捷按钮区：添加账号 ➕ / 一键启动 ▶️ / 一键停止 ⏹️。
+    private var quickActions: some View {
+        HStack(spacing: 6) {
+            Button(action: onAddAccount) {
+                Image(systemName: "person.crop.badge.plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(.cyan)
+            }
+            .buttonStyle(.plain)
+            .help("添加账号到此组")
+            .accessibilityLabel("添加账号到\(group.groupName)")
+
+            Button(action: onStartGroup) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(.green)
+            }
+            .buttonStyle(.plain)
+            .disabled(group.accounts.isEmpty)
+            .opacity(group.accounts.isEmpty ? 0.35 : 1)
+            .help("一键启动此组")
+            .accessibilityLabel("启动\(group.groupName)")
+
+            Button(action: onStopGroup) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.plain)
+            .disabled(runningCount == 0)
+            .opacity(runningCount == 0 ? 0.35 : 1)
+            .help("一键停止此组")
+            .accessibilityLabel("停止\(group.groupName)")
+        }
+    }
+}
+
+// MARK: - 账号行（保留：复选框 + 名称 + 分组菜单 + 独立启停）
 
 private struct AccountManagerRow: View {
     let account: Account; let isSelected: Bool; let isRunning: Bool

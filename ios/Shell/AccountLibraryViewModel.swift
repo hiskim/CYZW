@@ -6,21 +6,30 @@ private let accountOrderLogger = Logger(subsystem: "com.xyzw.ios2", category: "A
 
 @MainActor
 final class AccountLibraryViewModel: ObservableObject {
+    /// 树形数据源：["全部"伪分组, "未分组"伪分组, 自定义分组...]。
+    /// 每个节点的 `accounts` 由 ViewModel 按归属关系物化，侧边栏直接遍历渲染。
+    @Published private(set) var groups: [AccountGroup] = []
     @Published private(set) var accounts: [Account] = []
     @Published private(set) var selectedIDs: Set<String> = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var remarks: [String: String]
     @Published private(set) var lastLoginTimestamps: [String: TimeInterval]
     @Published private(set) var accountOrder: [String: [String]]
-    @Published private(set) var groups: [AccountGroup]
     @Published private(set) var defaultGroupID: String?
 
     init() {
         remarks = UserDefaults.standard.dictionary(forKey: Self.remarksKey) as? [String: String] ?? [:]
         lastLoginTimestamps = Self.loadLastLoginTimestamps()
         accountOrder = Self.loadAccountOrder()
-        groups = Self.loadGroups()
         defaultGroupID = UserDefaults.standard.string(forKey: Self.defaultGroupKey)
+
+        var tree: [AccountGroup] = [
+            Self.syntheticAllGroup(),
+            Self.syntheticUngroupedGroup()
+        ]
+        tree.append(contentsOf: Self.loadGroups())
+        groups = tree
+        syncTree()
     }
 
     private static let remarksKey = "ios.shell.account-remarks"
@@ -30,6 +39,8 @@ final class AccountLibraryViewModel: ObservableObject {
     private static let groupNamesKey = "ios.shell.groups"
     private static let groupDefinitionsKey = "ios.shell.group-definitions"
     private static let defaultGroupKey = "ios.shell.default-group"
+    private static let allExpandedKey = "ios.shell.all-group-expanded"
+    private static let ungroupedExpandedKey = "ios.shell.ungrouped-group-expanded"
 
     private var groupAssignments: [String: String] {
         get { UserDefaults.standard.dictionary(forKey: Self.groupAssignmentsKey) as? [String: String] ?? [:] }
@@ -46,6 +57,11 @@ final class AccountLibraryViewModel: ObservableObject {
 
     var allGroup: AccountGroup { .all }
 
+    /// 分组定义（不含"全部"/"未分组"伪分组）。
+    private var definitionGroups: [AccountGroup] {
+        groups.filter { !$0.isSynthetic }
+    }
+
     var visibleGroups: [AccountGroup] {
         orderedGroups.filter { !$0.isHidden }
     }
@@ -55,15 +71,36 @@ final class AccountLibraryViewModel: ObservableObject {
     }
 
     var groupNames: [String] {
-        [Account.defaultGroupName] + orderedGroups.map(\.name)
+        [Account.defaultGroupName] + orderedGroups.map(\.groupName)
     }
 
     var orderedGroups: [AccountGroup] {
-        groups.sorted { lhs, rhs in
-            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
-            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        definitionGroups.sorted(by: Self.isOrderedBefore)
+    }
+
+    /// 右侧矩阵数据源：展平所有分组中处于运行中的账号。
+    /// 运行状态由视图层注入（WorkspaceViewModel 中存在同 ID 实例即视为运行中）。
+    func runningAccounts(isRunning: (Account) -> Bool) -> [Account] {
+        groups.flatMap(\.accounts).filter(isRunning)
+    }
+
+    // MARK: - 展开状态
+
+    /// 更新分组展开状态。伪分组展开状态存独立键，普通分组随定义持久化。
+    func setExpanded(_ expanded: Bool, forGroupID groupID: String) {
+        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[index].isExpanded = expanded
+        switch groupID {
+        case AccountGroup.allID:
+            UserDefaults.standard.set(expanded, forKey: Self.allExpandedKey)
+        case AccountGroup.ungroupedID:
+            UserDefaults.standard.set(expanded, forKey: Self.ungroupedExpandedKey)
+        default:
+            saveGroups()
         }
     }
+
+    // MARK: - 备注 / 登录记录
 
     func remark(for account: Account) -> String {
         remarks[account.id] ?? ""
@@ -88,8 +125,23 @@ final class AccountLibraryViewModel: ObservableObject {
         UserDefaults.standard.set(lastLoginTimestamps, forKey: Self.lastLoginTimestampsKey)
     }
 
+    // MARK: - 分组成员查询
+
+    /// 解析分组内的账号。"全部"返回所有账号，"未分组"返回未指派到任何分组的账号。
     func accounts(in group: AccountGroup) -> [Account] {
-        let members = group.id == AccountGroup.allID ? accounts : accounts.filter { $0.groupName == group.name }
+        let members: [Account]
+        switch group.id {
+        case AccountGroup.allID:
+            members = accounts
+        case AccountGroup.ungroupedID:
+            let knownNames = Set(definitionGroups.map(\.groupName))
+            members = accounts.filter {
+                $0.groupName == Account.defaultGroupName || !knownNames.contains($0.groupName)
+            }
+        default:
+            members = accounts.filter { $0.groupName == group.groupName }
+        }
+
         let order = accountOrder[group.id] ?? []
         guard !order.isEmpty else { return members }
         let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
@@ -110,31 +162,35 @@ final class AccountLibraryViewModel: ObservableObject {
         accountOrder[group.id] = ordered.map(\.id)
         UserDefaults.standard.set(accountOrder, forKey: Self.accountOrderKey)
         accountOrderLogger.info("move persisted: group=\(group.id, privacy: .public), order=\(ordered.map(\.id).joined(separator: ","), privacy: .public)")
+        materializeMembers()
     }
+
+    // MARK: - 分组管理
 
     func addGroup(named name: String, colorName: String = "blue", accountIDs: Set<String> = [], isDefault: Bool = false) {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty,
               trimmedName != Account.defaultGroupName,
-              trimmedName != AccountGroup.all.name,
-              !groups.contains(where: { $0.name == trimmedName }) else { return }
-        let group = AccountGroup(name: trimmedName, colorName: colorName, sortOrder: (groups.map(\.sortOrder).max() ?? 0) + 1)
+              trimmedName != AccountGroup.all.groupName,
+              !groups.contains(where: { $0.groupName == trimmedName }) else { return }
+        let group = AccountGroup(groupName: trimmedName, colorName: colorName, sortOrder: (definitionGroups.map(\.sortOrder).max() ?? 0) + 1)
         groups.append(group)
-        saveGroups()
         updateMembers(accountIDs, for: group)
+        syncTree()
+        saveGroups()
         if isDefault { setDefaultGroup(group) }
     }
 
-    func updateGroup(_ group: AccountGroup, name: String, colorName: String, accountIDs: Set<String>, isDefault: Bool) {
+    func updateGroup(_ group: AccountGroup, groupName name: String, colorName: String, accountIDs: Set<String>, isDefault: Bool) {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty,
               trimmedName != Account.defaultGroupName,
-              trimmedName != AccountGroup.all.name,
-              !groups.contains(where: { $0.name == trimmedName && $0.id != group.id }),
+              trimmedName != AccountGroup.all.groupName,
+              !groups.contains(where: { $0.groupName == trimmedName && $0.id != group.id }),
               let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
 
-        let oldName = groups[index].name
-        groups[index].name = trimmedName
+        let oldName = groups[index].groupName
+        groups[index].groupName = trimmedName
         groups[index].colorName = colorName
         if oldName != trimmedName {
             var assignments = groupAssignments
@@ -146,8 +202,9 @@ final class AccountLibraryViewModel: ObservableObject {
                 accounts[index].groupName = trimmedName
             }
         }
-        saveGroups()
         updateMembers(accountIDs, for: groups[index])
+        syncTree()
+        saveGroups()
         if isDefault { setDefaultGroup(groups[index]) }
         else if defaultGroupID == group.id { defaultGroupID = nil; UserDefaults.standard.removeObject(forKey: Self.defaultGroupKey) }
     }
@@ -162,6 +219,7 @@ final class AccountLibraryViewModel: ObservableObject {
 
         guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
         accounts[index].groupName = group
+        materializeMembers()
     }
 
     func setHidden(_ hidden: Bool, for group: AccountGroup) {
@@ -182,6 +240,7 @@ final class AccountLibraryViewModel: ObservableObject {
             groups[groupIndex].sortOrder = index + 1
         }
         saveGroups()
+        resortTree()
     }
 
     func deleteGroup(_ group: AccountGroup, deletingMembers: Bool) {
@@ -207,7 +266,7 @@ final class AccountLibraryViewModel: ObservableObject {
             var assignments = groupAssignments
             for account in members { assignments.removeValue(forKey: account.id) }
             groupAssignments = assignments
-            for index in accounts.indices where accounts[index].groupName == group.name {
+            for index in accounts.indices where accounts[index].groupName == group.groupName {
                 accounts[index].groupName = Account.defaultGroupName
             }
         }
@@ -216,8 +275,11 @@ final class AccountLibraryViewModel: ObservableObject {
             defaultGroupID = nil
             UserDefaults.standard.removeObject(forKey: Self.defaultGroupKey)
         }
+        syncTree()
         saveGroups()
     }
+
+    // MARK: - 账号导入 / 删除 / 刷新
 
     func refresh() {
         do {
@@ -232,18 +294,33 @@ final class AccountLibraryViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+        syncTree()
     }
 
     func importFiles(from urls: [URL]) {
+        importFiles(from: urls, targetGroupID: nil)
+    }
+
+    /// 导入 .bin 账号。`targetGroupID` 非空时把新账号直接归入该分组；
+    /// 传"未分组"伪分组 ID 表示明确不指派；nil 走默认分组逻辑。
+    func importFiles(from urls: [URL], targetGroupID: String?) {
         do {
+            var imported: [Account] = []
             for url in urls {
-                let account = try LegacyBinAccountStore.importAccount(from: url)
-                if let defaultGroup = groups.first(where: { $0.id == defaultGroupID }) {
-                    var assignments = groupAssignments
-                    assignments[account.id] = defaultGroup.name
-                    groupAssignments = assignments
+                imported.append(try LegacyBinAccountStore.importAccount(from: url))
+            }
+
+            var assignments = groupAssignments
+            for account in imported {
+                if targetGroupID == AccountGroup.ungroupedID { continue }
+                if let targetGroup = targetGroupID.flatMap(({ id in groups.first(where: { $0.id == id }) })),
+                   !targetGroup.isSynthetic {
+                    assignments[account.id] = targetGroup.groupName
+                } else if let defaultGroup = groups.first(where: { $0.id == defaultGroupID }) {
+                    assignments[account.id] = defaultGroup.groupName
                 }
             }
+            groupAssignments = assignments
             refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -286,7 +363,10 @@ final class AccountLibraryViewModel: ObservableObject {
         for id in deletedIDs { assignments.removeValue(forKey: id) }
         groupAssignments = assignments
         errorMessage = failures.isEmpty ? nil : "以下账号未能删除：\(failures.joined(separator: "、"))。"
+        materializeMembers()
     }
+
+    // MARK: - 选择
 
     func toggleSelection(id: String) {
         if selectedIDs.contains(id) {
@@ -310,16 +390,64 @@ final class AccountLibraryViewModel: ObservableObject {
         }
     }
 
+    // MARK: - 树形数据源维护
+
+    /// 伪分组"全部"：包含所有账号，展开状态独立持久化。
+    private static func syntheticAllGroup() -> AccountGroup {
+        AccountGroup(
+            id: AccountGroup.allID,
+            groupName: "全部",
+            colorName: "gray",
+            sortOrder: 0,
+            isExpanded: UserDefaults.standard.object(forKey: allExpandedKey) as? Bool ?? true
+        )
+    }
+
+    /// 伪分组"未分组"：收纳未指派到任何分组的账号（含指派失效的账号）。
+    private static func syntheticUngroupedGroup() -> AccountGroup {
+        AccountGroup(
+            id: AccountGroup.ungroupedID,
+            groupName: Account.defaultGroupName,
+            colorName: "gray",
+            sortOrder: 0,
+            isExpanded: UserDefaults.standard.object(forKey: ungroupedExpandedKey) as? Bool ?? true
+        )
+    }
+
+    /// 按展示顺序重排树：伪分组固定在最前，自定义分组按 sortOrder + 名称排序。
+    private func resortTree() {
+        let synthetic = groups.filter(\.isSynthetic)
+        let definitions = groups.filter { !$0.isSynthetic }.sorted(by: Self.isOrderedBefore)
+        groups = synthetic + definitions
+    }
+
+    /// 按归属关系重新物化每个分组的 accounts 数组。
+    private func materializeMembers() {
+        for index in groups.indices {
+            groups[index].accounts = accounts(in: groups[index])
+        }
+    }
+
+    private func syncTree() {
+        resortTree()
+        materializeMembers()
+    }
+
+    private static func isOrderedBefore(_ lhs: AccountGroup, _ rhs: AccountGroup) -> Bool {
+        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+        return lhs.groupName.localizedStandardCompare(rhs.groupName) == .orderedAscending
+    }
+
     private func updateMembers(_ accountIDs: Set<String>, for group: AccountGroup) {
         var assignments = groupAssignments
-        for account in accounts where account.groupName == group.name && !accountIDs.contains(account.id) {
+        for account in accounts where account.groupName == group.groupName && !accountIDs.contains(account.id) {
             assignments.removeValue(forKey: account.id)
         }
-        for accountID in accountIDs { assignments[accountID] = group.name }
+        for accountID in accountIDs { assignments[accountID] = group.groupName }
         groupAssignments = assignments
         for index in accounts.indices {
-            if accountIDs.contains(accounts[index].id) { accounts[index].groupName = group.name }
-            else if accounts[index].groupName == group.name { accounts[index].groupName = Account.defaultGroupName }
+            if accountIDs.contains(accounts[index].id) { accounts[index].groupName = group.groupName }
+            else if accounts[index].groupName == group.groupName { accounts[index].groupName = Account.defaultGroupName }
         }
     }
 
@@ -329,7 +457,8 @@ final class AccountLibraryViewModel: ObservableObject {
     }
 
     private func saveGroups() {
-        if let data = try? JSONEncoder().encode(groups) {
+        let definitions = groups.filter { !$0.isSynthetic }
+        if let data = try? JSONEncoder().encode(definitions) {
             UserDefaults.standard.set(data, forKey: Self.groupDefinitionsKey)
         }
     }
@@ -341,7 +470,7 @@ final class AccountLibraryViewModel: ObservableObject {
         }
         let legacyNames = UserDefaults.standard.stringArray(forKey: groupNamesKey) ?? []
         return legacyNames.enumerated().map { index, name in
-            AccountGroup(name: name, sortOrder: index + 1)
+            AccountGroup(groupName: name, sortOrder: index + 1)
         }
     }
 
