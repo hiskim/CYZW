@@ -16,6 +16,10 @@ final class AccountLibraryViewModel: ObservableObject {
     @Published private(set) var lastLoginTimestamps: [String: TimeInterval]
     @Published private(set) var accountOrder: [String: [String]]
     @Published private(set) var defaultGroupID: String?
+    /// 侧边栏分组过滤选中项；nil 代表"全部"。
+    /// （分组 ID 在本项目中为 String：自定义分组是 UUID 字符串，
+    /// 另有 allID/ungroupedID 两个固定伪分组 ID，因此不用 UUID? 类型。）
+    @Published var selectedGroupID: String?
 
     init() {
         remarks = UserDefaults.standard.dictionary(forKey: Self.remarksKey) as? [String: String] ?? [:]
@@ -82,6 +86,22 @@ final class AccountLibraryViewModel: ObservableObject {
     /// 运行状态由视图层注入（WorkspaceViewModel 中存在同 ID 实例即视为运行中）。
     func runningAccounts(isRunning: (Account) -> Bool) -> [Account] {
         groups.flatMap(\.accounts).filter(isRunning)
+    }
+
+    // MARK: - 侧边栏分组过滤
+
+    /// 侧边栏账号列表数据源：按 selectedGroupID 过滤（nil = 全部账号）。
+    var filteredAccounts: [Account] {
+        guard let selectedGroupID,
+              let group = groups.first(where: { $0.id == selectedGroupID }) else { return accounts }
+        return accounts(in: group)
+    }
+
+    /// 过滤区当前选中分组的展示标题（列表头部使用）。
+    var selectedGroupTitle: String {
+        guard let selectedGroupID,
+              let group = groups.first(where: { $0.id == selectedGroupID }) else { return "全部账号" }
+        return group.groupName
     }
 
     // MARK: - 展开状态
@@ -229,6 +249,7 @@ final class AccountLibraryViewModel: ObservableObject {
             return
         }
         groups[index].isHidden = hidden
+        if hidden && selectedGroupID == group.id { selectedGroupID = nil }
         saveGroups()
     }
 
@@ -271,6 +292,7 @@ final class AccountLibraryViewModel: ObservableObject {
             }
         }
         groups.remove(at: groupIndex)
+        if selectedGroupID == group.id { selectedGroupID = nil }
         if defaultGroupID == group.id {
             defaultGroupID = nil
             UserDefaults.standard.removeObject(forKey: Self.defaultGroupKey)
@@ -387,6 +409,15 @@ final class AccountLibraryViewModel: ObservableObject {
             selectedIDs.subtract(ids)
         } else {
             selectedIDs.formUnion(ids)
+        }
+    }
+
+    /// 侧边栏过滤列表头部的全选切换：nil = 全部账号，否则当前选中分组。
+    func toggleSelection(forGroupID groupID: String?) {
+        if let groupID, let group = groups.first(where: { $0.id == groupID }) {
+            toggleSelection(in: group)
+        } else {
+            toggleSelectAll()
         }
     }
 

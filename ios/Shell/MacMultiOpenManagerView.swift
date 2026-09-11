@@ -126,7 +126,8 @@ struct MacMultiOpenManagerView: View {
 
             if selectedSection == .accounts {
                 accountControls
-                groupedAccountList
+                filterBar
+                accountList
             } else {
                 secondarySection
             }
@@ -211,30 +212,122 @@ struct MacMultiOpenManagerView: View {
         .padding(.bottom, 10)
     }
 
-    // MARK: - 树形分组账号列表
+    // MARK: - 分组过滤区 + 账号列表
 
-    private var groupedAccountList: some View {
+    /// 过滤按钮区数据源：全部 + 自定义分组 + 未分组（隐藏分组不显示）。
+    private var filterChips: [GroupFilterView.ChipData] {
+        accounts.groups.filter { !$0.isHidden }.map { group in
+            let running = group.accounts.filter { isRunning($0) }.count
+            return GroupFilterView.ChipData(
+                id: group.id,
+                title: group.groupName,
+                detail: group.accounts.isEmpty ? nil : "\(running)/\(group.accounts.count)",
+                color: group.macSwatchColor,
+                isSelected: group.id == AccountGroup.allID
+                    ? accounts.selectedGroupID == nil || accounts.selectedGroupID == AccountGroup.allID
+                    : accounts.selectedGroupID == group.id
+            )
+        }
+    }
+
+    /// 分组过滤标签区（标签云流式布局，超宽自动换行）。
+    private var filterBar: some View {
+        GroupFilterView(
+            chips: filterChips,
+            onSelect: selectFilterGroup,
+            onStartGroup: startGroupByID,
+            onStopGroup: stopGroupByID,
+            onAddAccount: importIntoGroup
+        )
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+    }
+
+    /// 过滤 + 搜索后的扁平账号列表。
+    private var displayAccounts: [Account] {
+        let base = accounts.filteredAccounts
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return base }
+        return base.filter { $0.nickname.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var currentFilterAllSelected: Bool {
+        !displayAccounts.isEmpty && displayAccounts.allSatisfy { accounts.selectedIDs.contains($0.id) }
+    }
+
+    private var accountList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(accounts.groups) { group in
-                    AccountGroupSection(
-                        group: group,
-                        searchText: searchText,
-                        viewModel: accounts,
-                        isRunning: isRunning,
-                        onToggleSelection: { accounts.toggleSelection(id: $0) },
-                        onStart: { start($0) },
-                        onStop: { stop($0) },
-                        onDelete: { requestDeletion(of: [$0]) },
-                        onMoveToGroup: { account, groupName in accounts.updateGroup(groupName, for: account) },
-                        onAddAccount: { importIntoGroup(group.id) },
-                        onStartGroup: { startGroup(group) },
-                        onStopGroup: { stopGroup(group) }
-                    )
+            LazyVStack(spacing: 4) {
+                HStack {
+                    Button {
+                        accounts.toggleSelection(forGroupID: accounts.selectedGroupID)
+                    } label: {
+                        Image(systemName: currentFilterAllSelected ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(.cyan)
+                    }
+                    .buttonStyle(.plain)
+                    .help("全选当前列表")
+                    Text(accounts.selectedGroupTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(displayAccounts.count)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+
+                if displayAccounts.isEmpty {
+                    Text(accounts.selectedGroupID == nil ? "还没有账号，点击上方“添加账号”导入" : "该分组暂无账号")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 24)
+                } else {
+                    ForEach(displayAccounts) { account in
+                        AccountManagerRow(
+                            account: account,
+                            isSelected: accounts.selectedIDs.contains(account.id),
+                            isRunning: isRunning(account),
+                            onToggle: { accounts.toggleSelection(id: account.id) },
+                            onStart: { start(account) },
+                            onStop: { stop(account) },
+                            onDelete: { requestDeletion(of: [account]) },
+                            groupNames: accounts.groupNames,
+                            currentGroupName: account.groupName,
+                            onMoveToGroup: { groupName in accounts.updateGroup(groupName, for: account) }
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 8)
         }
+    }
+
+    // MARK: - 过滤交互
+
+    /// 点击过滤标签：点"全部"回到 nil；再次点击已选分组取消选中（回到全部）。
+    private func selectFilterGroup(_ groupID: String) {
+        if groupID == AccountGroup.allID {
+            accounts.selectedGroupID = nil
+        } else if accounts.selectedGroupID == groupID {
+            accounts.selectedGroupID = nil
+        } else {
+            accounts.selectedGroupID = groupID
+        }
+    }
+
+    private func groupByID(_ groupID: String) -> AccountGroup? {
+        accounts.groups.first { $0.id == groupID }
+    }
+
+    private func startGroupByID(_ groupID: String) {
+        if let group = groupByID(groupID) { startGroup(group) }
+    }
+
+    private func stopGroupByID(_ groupID: String) {
+        if let group = groupByID(groupID) { stopGroup(group) }
     }
 
     // MARK: - 批量启停
@@ -416,137 +509,140 @@ private struct AccountDeletionRequest: Identifiable {
     let accounts: [Account]
 }
 
-// MARK: - 分组节点（DisclosureGroup）
+// MARK: - 分组过滤按钮区（标签云）
 
-/// 单个分组的树形节点：可展开表头 + 组内账号行。
-/// 表头展示「分组名 [运行中/总数]」与快捷操作（添加账号 / 一键启动 / 一键停止）。
-private struct AccountGroupSection: View {
-    let group: AccountGroup
-    let searchText: String
-    @ObservedObject var viewModel: AccountLibraryViewModel
-    let isRunning: (Account) -> Bool
-    let onToggleSelection: (String) -> Void
-    let onStart: (Account) -> Void
-    let onStop: (Account) -> Void
-    let onDelete: (Account) -> Void
-    let onMoveToGroup: (Account, String) -> Void
-    let onAddAccount: () -> Void
-    let onStartGroup: () -> Void
-    let onStopGroup: () -> Void
-
-    private var isSearching: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+/// 侧边栏分组过滤组件：标签云式流式布局，超宽自动换行。
+/// 选中态填充主题色 + 白字；未选中态透明底 + 1px 主题色描边 + 同色文字。
+/// 每个标签附带右键菜单：启动此组 / 停止此组 / 添加账号到此组。
+struct GroupFilterView: View {
+    struct ChipData: Identifiable {
+        let id: String
+        let title: String
+        /// 角标（如 "3/10" 运行中/总数），nil 不显示。
+        let detail: String?
+        let color: Color
+        let isSelected: Bool
     }
 
-    /// 搜索时在组内过滤；无搜索时展示全组账号。
-    private var displayAccounts: [Account] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return group.accounts }
-        return group.accounts.filter { $0.nickname.localizedCaseInsensitiveContains(query) }
-    }
-
-    private var runningCount: Int {
-        group.accounts.filter { isRunning($0) }.count
-    }
-
-    /// 展开状态绑定：搜索时强制展开，其余读写持久化的 isExpanded。
-    private var expansionBinding: Binding<Bool> {
-        Binding(
-            get: {
-                if isSearching { return true }
-                return viewModel.groups.first(where: { $0.id == group.id })?.isExpanded ?? true
-            },
-            set: { viewModel.setExpanded($0, forGroupID: group.id) }
-        )
-    }
+    let chips: [ChipData]
+    /// 点击标签回调（父级负责全部/取消选中的语义）。
+    let onSelect: (String) -> Void
+    let onStartGroup: (String) -> Void
+    let onStopGroup: (String) -> Void
+    let onAddAccount: (String) -> Void
 
     var body: some View {
-        if isSearching && displayAccounts.isEmpty {
-            EmptyView()
-        } else {
-            DisclosureGroup(isExpanded: expansionBinding) {
-                LazyVStack(spacing: 4) {
-                    ForEach(displayAccounts) { account in
-                        AccountManagerRow(
-                            account: account,
-                            isSelected: viewModel.selectedIDs.contains(account.id),
-                            isRunning: isRunning(account),
-                            onToggle: { onToggleSelection(account.id) },
-                            onStart: { onStart(account) },
-                            onStop: { onStop(account) },
-                            onDelete: { onDelete(account) },
-                            groupNames: viewModel.groupNames,
-                            currentGroupName: account.groupName,
-                            onMoveToGroup: { onMoveToGroup(account, $0) }
-                        )
+        // macOS 13+ 使用原生 Layout 协议流式布局；
+        // 部署目标 12.0 回退到 LazyVGrid 自适应列（等宽换行网格）。
+        Group {
+            if #available(macOS 13.0, *) {
+                FlowLayout(spacing: 6) {
+                    ForEach(chips) { chip in
+                        chipView(chip)
                     }
                 }
-                .padding(.leading, 14)
-                .padding(.trailing, 4)
-                .padding(.bottom, 6)
-            } label: {
-                header
+            } else {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 84, maximum: 140), spacing: 6)],
+                    spacing: 6
+                ) {
+                    ForEach(chips) { chip in
+                        chipView(chip)
+                    }
+                }
             }
-            .background(Color.white.opacity(0.035))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(group.macSwatchColor)
-                .frame(width: 8, height: 8)
-            Text(group.groupName)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-            Text("[\(runningCount)/\(group.accounts.count)]")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(runningCount > 0 ? Color.green : Color.secondary)
-            Spacer(minLength: 6)
-            quickActions
+    @ViewBuilder
+    private func chipView(_ chip: ChipData) -> some View {
+        GroupFilterChip(data: chip, action: { onSelect(chip.id) })
+            .contextMenu {
+                Button { onStartGroup(chip.id) } label: {
+                    Label("启动此组", systemImage: "play.fill")
+                }
+                Button { onStopGroup(chip.id) } label: {
+                    Label("停止此组", systemImage: "stop.fill")
+                }
+                Divider()
+                Button { onAddAccount(chip.id) } label: {
+                    Label("添加账号到此组", systemImage: "person.crop.badge.plus")
+                }
+            }
+    }
+}
+
+/// 单个过滤标签按钮（胶囊样式：未选中描边同色文字，选中填充主题色白字）。
+private struct GroupFilterChip: View {
+    let data: GroupFilterView.ChipData
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(data.title)
+                    .lineLimit(1)
+                if let detail = data.detail {
+                    Text(detail)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .opacity(0.75)
+                }
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(data.isSelected ? Color.white : data.color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(data.isSelected ? data.color : Color.white.opacity(0.05))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(data.color.opacity(data.isSelected ? 1 : 0.85), lineWidth: 1)
+            )
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .help(data.title)
+    }
+}
+
+/// macOS 13+ 原生流式布局：子视图按固有尺寸从左到右排列，超出容器宽度自动换行。
+@available(macOS 13.0, *)
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth == .infinity ? x : max(0, maxWidth), height: y + rowHeight)
     }
 
-    /// 表头快捷按钮区：添加账号 ➕ / 一键启动 ▶️ / 一键停止 ⏹️。
-    private var quickActions: some View {
-        HStack(spacing: 6) {
-            Button(action: onAddAccount) {
-                Image(systemName: "person.crop.badge.plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 20, height: 20)
-                    .foregroundStyle(.cyan)
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
             }
-            .buttonStyle(.plain)
-            .help("添加账号到此组")
-            .accessibilityLabel("添加账号到\(group.groupName)")
-
-            Button(action: onStartGroup) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 20, height: 20)
-                    .foregroundStyle(.green)
-            }
-            .buttonStyle(.plain)
-            .disabled(group.accounts.isEmpty)
-            .opacity(group.accounts.isEmpty ? 0.35 : 1)
-            .help("一键启动此组")
-            .accessibilityLabel("启动\(group.groupName)")
-
-            Button(action: onStopGroup) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 20, height: 20)
-                    .foregroundStyle(.orange)
-            }
-            .buttonStyle(.plain)
-            .disabled(runningCount == 0)
-            .opacity(runningCount == 0 ? 0.35 : 1)
-            .help("一键停止此组")
-            .accessibilityLabel("停止\(group.groupName)")
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 }
