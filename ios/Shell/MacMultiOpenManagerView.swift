@@ -55,14 +55,19 @@ struct MacMultiOpenManagerView: View {
                 .ignoresSafeArea()
 
             // ── 第 1 层 · 玻璃面板层。材质档位就是模糊半径的层级语言：
-            // 侧栏/面板 ≈ blur 50 → .thinMaterial；卡片 ≈ 28 → .ultraThinMaterial。
+            // 侧栏 ≈ blur 50 → .thinMaterial；卡片画布 ≈ 28 → .ultraThinMaterial。
+            // 大厅区不再整面铺材质：参考稿的主区就是「裸氛围光」，
+            // 玻璃只出现在侧栏和卡片画布容器上。
             HStack(spacing: 0) {
                 if sidebarVisible {
                     ZStack {
                         Rectangle()
                             .fill(.thinMaterial)                     // 03 侧栏模糊 ≈50
                         Rectangle()
-                            .fill(Color.white.opacity(0.06))         // 02 玻璃填充 白 6%
+                            .fill(Color.black.opacity(0.30))         // 压暗玻璃，保侧栏文字可读
+                        AmbientRefractionTint()                      // 折射增压：玻璃吃进氛围光色
+                        Rectangle()
+                            .fill(Color.white.opacity(0.05))         // 02 玻璃填充 白 5%
                     }
                     .frame(width: 304)
                     // 04 右缘 1px 描边（上亮下暗）——玻璃的「厚度感」全靠这条线
@@ -75,12 +80,6 @@ struct MacMultiOpenManagerView: View {
                     // 06 外投影：黑 40%，向右偏移，把侧栏从大厅上「抬起」
                     .shadow(color: .black.opacity(0.40), radius: 22, x: 6, y: 0)
                     .zIndex(1)
-                }
-                ZStack {
-                    Rectangle()
-                        .fill(.thinMaterial)                         // 03 面板模糊 ≈50
-                    Rectangle()
-                        .fill(Color.white.opacity(0.04))             // 02 玻璃填充 白 4%
                 }
             }
             .ignoresSafeArea()
@@ -210,11 +209,11 @@ struct MacMultiOpenManagerView: View {
                     importTargetGroupID = nil
                     isPresentingImporter = true
                 } label: { Label("添加账号", systemImage: "plus") }
-                    .buttonStyle(MacManagerButtonStyle(tint: .blue))
+                    .buttonStyle(MacManagerButtonStyle(tint: .cyan))
                 Button { startAll() } label: {
                     Label("启动全部", systemImage: "play.fill")
                 }
-                    .buttonStyle(MacManagerButtonStyle(tint: .cyan))
+                    .buttonStyle(MacManagerButtonStyle(tint: .green))
                 Button { closeAll() } label: { Label("关闭全部", systemImage: "stop.fill") }
                     .buttonStyle(MacManagerButtonStyle(tint: .red))
             }
@@ -466,7 +465,8 @@ struct MacMultiOpenManagerView: View {
     private var workspace: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 14
-            let availableWidth = max(160, proxy.size.width - 48)
+            // 画布容器外边距 24×2 + 容器内边距 16×2 = 80
+            let availableWidth = max(160, proxy.size.width - 80)
             let automaticColumns = max(1, Int((availableWidth + spacing) / (instanceWidth + spacing)))
             let columnCount = max(1, fixedColumnCount ?? automaticColumns)
             // In a fixed-column layout, fit the requested number into the
@@ -475,88 +475,133 @@ struct MacMultiOpenManagerView: View {
             // card or clips the game surface.
             let fittedWidth = (availableWidth - spacing * CGFloat(max(0, columnCount - 1))) / CGFloat(columnCount)
             let cardWidth = fixedColumnCount == nil ? instanceWidth : min(instanceWidth, max(96, fittedWidth))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Button { withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible.toggle() } } label: {
-                            Image(systemName: sidebarVisible ? "sidebar.left" : "sidebar.right")
-                        }
-                        .buttonStyle(MacManagerButtonStyle(tint: .gray))
-                        .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("多开矩阵").font(.system(size: 24, weight: .bold))
-                            Text("\(allRunningAccounts.count) 个活跃实例 · 每个账号独立 WebKit 会话")
-                                .font(.system(size: 13)).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Text("尺寸 \(Int(instanceWidth)) · 9:16")
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                            Button {
-                                instanceWidth = max(160, instanceWidth - 20)
-                            } label: {
-                                Image(systemName: "minus")
-                            }
-                            .buttonStyle(MacManagerButtonStyle(tint: .gray))
-                            Button {
-                                instanceWidth = min(720, instanceWidth + 20)
-                            } label: {
-                                Image(systemName: "plus")
-                            }
-                            .buttonStyle(MacManagerButtonStyle(tint: .gray))
-                        }
-                        Menu {
-                            Button {
-                                fixedColumnCount = nil
-                            } label: {
-                                if fixedColumnCount == nil {
-                                    Label("自动", systemImage: "checkmark")
-                                } else {
-                                    Text("自动")
-                                }
-                            }
-                            Divider()
-                            ForEach(1...12, id: \.self) { count in
-                                Button {
-                                    fixedColumnCount = count
-                                } label: {
-                                    if fixedColumnCount == count {
-                                        Label("每行 \(count) 个", systemImage: "checkmark")
-                                    } else {
-                                        Text("每行 \(count) 个")
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label(
-                                fixedColumnCount.map { "布局：每行 \($0) 个" } ?? "布局：自动",
-                                systemImage: "rectangle.split.3x1"
-                            )
-                        }
-                        .menuStyle(.borderlessButton)
-                        .buttonStyle(MacManagerButtonStyle(tint: .gray))
-                        Button { selectedSection = .accounts } label: { Label("管理账号", systemImage: "person.2") }
-                            .buttonStyle(MacManagerButtonStyle(tint: .blue))
-                    }
-                    if allRunningAccounts.isEmpty {
-                        EmptyMatrixView { selectedSection = .accounts }
+            VStack(spacing: 0) {
+                workspaceHeader
+                matrixCanvas(cardWidth: cardWidth, columnCount: columnCount, spacing: spacing)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 20)
+            }
+        }
+    }
+
+    /// 顶部控制条：固定在氛围光上，不随卡片滚动（参考稿同款布局）。
+    private var workspaceHeader: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Button { withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible.toggle() } } label: {
+                Image(systemName: sidebarVisible ? "sidebar.left" : "sidebar.right")
+            }
+            .buttonStyle(MacManagerButtonStyle(tint: .gray))
+            .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("多开矩阵").font(.system(size: 24, weight: .bold))
+                Text("\(allRunningAccounts.count) 个活跃实例 · 每个账号独立 WebKit 会话")
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            HStack(spacing: 4) {
+                Text("尺寸 \(Int(instanceWidth)) · 9:16")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Button {
+                    instanceWidth = max(160, instanceWidth - 20)
+                } label: {
+                    Image(systemName: "minus")
+                }
+                .buttonStyle(MacManagerButtonStyle(tint: .gray))
+                Button {
+                    instanceWidth = min(720, instanceWidth + 20)
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(MacManagerButtonStyle(tint: .gray))
+            }
+            Menu {
+                Button {
+                    fixedColumnCount = nil
+                } label: {
+                    if fixedColumnCount == nil {
+                        Label("自动", systemImage: "checkmark")
                     } else {
-                        // 矩阵数据源绑定 allRunningAccounts（flatMap 展平所有分组的运行中账号），
-                        // 单元格仍复用 WorkspaceItem 以保留暂停/恢复/关闭等实例控制。
-                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount), spacing: spacing) {
-                            ForEach(allRunningAccounts) { account in
-                                if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) {
-                                    MacGameMatrixCell(item: item, workspace: liveWorkspace, width: cardWidth)
-                                }
+                        Text("自动")
+                    }
+                }
+                Divider()
+                ForEach(1...12, id: \.self) { count in
+                    Button {
+                        fixedColumnCount = count
+                    } label: {
+                        if fixedColumnCount == count {
+                            Label("每行 \(count) 个", systemImage: "checkmark")
+                        } else {
+                            Text("每行 \(count) 个")
+                        }
+                    }
+                }
+            } label: {
+                Label(
+                    fixedColumnCount.map { "布局：每行 \($0) 个" } ?? "布局：自动",
+                    systemImage: "rectangle.split.3x1"
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(MacManagerButtonStyle(tint: .gray))
+            Button { selectedSection = .accounts } label: { Label("管理账号", systemImage: "person.2") }
+                .buttonStyle(MacManagerButtonStyle(tint: .white))
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+    }
+
+    /// 玻璃画布容器（参考稿主区的大圆角玻璃面）：卡片矩阵装在玻璃里，
+    /// 四周留出氛围光。02 白填充 4% + 03 ultraThin 模糊 + 折射增压 + 压暗；
+    /// 描边与投影挂在 background 之外，避免随滚动内容重绘。
+    private func matrixCanvas(cardWidth: CGFloat, columnCount: Int, spacing: CGFloat) -> some View {
+        ScrollView {
+            Group {
+                if allRunningAccounts.isEmpty {
+                    EmptyMatrixView { selectedSection = .accounts }
+                } else {
+                    // 矩阵数据源绑定 allRunningAccounts（flatMap 展平所有分组的运行中账号），
+                    // 单元格仍复用 WorkspaceItem 以保留暂停/恢复/关闭等实例控制。
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount), spacing: spacing) {
+                        ForEach(allRunningAccounts) { account in
+                            if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) {
+                                MacGameMatrixCell(item: item, workspace: liveWorkspace, width: cardWidth)
                             }
                         }
                     }
                 }
-                .padding(24)
             }
-            .background(Color(red: 0.075, green: 0.095, blue: 0.135))
+            .padding(16)
         }
+        .background(canvasGlass)
+        .overlay { canvasGlassStroke }
+        .shadow(color: .black.opacity(0.38), radius: 24, x: 0, y: 16)
+    }
+
+    /// 画布玻璃面：材质模糊（03）→ 氛围光折射增压 → 压暗 → 白填充（02）。
+    private var canvasGlass: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.thinMaterial)                // 03 模糊升档：ultraThin≈28 → thin≈50，更糊更雾
+            AmbientRefractionTint()
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black.opacity(0.04))    // thin 本身更不透明，压暗减半防暗板
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+        }
+    }
+
+    /// 04/05：1px 渐变描边（Inside 对齐），上亮下暗等效顶边内高光。
+    private var canvasGlassStroke: some View {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .strokeBorder(
+                LinearGradient(colors: [Color.white.opacity(0.18), Color.white.opacity(0.10), Color.white.opacity(0.07)],
+                               startPoint: .top, endPoint: .bottom),
+                lineWidth: 1
+            )
     }
 }
 
@@ -830,8 +875,8 @@ private struct MacGameMatrixCell: View {
                 Button { reloadKey = UUID() } label: { Image(systemName: "arrow.clockwise") }
                 Button { Task { await workspace.close(id: item.id) } } label: { Image(systemName: "xmark") }.foregroundStyle(.red)
             }
-            // 品牌青降为半透明 tint：卡片本体是玻璃，让氛围光透出来（配方 02）
-            .padding(.horizontal, 10).frame(height: 38).background(Color(red: 0.08, green: 0.56, blue: 0.57).opacity(0.45))
+            // 卡片头部条：深色玻璃面（参考稿同款），不与氛围光抢色
+            .padding(.horizontal, 10).frame(height: 38).background(Color.black.opacity(0.45))
             MacEmbeddedGameView(account: item.account).id(reloadKey)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // The game is a portrait surface: width:height = 9:16.
@@ -853,8 +898,8 @@ private struct MacGameMatrixCell: View {
                     lineWidth: 1
                 )
         }
-        // 06 外投影：黑 38% / y 18 / blur≈40（负 spread 由紧凑阴影近似）
-        .shadow(color: .black.opacity(0.38), radius: 20, x: 0, y: 18)
+        // 06 外投影：黑 35% / y 12 / blur≈32——卡片浮在画布玻璃上，投影比画布轻一档
+        .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 12)
     }
 }
 
@@ -864,46 +909,72 @@ private struct EmptyMatrixView: View {
         VStack(spacing: 14) {
             Image(systemName: "rectangle.3.group").font(.system(size: 42)).foregroundStyle(.secondary)
             Text("暂无运行中的账号").font(.system(size: 18, weight: .semibold))
-            Button("选择账号并启动", action: onManage).buttonStyle(MacManagerButtonStyle(tint: .cyan))
+            Button("选择账号并启动", action: onManage).buttonStyle(MacManagerButtonStyle(tint: .green))
         }
         .frame(maxWidth: .infinity, minHeight: 420)
-        .glassCard(cornerRadius: 10)
+        // 已在画布玻璃之上：不再叠材质（双层 blur 只会更暗更灰），只做白填充+描边+投影
+        .glassCard(cornerRadius: 10, material: nil)
     }
 }
 
 private struct MacManagerButtonStyle: ButtonStyle {
     let tint: Color
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-            .padding(.horizontal, 11).padding(.vertical, 7).background(tint.opacity(configuration.isPressed ? 0.65 : 0.85)).clipShape(RoundedRectangle(cornerRadius: 6))
+        // tint == .white 是「白色玻璃」特殊档：白 16% 填充 + 黑字，用于深蓝底上的中性主按钮
+        configuration.label.font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(tint == .white ? Color.black : Color.white)
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .background(tint.opacity(configuration.isPressed ? 0.65 : (tint == .white ? 0.16 : 0.85)))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            // 1px 白描边：色块按钮从深蓝背景/玻璃上「浮起来」的最低成本手段
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.20)))
     }
 }
 
 // MARK: - 毛玻璃六步配方
 
-/// 配方 01 · 底层氛围光：深色底 + 5 个超大径向色斑（蓝/紫/青，30–60%）。
-/// 玻璃 = 对背后内容的高斯采样，这层就是被折射的「内容」；色斑错落布置，
-/// 避免叠成均匀色。如需更柔可用 .blur(60)（GPU 代价换更奶的边缘）。
+/// 径向色斑：配方 01 的基本单元（氛围光与折射增压共用）。
+/// 三段式衰减（实→40%→0）让色斑边缘更奶，整体雾感更强。
+private func glowBlob(_ rgb: UInt32, _ opacity: Double, _ center: UnitPoint, _ radius: CGFloat) -> some View {
+    RadialGradient(
+        colors: [Color(rgb: rgb).opacity(opacity),
+                 Color(rgb: rgb).opacity(opacity * 0.4),
+                 Color(rgb: rgb).opacity(0)],
+        center: center,
+        startRadius: 0,
+        endRadius: radius
+    )
+}
+
+/// 配方 01 · 底层氛围光：深色底 + 超大径向色斑。玻璃 = 对背后内容的高斯采样，
+/// 这层就是被折射的「内容」；色斑错落布置，避免叠成均匀色。
+/// 浓度对齐参考稿：靛蓝/紫/青高饱和大色斑，肉眼可辨的星云感。
 private struct AmbientGlowBackground: View {
     var body: some View {
         ZStack {
-            // 深色底（近黑、带蓝相），给色斑做画布
-            Color(red: 0.016, green: 0.024, blue: 0.047)
-            glow(0x3B82F6, opacity: 0.55, center: UnitPoint(x: 0.16, y: 0.10), radius: 780) // 蓝 · 左上主光
-            glow(0x8B5CF6, opacity: 0.48, center: UnitPoint(x: 0.88, y: 0.34), radius: 860) // 紫 · 右侧
-            glow(0x22D3EE, opacity: 0.40, center: UnitPoint(x: 0.26, y: 0.92), radius: 720) // 青 · 左下
-            glow(0x3B82F6, opacity: 0.30, center: UnitPoint(x: 0.62, y: 0.80), radius: 640) // 蓝 · 中下补光
-            glow(0x22D3EE, opacity: 0.30, center: UnitPoint(x: 0.78, y: 0.06), radius: 520) // 青 · 顶缘补光
+            // 渊黑蓝底（最终档）：色斑是仅存的光源，再暗玻璃就没东西可折射了
+            Color(red: 0.01, green: 0.028, blue: 0.075)
+            glowBlob(0x2563EB, 0.58, UnitPoint(x: 0.14, y: 0.32), 780) // 深蓝 · 左侧主光（侧栏后）
+            glowBlob(0x1D4ED8, 0.47, UnitPoint(x: 0.55, y: 0.38), 820) // 深蓝 · 画布正后方（玻璃要有东西可折射）
+            glowBlob(0x1E40AF, 0.42, UnitPoint(x: 0.38, y: 0.92), 760) // 藏蓝 · 底部
+            glowBlob(0x22D3EE, 0.47, UnitPoint(x: 0.95, y: 0.42), 860) // 青 · 右缘（与账号区青色呼应）
+            glowBlob(0x3B82F6, 0.42, UnitPoint(x: 0.72, y: 0.02), 660) // 蓝 · 顶部
+            glowBlob(0x0EA5E9, 0.26, UnitPoint(x: 0.04, y: 0.96), 520) // 天青 · 左下角
         }
     }
+}
 
-    private func glow(_ rgb: UInt32, opacity: Double, center: UnitPoint, radius: CGFloat) -> some View {
-        RadialGradient(
-            colors: [Color(rgb: rgb).opacity(opacity), Color(rgb: rgb).opacity(0)],
-            center: center,
-            startRadius: 0,
-            endRadius: radius
-        )
+/// 折射增压：把氛围光主色斑以低透明度再叠一层到玻璃表面，模拟玻璃对背后
+/// 高饱和光源的折射着色（参考稿的侧栏/画布都明显带着氛围光色）。系统材质
+/// 在不同系统版本对窗内内容的采样强度不一，这层保证玻璃始终吃进颜色。
+private struct AmbientRefractionTint: View {
+    var body: some View {
+        ZStack {
+            glowBlob(0x2563EB, 0.22, UnitPoint(x: 0.10, y: 0.28), 540)
+            glowBlob(0x1D4ED8, 0.26, UnitPoint(x: 0.55, y: 0.45), 640) // 表面中心主 tint
+            glowBlob(0x22D3EE, 0.18, UnitPoint(x: 1.0, y: 0.45), 560)
+            glowBlob(0x3B82F6, 0.16, UnitPoint(x: 0.80, y: 0.0), 500)
+        }
     }
 }
 
