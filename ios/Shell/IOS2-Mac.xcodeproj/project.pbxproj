@@ -30,6 +30,7 @@
 		A10000000000000000000013 /* EngineState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* EngineState.swift */; };
 		A10000000000000000000014 /* ResourceRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* ResourceRef.swift */; };
 		A10000000000000000000015 /* Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* Snapshot.swift */; };
+		A1000000000000000000001A /* AccountFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A /* AccountFileManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		A20000000000000000000002 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 		A20000000000000000000003 /* AccountLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryView.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* AccountLibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLibraryViewModel.swift; sourceTree = "<group>"; };
+		A2000000000000000000001A /* AccountFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountFileManager.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* MacWebKitGameWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWebKitGameWindow.swift; sourceTree = "<group>"; };
 		A20000000000000000000019 /* MacMultiOpenManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMultiOpenManagerView.swift; sourceTree = "<group>"; };
@@ -87,6 +89,7 @@
 				A20000000000000000000002 /* AppCoordinator.swift */,
 				A20000000000000000000003 /* AccountLibraryView.swift */,
 				A20000000000000000000004 /* AccountLibraryViewModel.swift */,
+				A2000000000000000000001A /* AccountFileManager.swift */,
 				A20000000000000000000005 /* DesignTokenLoader.swift */,
 				A20000000000000000000006 /* MacWebKitGameWindow.swift */,
 				A20000000000000000000019 /* MacMultiOpenManagerView.swift */,
@@ -221,6 +224,7 @@
 				A10000000000000000000002,
 				A10000000000000000000003,
 				A10000000000000000000004,
+				A1000000000000000000001A,
 				A10000000000000000000005,
 				A10000000000000000000006,
 				A10000000000000000000019,

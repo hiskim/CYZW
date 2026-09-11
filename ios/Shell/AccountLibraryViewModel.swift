@@ -270,7 +270,7 @@ final class AccountLibraryViewModel: ObservableObject {
         if deletingMembers {
             do {
                 for account in members {
-                    try LegacyBinAccountStore.deleteAccount(named: account.fileName)
+                    try AccountFileManager.shared.deleteBin(named: account.fileName)
                 }
                 accounts.removeAll { account in members.contains(where: { $0.id == account.id }) }
                 selectedIDs.subtract(Set(members.map(\.id)))
@@ -306,8 +306,8 @@ final class AccountLibraryViewModel: ObservableObject {
     func refresh() {
         do {
             let assignments = groupAssignments
-            accounts = try LegacyBinAccountStore.loadAccounts().map { account in
-                var account = account
+            accounts = try AccountFileManager.shared.loadAccountFiles().map { info in
+                var account = Account(fileName: info.fileName, importedAt: info.creationDate)
                 account.groupName = assignments[account.id] ?? Account.defaultGroupName
                 return account
             }
@@ -325,11 +325,14 @@ final class AccountLibraryViewModel: ObservableObject {
 
     /// 导入 .bin 账号。`targetGroupID` 非空时把新账号直接归入该分组；
     /// 传"未分组"伪分组 ID 表示明确不指派；nil 走默认分组逻辑。
+    /// 文件在导入瞬间由 AccountFileManager 物理拷贝进沙盒 AccountBins 目录，
+    /// 之后 App 只依赖沙盒内副本，不再持有外部路径或安全授权。
     func importFiles(from urls: [URL], targetGroupID: String?) {
         do {
             var imported: [Account] = []
             for url in urls {
-                imported.append(try LegacyBinAccountStore.importAccount(from: url))
+                let fileName = try AccountFileManager.shared.importBin(from: url)
+                imported.append(Account(fileName: fileName))
             }
 
             var assignments = groupAssignments
@@ -361,7 +364,7 @@ final class AccountLibraryViewModel: ObservableObject {
         var failures: [String] = []
         for account in targets {
             do {
-                try LegacyBinAccountStore.deleteAccount(named: account.fileName)
+                try AccountFileManager.shared.deleteBin(named: account.fileName)
                 deletedIDs.insert(account.id)
             } catch {
                 failures.append(account.nickname)
@@ -518,96 +521,3 @@ final class AccountLibraryViewModel: ObservableObject {
     }
 }
 
-private enum LegacyBinAccountStore {
-    enum StoreError: LocalizedError {
-        case invalidFileType
-        case unreadableFile
-        case documentsUnavailable
-
-        var errorDescription: String? {
-            switch self {
-            case .invalidFileType:
-                return "只能导入 .bin 账号文件。"
-            case .unreadableFile:
-                return "无法读取所选的 .bin 文件。"
-            case .documentsUnavailable:
-                return "无法访问应用文档目录。"
-            }
-        }
-    }
-
-    static func loadAccounts() throws -> [Account] {
-        let directory = try binDirectory()
-        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .creationDateKey]
-        let urls = try FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        )
-        return urls
-            .filter { $0.pathExtension.lowercased() == "bin" }
-            .sorted { lhs, rhs in
-                let leftDate = (try? lhs.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
-                let rightDate = (try? rhs.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
-                if leftDate != rightDate { return leftDate > rightDate }
-                return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedAscending
-            }
-            .map { url in
-                let values = try? url.resourceValues(forKeys: keys)
-                return Account(
-                    fileName: url.lastPathComponent,
-                    importedAt: values?.creationDate ?? values?.contentModificationDate ?? .distantPast
-                )
-            }
-    }
-
-    static func importAccount(from source: URL) throws -> Account {
-        guard source.pathExtension.lowercased() == "bin" else {
-            throw StoreError.invalidFileType
-        }
-
-        let accessed = source.startAccessingSecurityScopedResource()
-        defer {
-            if accessed { source.stopAccessingSecurityScopedResource() }
-        }
-
-        guard let data = try? Data(contentsOf: source), !data.isEmpty else {
-            throw StoreError.unreadableFile
-        }
-
-        let directory = try binDirectory()
-        let destination = availableURL(in: directory, preferredName: safeBinName(source.lastPathComponent))
-        try data.write(to: destination, options: .atomic)
-        return Account(fileName: destination.lastPathComponent)
-    }
-
-    static func deleteAccount(named name: String) throws {
-        let safeName = safeBinName(name)
-        guard safeName == name else { throw StoreError.invalidFileType }
-        try FileManager.default.removeItem(at: try binDirectory().appendingPathComponent(safeName))
-    }
-
-    private static func binDirectory() throws -> URL {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            throw StoreError.documentsUnavailable
-        }
-        let directory = documents.appendingPathComponent("ios2/bins", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private static func safeBinName(_ rawName: String) -> String {
-        let candidate = (rawName as NSString).lastPathComponent
-        let withExtension = (candidate as NSString).pathExtension.lowercased() == "bin" ? candidate : "\(candidate).bin"
-        let invalid = CharacterSet(charactersIn: "/\\").union(.controlCharacters)
-        let sanitized = withExtension.unicodeScalars.map { invalid.contains($0) ? "_" : String($0) }.joined()
-        return (sanitized.isEmpty || sanitized == "." || sanitized == "..") ? "account.bin" : sanitized
-    }
-
-    private static func availableURL(in directory: URL, preferredName: String) -> URL {
-        let initial = directory.appendingPathComponent(preferredName)
-        guard FileManager.default.fileExists(atPath: initial.path) else { return initial }
-        let base = (preferredName as NSString).deletingPathExtension
-        return directory.appendingPathComponent("\(base)-\(UUID().uuidString.prefix(8)).bin")
-    }
-}

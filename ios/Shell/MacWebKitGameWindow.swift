@@ -480,12 +480,9 @@ private enum MacWebKitAuth {
     }
 
     static func authenticate(account: Account, manifest: MacCDNManifest? = nil) async throws -> Result {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            throw AuthError.missingFile
-        }
-        let fileURL = documents.appendingPathComponent("ios2/bins", isDirectory: true)
-            .appendingPathComponent(account.fileName)
-        guard let binData = try? Data(contentsOf: fileURL), !binData.isEmpty else {
+        // 从沙盒内 Application Support/AccountBins 读取账号文件（AccountFileManager 托管）。
+        guard let binData = try? AccountFileManager.shared.readBinData(for: account.fileName),
+              !binData.isEmpty else {
             throw AuthError.missingFile
         }
         var request = URLRequest(url: URL(string: "\(gameServer)/login/authuser?_seq=1")!)
