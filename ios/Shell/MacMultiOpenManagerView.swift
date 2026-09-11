@@ -848,7 +848,17 @@ private struct AccountManagerRow: View {
                     groupActions
                 }
             }
-            .allowsHitTesting(!isDeleteRevealed)
+            // 修复：删除按钮显示后，点击卡片任意位置即可收起。
+            // 原先用 .allowsHitTesting(!isDeleteRevealed) 把整个卡片层禁用了，
+            // 连挂在同一层的 DragGesture 也收不到事件——删除按钮一旦显示就
+            // 永远无法通过向右拖动取消。改为显示态覆盖透明点击层。
+            .overlay {
+                if isDeleteRevealed {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { collapseDelete() }
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: 8)
                     .onChanged { value in
@@ -857,9 +867,14 @@ private struct AccountManagerRow: View {
                         dragOffset = max(-60, baseOffset + value.translation.width)
                     }
                     .onEnded { value in
-                        let shouldReveal = isDeleteRevealed
-                            ? value.translation.width > -24 ? false : true
-                            : value.translation.width < -34
+                        let shouldReveal: Bool
+                        if isDeleteRevealed {
+                            // 已显示：向右拖回（或几乎没动）→ 收起；继续左拖 → 保持
+                            shouldReveal = value.translation.width <= -24
+                        } else {
+                            // 未显示：向左拖超过 34pt → 显示
+                            shouldReveal = value.translation.width < -34
+                        }
                         withAnimation(.easeOut(duration: 0.16)) {
                             isDeleteRevealed = shouldReveal
                             dragOffset = shouldReveal ? -60 : 0
@@ -870,6 +885,14 @@ private struct AccountManagerRow: View {
         .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
+    }
+
+    /// 收起删除按钮并复位卡片位置。
+    private func collapseDelete() {
+        withAnimation(.easeOut(duration: 0.16)) {
+            isDeleteRevealed = false
+            dragOffset = 0
+        }
     }
 
     @ViewBuilder
