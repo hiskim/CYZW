@@ -14,6 +14,8 @@ struct MacMultiOpenManagerView: View {
     @State private var instanceWidth: CGFloat = 280
     @State private var deletionRequest: AccountDeletionRequest?
     @State private var deletionBlockedMessage: String?
+    @State private var selectedGroupID = AccountGroup.allID
+    @State private var isPresentingGroupManagement = false
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -32,9 +34,20 @@ struct MacMultiOpenManagerView: View {
     }
 
     private var filteredAccounts: [Account] {
-        let source = accounts.accounts(in: .all)
+        let source = accounts.accounts(in: selectedGroup)
         guard !searchText.isEmpty else { return source }
         return source.filter { $0.nickname.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var selectedGroup: AccountGroup {
+        selectedGroupID == AccountGroup.allID
+            ? .all
+            : accounts.visibleGroups.first(where: { $0.id == selectedGroupID }) ?? .all
+    }
+
+    private var currentGroupAllSelected: Bool {
+        let members = accounts.accounts(in: selectedGroup)
+        return !members.isEmpty && members.allSatisfy { accounts.selectedIDs.contains($0.id) }
     }
 
     var body: some View {
@@ -70,6 +83,16 @@ struct MacMultiOpenManagerView: View {
             Button("知道了", role: .cancel) { deletionBlockedMessage = nil }
         } message: {
             Text(deletionBlockedMessage ?? "")
+        }
+        .sheet(isPresented: $isPresentingGroupManagement) {
+            GroupManagementView(viewModel: accounts)
+                .frame(width: 500, height: 360)
+        }
+        .onChange(of: accounts.visibleGroups) { groups in
+            let visibleIDs = Set(groups.map(\.id)).union([AccountGroup.allID])
+            if !visibleIDs.contains(selectedGroupID) {
+                selectedGroupID = AccountGroup.allID
+            }
         }
     }
 
@@ -132,7 +155,9 @@ struct MacMultiOpenManagerView: View {
             HStack(spacing: 8) {
                 Button { isPresentingImporter = true } label: { Label("添加账号", systemImage: "plus") }
                     .buttonStyle(MacManagerButtonStyle(tint: .blue))
-                Button { startAll() } label: { Label("打开全部", systemImage: "play.fill") }
+                Button { startAll() } label: {
+                    Label(selectedGroupID == AccountGroup.allID ? "打开全部" : "打开本组", systemImage: "play.fill")
+                }
                     .buttonStyle(MacManagerButtonStyle(tint: .cyan))
                 Button { closeAll() } label: { Label("关闭全部", systemImage: "stop.fill") }
                     .buttonStyle(MacManagerButtonStyle(tint: .red))
@@ -145,6 +170,38 @@ struct MacMultiOpenManagerView: View {
                 }
                 .buttonStyle(MacManagerButtonStyle(tint: .red))
                 .accessibilityLabel("删除已选账号")
+            }
+            HStack(spacing: 8) {
+                Text("分组").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach([accounts.allGroup] + accounts.visibleGroups) { group in
+                            let isSelected = selectedGroup.id == group.id
+                            Button { selectedGroupID = group.id } label: {
+                                HStack(spacing: 4) {
+                                    Circle().fill(group.macSwatchColor).frame(width: 6, height: 6)
+                                    Text(group.name)
+                                    Text("\(accounts.accounts(in: group).count)")
+                                        .foregroundStyle(isSelected ? .white.opacity(0.75) : .secondary)
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(isSelected ? .white : .primary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(isSelected ? group.macSwatchColor.opacity(0.78) : Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Button { isPresentingGroupManagement = true } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.cyan)
+                .help("管理分组")
+                .accessibilityLabel("管理分组")
             }
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -168,11 +225,11 @@ struct MacMultiOpenManagerView: View {
         ScrollView {
             LazyVStack(spacing: 4) {
                 HStack {
-                    Button { toggleAll() } label: {
-                        Image(systemName: accounts.allSelected ? "checkmark.square.fill" : "square")
+                    Button { toggleCurrentGroup() } label: {
+                        Image(systemName: currentGroupAllSelected ? "checkmark.square.fill" : "square")
                             .foregroundStyle(.cyan)
                     }.buttonStyle(.plain)
-                    Text("全部账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    Text(selectedGroup.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
                     Spacer()
                     Text("\(filteredAccounts.count)").font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                 }
@@ -185,7 +242,10 @@ struct MacMultiOpenManagerView: View {
                         onToggle: { accounts.toggleSelection(id: account.id) },
                         onStart: { start(account) },
                         onStop: { stop(account) },
-                        onDelete: { requestDeletion(of: [account]) }
+                        onDelete: { requestDeletion(of: [account]) },
+                        groupNames: accounts.groupNames,
+                        currentGroupName: account.groupName,
+                        onMoveToGroup: { accounts.updateGroup($0, for: account) }
                     )
                 }
             }
@@ -297,10 +357,16 @@ struct MacMultiOpenManagerView: View {
     }
 
     private func start(_ account: Account) { accounts.recordLogin(for: account); coordinator.openWorkspace(accounts: [account]) }
-    private func startAll() { let all = accounts.accounts; all.forEach { accounts.recordLogin(for: $0) }; coordinator.openWorkspace(accounts: all) }
+    private func startAll() {
+        let members = accounts.accounts(in: selectedGroup)
+        members.forEach { accounts.recordLogin(for: $0) }
+        coordinator.openWorkspace(accounts: members)
+    }
     private func stop(_ account: Account) { if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) { Task { await liveWorkspace.close(id: item.id) } } }
     private func closeAll() { let ids = liveWorkspace.items.map(\.id); Task { for id in ids { await liveWorkspace.close(id: id) } } }
-    private func toggleAll() { accounts.toggleSelectAll() }
+    private func toggleCurrentGroup() {
+        accounts.toggleSelection(in: selectedGroup)
+    }
 
     private func requestDeletion(of targets: [Account]) {
         let runningCount = targets.filter { account in
@@ -324,6 +390,9 @@ private struct AccountDeletionRequest: Identifiable {
 private struct AccountManagerRow: View {
     let account: Account; let isSelected: Bool; let isRunning: Bool
     let onToggle: () -> Void; let onStart: () -> Void; let onStop: () -> Void; let onDelete: () -> Void
+    let groupNames: [String]
+    let currentGroupName: String
+    let onMoveToGroup: (String) -> Void
     @State private var isDeleteRevealed = false
     @State private var dragOffset: CGFloat = 0
 
@@ -347,6 +416,14 @@ private struct AccountManagerRow: View {
                 Button(action: onToggle) { Image(systemName: isSelected ? "checkmark.square.fill" : "square").foregroundStyle(.cyan) }.buttonStyle(.plain)
                 Text(account.nickname).lineLimit(1).font(.system(size: 13, weight: .medium))
                 Spacer(minLength: 4)
+                Menu { groupActions } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                }
+                .menuStyle(.borderlessButton)
+                .help("移动到分组")
+                .accessibilityLabel("移动到分组")
                 Circle().fill(isRunning ? Color.green : Color.gray.opacity(0.55)).frame(width: 7, height: 7)
                 Button(action: isRunning ? onStop : onStart) { Image(systemName: isRunning ? "stop.fill" : "play.fill") }
                     .buttonStyle(.plain).foregroundStyle(isRunning ? .orange : .green)
@@ -357,6 +434,11 @@ private struct AccountManagerRow: View {
             .background(isSelected ? Color.cyan.opacity(0.12) : Color.white.opacity(0.035))
             .offset(x: dragOffset)
             .contentShape(Rectangle())
+            .contextMenu {
+                Menu("移动到分组") {
+                    groupActions
+                }
+            }
             .allowsHitTesting(!isDeleteRevealed)
             .gesture(
                 DragGesture(minimumDistance: 8)
@@ -379,6 +461,36 @@ private struct AccountManagerRow: View {
         .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var groupActions: some View {
+        ForEach(groupNames, id: \.self) { groupName in
+            Button {
+                onMoveToGroup(groupName)
+            } label: {
+                if groupName == currentGroupName {
+                    Label(groupName, systemImage: "checkmark")
+                } else {
+                    Text(groupName)
+                }
+            }
+        }
+    }
+}
+
+private extension AccountGroup {
+    var macSwatchColor: Color {
+        switch colorName {
+        case "green": return Color(red: 0.19, green: 0.82, blue: 0.35)
+        case "orange": return Color(red: 1, green: 0.58, blue: 0.16)
+        case "red": return Color(red: 1, green: 0.27, blue: 0.23)
+        case "purple": return Color(red: 0.69, green: 0.39, blue: 0.94)
+        case "teal": return Color(red: 0.22, green: 0.74, blue: 0.70)
+        case "yellow": return Color(red: 1, green: 0.78, blue: 0.12)
+        case "gray": return Color(red: 0.56, green: 0.56, blue: 0.60)
+        default: return Color(red: 0.16, green: 0.59, blue: 1)
+        }
     }
 }
 

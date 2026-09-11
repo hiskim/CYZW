@@ -300,6 +300,16 @@ final class AccountLibraryViewModel: ObservableObject {
         selectedIDs = allSelected ? [] : Set(accounts.map(\.id))
     }
 
+    func toggleSelection(in group: AccountGroup) {
+        let ids = Set(accounts(in: group).map(\.id))
+        guard !ids.isEmpty else { return }
+        if ids.isSubset(of: selectedIDs) {
+            selectedIDs.subtract(ids)
+        } else {
+            selectedIDs.formUnion(ids)
+        }
+    }
+
     private func updateMembers(_ accountIDs: Set<String>, for group: AccountGroup) {
         var assignments = groupAssignments
         for account in accounts where account.groupName == group.name && !accountIDs.contains(account.id) {

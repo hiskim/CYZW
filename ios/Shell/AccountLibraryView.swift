@@ -268,15 +268,99 @@ struct AccountLibraryView: View {
     }
 }
 
-private struct GroupManagementView: View {
+struct GroupManagementView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: AccountLibraryViewModel
     @State private var isCreatingGroup = false
     @State private var editingGroup: AccountGroup?
     @State private var deletingGroup: AccountGroup?
 
     var body: some View {
+        Group {
+#if os(macOS)
+            macBody
+#else
+            iosBody
+#endif
+        }
+        .sheet(isPresented: $isCreatingGroup) {
+            GroupEditorSheet(viewModel: viewModel, group: nil)
+        }
+        .sheet(item: $editingGroup) { group in
+            GroupEditorSheet(viewModel: viewModel, group: group)
+        }
+        .sheet(item: $deletingGroup) { group in
+            GroupDeletionSheet(viewModel: viewModel, group: group)
+        }
+    }
+
+#if os(macOS)
+    private var macBody: some View {
         let tokens = DesignTokens.shared
 
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("分组管理")
+                        .font(.system(size: 20, weight: .semibold))
+                    Text("创建分组、调整账号归属和显示顺序")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Label("关闭", systemImage: "xmark")
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 16)
+
+            Divider()
+            groupList(tokens: tokens)
+                .frame(maxHeight: .infinity)
+            Divider()
+            HStack {
+                Button {
+                    isCreatingGroup = true
+                } label: {
+                    Label("新建分组", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Button("完成") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 14)
+        }
+        .frame(width: 500, height: 360)
+        .background(tokens.color(.canvas).ignoresSafeArea())
+    }
+#endif
+
+    private var iosBody: some View {
+        let tokens = DesignTokens.shared
+
+        return groupList(tokens: tokens)
+            .background(tokens.color(.canvas).ignoresSafeArea())
+            .navigationTitle("分组管理")
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    EditButton()
+                }
+            }
+#endif
+    }
+
+    @ViewBuilder
+    private func groupList(tokens: DesignTokens) -> some View {
         List {
             Section("固定分组") {
                 GroupManagementRow(
@@ -315,6 +399,7 @@ private struct GroupManagementView: View {
                 }
             }
 
+#if !os(macOS)
             Section {
                 Button {
                     isCreatingGroup = true
@@ -325,31 +410,13 @@ private struct GroupManagementView: View {
                 .buttonStyle(TokenSecondaryButtonStyle())
             }
             .listRowBackground(Color.clear)
+#endif
         }
 #if os(macOS)
         .listStyle(.inset)
 #else
         .listStyle(.insetGrouped)
 #endif
-        .background(tokens.color(.canvas).ignoresSafeArea())
-        .navigationTitle("分组管理")
-#if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                EditButton()
-            }
-        }
-#endif
-        .sheet(isPresented: $isCreatingGroup) {
-            GroupEditorSheet(viewModel: viewModel, group: nil)
-        }
-        .sheet(item: $editingGroup) { group in
-            GroupEditorSheet(viewModel: viewModel, group: group)
-        }
-        .sheet(item: $deletingGroup) { group in
-            GroupDeletionSheet(viewModel: viewModel, group: group)
-        }
     }
 
     @ViewBuilder
@@ -505,45 +572,34 @@ private struct GroupEditorSheet: View {
                             .foregroundStyle(tokens.color(.textSecondary))
                         TextField("搜索账号", text: $searchText)
                             .textFieldStyle(.roundedBorder)
-                        ForEach(filteredAccounts) { account in
-                            Button {
-                                if selectedAccountIDs.contains(account.id) { selectedAccountIDs.remove(account.id) }
-                                else { selectedAccountIDs.insert(account.id) }
-                            } label: {
-                                HStack(spacing: tokens.spacing(.md)) {
-                                    Image(systemName: selectedAccountIDs.contains(account.id) ? "checkmark.square.fill" : "square")
-                                        .foregroundStyle(selectedAccountIDs.contains(account.id) ? tokens.color(.accent) : tokens.color(.textMuted))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(account.nickname)
-                                        Text(account.fileName)
-                                            .font(tokens.font(.sm))
-                                            .foregroundStyle(tokens.color(.textSecondary))
-                                    }
-                                    Spacer()
-                                }
-                                .foregroundStyle(tokens.color(.textPrimary))
-                                .padding(tokens.spacing(.md))
-                                .background(tokens.color(.card))
-                                .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+#if os(macOS)
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(minimum: 220), spacing: tokens.spacing(.md)),
+                                GridItem(.flexible(minimum: 220), spacing: tokens.spacing(.md))
+                            ],
+                            spacing: tokens.spacing(.md)
+                        ) {
+                            ForEach(filteredAccounts) { account in
+                                accountSelectionRow(account, tokens: tokens)
                             }
-                            .buttonStyle(.plain)
                         }
+#else
+                        ForEach(filteredAccounts) { account in
+                            accountSelectionRow(account, tokens: tokens)
+                        }
+#endif
                     }
 
                     Toggle("设为默认分组", isOn: $isDefault)
                         .font(tokens.font(.md, weight: .medium))
                         .tint(tokens.color(.accent))
 
-                    Button(group == nil ? "创建分组" : "保存修改") {
-                        if let group {
-                            viewModel.updateGroup(group, name: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
-                        } else {
-                            viewModel.addGroup(named: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
-                        }
-                        dismiss()
-                    }
+#if !os(macOS)
+                    Button(group == nil ? "创建分组" : "保存修改", action: save)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .buttonStyle(TokenPrimaryButtonStyle())
+#endif
                 }
                 .padding(tokens.spacing(.xl))
             }
@@ -557,7 +613,58 @@ private struct GroupEditorSheet: View {
                 }
             }
 #endif
+#if os(macOS)
+            .frame(width: 680, height: 500)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(group == nil ? "创建分组" : "保存修改", action: save)
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+#endif
         }
+    }
+
+    private func save() {
+        if let group {
+            viewModel.updateGroup(group, name: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
+        } else {
+            viewModel.addGroup(named: name, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
+        }
+        dismiss()
+    }
+
+    private func accountSelectionRow(_ account: Account, tokens: DesignTokens) -> some View {
+        Button {
+            if selectedAccountIDs.contains(account.id) {
+                selectedAccountIDs.remove(account.id)
+            } else {
+                selectedAccountIDs.insert(account.id)
+            }
+        } label: {
+            HStack(spacing: tokens.spacing(.md)) {
+                Image(systemName: selectedAccountIDs.contains(account.id) ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(selectedAccountIDs.contains(account.id) ? tokens.color(.accent) : tokens.color(.textMuted))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.nickname)
+                        .lineLimit(1)
+                    Text(account.fileName)
+                        .font(tokens.font(.sm))
+                        .foregroundStyle(tokens.color(.textSecondary))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(tokens.color(.textPrimary))
+            .padding(tokens.spacing(.md))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tokens.color(.card))
+            .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.control)))
+        }
+        .buttonStyle(.plain)
     }
 }
 
