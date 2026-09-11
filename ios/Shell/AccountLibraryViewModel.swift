@@ -90,10 +90,11 @@ final class AccountLibraryViewModel: ObservableObject {
 
     // MARK: - 侧边栏分组过滤
 
-    /// 侧边栏账号列表数据源：按 selectedGroupID 过滤（nil = 全部账号）。
+    /// 侧边栏账号列表数据源：按 selectedGroupID 过滤（nil = "全部"，同样遵循
+    /// accountOrder[allID] 的持久化排序，保证拖动排序在"全部"视图下也生效）。
     var filteredAccounts: [Account] {
         guard let selectedGroupID,
-              let group = groups.first(where: { $0.id == selectedGroupID }) else { return accounts }
+              let group = groups.first(where: { $0.id == selectedGroupID }) else { return accounts(in: .all) }
         return accounts(in: group)
     }
 

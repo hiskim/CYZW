@@ -22,6 +22,11 @@ struct MacMultiOpenManagerView: View {
     @State private var groupManagementMode: GroupManagementMode = .list
     /// 记录本次文件导入的目标分组（nil = 走默认分组逻辑）。
     @State private var importTargetGroupID: String?
+    /// 侧栏账号卡片拖动排序模式：开启后卡片显示抓手、禁用滑动删除等交互，
+    /// 只响应 onDrag/onDrop 拖动重排（松手即经 moveAccounts 写入 UserDefaults 持久化）。
+    @State private var isSortingAccounts = false
+    /// 拖动排序进行中的账号 ID（与 iOS 端 AccountDropDelegate 的契约一致）。
+    @State private var draggedAccountID: String?
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -334,9 +339,16 @@ struct MacMultiOpenManagerView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(displayAccounts.count)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    if isSortingAccounts {
+                        Text("拖动卡片调整顺序")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.cyan)
+                    } else {
+                        Text("\(displayAccounts.count)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    sortModeButton
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -347,6 +359,10 @@ struct MacMultiOpenManagerView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 24)
+                } else if isSortingAccounts {
+                    ForEach(displayAccounts) { account in
+                        sortingAccountRow(for: account)
+                    }
                 } else {
                     ForEach(displayAccounts) { account in
                         AccountManagerRow(
@@ -366,6 +382,59 @@ struct MacMultiOpenManagerView: View {
             }
             .padding(.horizontal, 8)
         }
+    }
+
+    // MARK: - 拖动排序
+
+    /// 排序开关：进入排序模式时清空搜索（搜索过滤会截断列表，此时排序会丢顺序）。
+    private var sortModeButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { isSortingAccounts.toggle() }
+            if isSortingAccounts { searchText = "" }
+        } label: {
+            Image(systemName: isSortingAccounts ? "checkmark" : "arrow.up.arrow.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(isSortingAccounts ? .white : .secondary)
+                .padding(4)
+                .background(isSortingAccounts ? Color.cyan.opacity(0.85) : Color.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .help(isSortingAccounts ? "完成排序" : "拖动排序（在当前分组内生效，重启保留）")
+    }
+
+    /// 拖动排序的目标分组：当前过滤视图；未选分组 = "全部"伪分组。
+    private var currentSortGroup: AccountGroup {
+        groupByID(accounts.selectedGroupID ?? "") ?? .all
+    }
+
+    /// 排序模式下的账号行：抓手样式 + onDrag/onDrop 拖动重排。
+    /// 拖动途经某行时 AccountDropDelegate.dropEntered 实时 moveAccounts（带动画 + 持久化）。
+    private func sortingAccountRow(for account: Account) -> some View {
+        AccountManagerRow(
+            account: account,
+            isSelected: accounts.selectedIDs.contains(account.id),
+            isRunning: isRunning(account),
+            isSorting: true,
+            onToggle: {}, onStart: {}, onStop: {}, onDelete: {},
+            groupNames: [],
+            currentGroupName: account.groupName,
+            onMoveToGroup: { _ in }
+        )
+        .onDrag {
+            draggedAccountID = account.id
+            return NSItemProvider(object: account.id as NSString)
+        }
+        .onDrop(of: [UTType.text], delegate: AccountDropDelegate(
+            account: account,
+            group: currentSortGroup,
+            accounts: displayAccounts,
+            viewModel: accounts,
+            draggedAccountID: $draggedAccountID,
+            isSorting: $isSortingAccounts,
+            // macOS 松手后保持排序模式，便于连续整理多个账号；点 ✓ 退出。
+            exitsSortingOnDrop: false
+        ))
     }
 
     // MARK: - 过滤交互
@@ -798,6 +867,9 @@ struct FlowLayout: Layout {
 
 private struct AccountManagerRow: View {
     let account: Account; let isSelected: Bool; let isRunning: Bool
+    /// 排序模式：渲染抓手样式，禁用滑动删除/分组菜单/启停等一切点击交互，
+    /// 只响应外层挂载的 onDrag/onDrop 拖动排序手势。
+    var isSorting: Bool = false
     let onToggle: () -> Void; let onStart: () -> Void; let onStop: () -> Void; let onDelete: () -> Void
     let groupNames: [String]
     let currentGroupName: String
@@ -806,6 +878,43 @@ private struct AccountManagerRow: View {
     @State private var dragOffset: CGFloat = 0
 
     var body: some View {
+        if isSorting {
+            sortingBody
+        } else {
+            normalBody
+        }
+    }
+
+    /// 排序模式行：抓手 + 昵称 + 运行状态点。行高与普通行一致（padding 9 × 2 + 16），
+    /// 切换模式时列表不跳动。
+    private var sortingBody: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.cyan.opacity(0.85))
+            Text(account.nickname)
+                .lineLimit(1)
+                .font(.system(size: 13, weight: .medium))
+            Spacer(minLength: 4)
+            Circle()
+                .fill(isRunning ? Color.green : Color.gray.opacity(0.55))
+                .frame(width: 7, height: 7)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.cyan.opacity(0.07))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.cyan.opacity(0.22), lineWidth: 0.8)
+                )
+        )
+        .contentShape(Rectangle())
+    }
+
+    private var normalBody: some View {
         ZStack(alignment: .trailing) {
             Button(action: onDelete) {
                 Image(systemName: "trash")

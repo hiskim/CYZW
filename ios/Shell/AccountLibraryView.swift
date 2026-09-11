@@ -1350,13 +1350,17 @@ private struct AccountGroupSection: View {
     }
 }
 
-private struct AccountDropDelegate: DropDelegate {
+/// 拖动排序的落点代理（iOS/macOS 共用）：拖入某行时把被拖账号实时移动到该行位置，
+/// moveAccounts 内部即写 UserDefaults 持久化。
+struct AccountDropDelegate: DropDelegate {
     let account: Account
     let group: AccountGroup
     let accounts: [Account]
     let viewModel: AccountLibraryViewModel
     @Binding var draggedAccountID: String?
     @Binding var isSorting: Bool
+    /// 松手后是否自动退出排序模式：iOS 退出；macOS 保持模式便于连续整理。
+    var exitsSortingOnDrop: Bool = true
 
     func dropEntered(info: DropInfo) {
         guard let draggedAccountID,
@@ -1373,7 +1377,7 @@ private struct AccountDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         accountSortingLogger.info("drop performed: target=\(account.id, privacy: .public), dragged=\(draggedAccountID ?? "nil", privacy: .public)")
-        isSorting = false
+        if exitsSortingOnDrop { isSorting = false }
         draggedAccountID = nil
         return true
     }
