@@ -19,6 +19,8 @@ struct AccountLibraryView: View {
     @State private var isPresentingImporter = false
     @State private var selectedGroupID = AccountGroup.allID
     @State private var isSortingAccounts = false
+    /// iOS 端分组管理页的模式（推入页不区分显示，仅满足 GroupManagementView 的 Binding 签名）。
+    @State private var groupManagementMode: GroupManagementMode = .list
 
     let onLaunch: (Account) -> Void
     let onLaunchMultiple: ([Account]) -> Void
@@ -209,7 +211,7 @@ struct AccountLibraryView: View {
                 }
 
                 NavigationLink {
-                    GroupManagementView(viewModel: viewModel)
+                    GroupManagementView(viewModel: viewModel, mode: $groupManagementMode)
                 } label: {
                     Label("管理", systemImage: "plus")
                         .font(tokens.font(.sm, weight: .medium))
@@ -275,7 +277,15 @@ struct GroupManagementView: View {
     @State private var editingGroup: AccountGroup?
     @State private var deletingGroup: AccountGroup?
     /// macOS 专用：弹窗模式（列表 / 创建 / 编辑），三段式固定头尾布局。
-    @State private var mode: GroupManagementMode = .list
+    /// mode 由父级持有（Binding）：sheet 关闭后 @State 会被保留，State(initialValue:)
+    /// 只在首次安装时生效——曾导致「＋增加分组」第二次打开仍显示旧的列表模式。
+    /// 改为 Binding 后，模式永远由入口按钮显式决定。
+    @Binding var mode: GroupManagementMode
+
+    init(viewModel: AccountLibraryViewModel, mode: Binding<GroupManagementMode>) {
+        _viewModel = ObservedObject(wrappedValue: viewModel)
+        _mode = mode
+    }
     // 编辑器草稿状态：固定头部（名称/颜色/默认）与中间账号网格共享。
     @State private var draftName = ""
     @State private var draftColorName = "blue"
@@ -326,6 +336,9 @@ struct GroupManagementView: View {
         .frame(width: 560, height: 470)
         .background(tokens.color(.canvas).ignoresSafeArea())
         .onChange(of: mode) { _ in focusDraftNameIfNeeded() }
+        // 直接以创建态打开（侧栏「增加分组」入口）时不会触发 onChange，
+        // 这里补一次焦点：弹窗出现即聚焦分组名称输入框。
+        .onAppear { focusDraftNameIfNeeded() }
     }
 
     /// 固定头部：标题行 +（编辑器模式下的）名称输入 / 颜色圆点 / 设为默认开关。
@@ -334,7 +347,7 @@ struct GroupManagementView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("分组管理")
+                    Text(headerTitle)
                         .font(.system(size: 20, weight: .semibold))
                     Text(headerSubtitle)
                         .font(.system(size: 12))
@@ -349,8 +362,16 @@ struct GroupManagementView: View {
                     }
                     .keyboardShortcut(.cancelAction)
                 } else {
+                    // 编辑器模式（含「增加分组」直入的创建态）：右上角同时提供
+                    // 「返回列表」与「关闭」——不必先回列表就能直接关掉弹窗。
+                    // Esc（.cancelAction）绑定在「关闭」上：任何模式按 Esc 都直接退出弹窗。
                     Button("返回列表", action: cancelEditing)
-                        .keyboardShortcut(.cancelAction)
+                    Button {
+                        dismiss()
+                    } label: {
+                        Label("关闭", systemImage: "xmark")
+                    }
+                    .keyboardShortcut(.cancelAction)
                 }
             }
 
@@ -489,6 +510,16 @@ struct GroupManagementView: View {
 #endif
 
     // MARK: - 编辑器草稿逻辑（groupRow 的编辑入口在两个平台都会调用 beginEditing）
+
+    /// 弹窗主标题随模式区分功能：侧栏「＋增加分组」直入创建态 →「新建分组」，
+    /// 侧栏「⚙管理分组」进列表 →「分组管理」，列表内点行编辑 →「编辑分组」。
+    private var headerTitle: String {
+        switch mode {
+        case .list: return "分组管理"
+        case .create: return "新建分组"
+        case .edit: return "编辑分组"
+        }
+    }
 
     private var headerSubtitle: String {
         switch mode {

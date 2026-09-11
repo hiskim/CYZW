@@ -16,6 +16,10 @@ struct MacMultiOpenManagerView: View {
     @State private var deletionRequest: AccountDeletionRequest?
     @State private var deletionBlockedMessage: String?
     @State private var isPresentingGroupManagement = false
+    /// 分组管理弹窗的当前模式（Binding 传给弹窗）：.list 管理列表 / .create 新建分组。
+    /// 由入口按钮显式设置，弹窗内的模式切换也写回这里——避免 sheet 复用
+    /// 残留 @State 导致「＋增加分组」打开的却是列表模式。
+    @State private var groupManagementMode: GroupManagementMode = .list
     /// 记录本次文件导入的目标分组（nil = 走默认分组逻辑）。
     @State private var importTargetGroupID: String?
 
@@ -25,13 +29,13 @@ struct MacMultiOpenManagerView: View {
     }
 
     enum Section: String, CaseIterable, Identifiable {
-        case accounts, games, scripts, settings
+        case accounts, scripts, settings
         var id: String { rawValue }
         var title: String {
-            switch self { case .accounts: return "账号"; case .games: return "游戏"; case .scripts: return "脚本"; case .settings: return "设置" }
+            switch self { case .accounts: return "账号"; case .scripts: return "脚本"; case .settings: return "设置" }
         }
         var icon: String {
-            switch self { case .accounts: return "person.2"; case .games: return "gamecontroller"; case .scripts: return "curlybraces"; case .settings: return "gearshape" }
+            switch self { case .accounts: return "person.2"; case .scripts: return "curlybraces"; case .settings: return "gearshape" }
         }
     }
 
@@ -149,7 +153,7 @@ struct MacMultiOpenManagerView: View {
             // 尺寸由 GroupManagementView 的 macBody 内部定义（560×470）。
             // 此处不要再套 frame，否则双层 frame 会把底部「新建分组/完成」
             // 工具栏裁剪出可视区域。
-            GroupManagementView(viewModel: accounts)
+            GroupManagementView(viewModel: accounts, mode: $groupManagementMode)
         }
     }
 
@@ -159,7 +163,7 @@ struct MacMultiOpenManagerView: View {
                 Image(systemName: "square.grid.3x3.fill")
                     .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.cyan)
-                Text("网页游戏中控台")
+                Text("中控台")
                     .font(.system(size: 18, weight: .bold))
                 Spacer()
             }
@@ -190,7 +194,6 @@ struct MacMultiOpenManagerView: View {
 
             if selectedSection == .accounts {
                 accountControls
-                filterBar
                 accountList
             } else {
                 secondarySection
@@ -235,20 +238,8 @@ struct MacMultiOpenManagerView: View {
                 .buttonStyle(MacManagerButtonStyle(tint: .red))
                 .accessibilityLabel("删除已选账号")
             }
-            HStack(spacing: 8) {
-                Text("分组").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                Text("\(accounts.visibleGroups.count) 个自定义分组")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button { isPresentingGroupManagement = true } label: {
-                    Image(systemName: "slider.horizontal.3")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.cyan)
-                .help("管理分组")
-                .accessibilityLabel("管理分组")
-            }
+            // 分组列表移到搜索栏上方：分组标签 + 行尾「增加分组」按钮（见 groupFilterRow）。
+            groupFilterRow
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索账号", text: $searchText).textFieldStyle(.plain)
@@ -294,17 +285,25 @@ struct MacMultiOpenManagerView: View {
         }
     }
 
-    /// 分组过滤标签区（标签云流式布局，超宽自动换行）。
-    private var filterBar: some View {
+    /// 分组行（位于搜索栏上方）：分组标签列表 + 行尾「增加分组 / 管理分组」按钮。
+    /// 标签云流式布局；标签过多换行时按钮跟随流动，不会被挤变形。
+    private var groupFilterRow: some View {
         GroupFilterView(
             chips: filterChips,
             onSelect: selectFilterGroup,
             onStartGroup: startGroupByID,
             onStopGroup: stopGroupByID,
-            onAddAccount: importIntoGroup
+            onAddAccount: importIntoGroup,
+            // 「＋增加分组」：打开分组弹窗并直接进入新建分组模式。
+            onAddGroup: {
+                groupManagementMode = .create
+                isPresentingGroupManagement = true
+            },
+            onManageGroups: {
+                groupManagementMode = .list
+                isPresentingGroupManagement = true
+            }
         )
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
     }
 
     /// 过滤 + 搜索后的扁平账号列表。
@@ -463,7 +462,7 @@ struct MacMultiOpenManagerView: View {
     private var secondarySection: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(selectedSection.title).font(.system(size: 20, weight: .bold))
-            Text(selectedSection == .games ? "运行中的游戏实例会显示在右侧矩阵。" : selectedSection == .scripts ? "脚本插件将在这里管理。" : "应用与缓存设置。")
+            Text(selectedSection == .scripts ? "脚本插件将在这里管理。" : "应用与缓存设置。")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
             if selectedSection == .settings { SettingsView().frame(maxHeight: 430) }
             if selectedSection == .scripts { PluginPanelView(workspace: liveWorkspace).frame(maxHeight: 430) }
@@ -554,8 +553,6 @@ struct MacMultiOpenManagerView: View {
             }
             .menuStyle(.borderlessButton)
             .buttonStyle(MacManagerButtonStyle(tint: .gray))
-            Button { selectedSection = .accounts } label: { Label("管理账号", systemImage: "person.2") }
-                .buttonStyle(MacManagerButtonStyle(tint: .white))
         }
         .padding(.horizontal, 24)
         .padding(.top, 14)
@@ -625,6 +622,9 @@ private struct AccountDeletionRequest: Identifiable {
 /// 侧边栏分组过滤组件：标签云式流式布局，超宽自动换行。
 /// 选中态填充主题色 + 白字；未选中态透明底 + 1px 主题色描边 + 同色文字。
 /// 每个标签附带右键菜单：启动此组 / 停止此组 / 添加账号到此组。
+/// `onAddGroup` / `onManageGroups` 非 nil 时，在标签列表末尾追加对应按钮
+///（如「增加分组」），随流式布局一起换行。刻意保持非泛型：泛型会让
+/// `GroupFilterView.ChipData` 这类嵌套类型引用必须写泛型参数。
 struct GroupFilterView: View {
     struct ChipData: Identifiable {
         let id: String
@@ -641,6 +641,10 @@ struct GroupFilterView: View {
     let onStartGroup: (String) -> Void
     let onStopGroup: (String) -> Void
     let onAddAccount: (String) -> Void
+    /// 非 nil 时在标签列表末尾追加「增加分组」按钮（随流式布局换行）。
+    var onAddGroup: (() -> Void)? = nil
+    /// 非 nil 时在「增加分组」之后追加「管理分组」按钮。
+    var onManageGroups: (() -> Void)? = nil
 
     var body: some View {
         // macOS 13+ 使用原生 Layout 协议流式布局；
@@ -651,6 +655,7 @@ struct GroupFilterView: View {
                     ForEach(chips) { chip in
                         chipView(chip)
                     }
+                    trailingButtons
                 }
             } else {
                 LazyVGrid(
@@ -660,8 +665,39 @@ struct GroupFilterView: View {
                     ForEach(chips) { chip in
                         chipView(chip)
                     }
+                    trailingButtons
                 }
             }
+        }
+    }
+
+    /// 行尾按钮区：与过滤标签（≈24pt）同高，流式布局内垂直居中对齐。
+    @ViewBuilder
+    private var trailingButtons: some View {
+        if onAddGroup != nil || onManageGroups != nil {
+            HStack(spacing: 8) {
+                if let onAddGroup {
+                    Button(action: onAddGroup) {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.cyan)
+                    .help("增加分组")
+                    .accessibilityLabel("增加分组")
+                }
+                if let onManageGroups {
+                    Button(action: onManageGroups) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.cyan)
+                    .help("管理分组")
+                    .accessibilityLabel("管理分组")
+                }
+            }
+            .frame(height: 24, alignment: .center)
         }
     }
 
@@ -932,6 +968,9 @@ private struct MacManagerButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         // tint == .white 是「白色玻璃」特殊档：白 16% 填充 + 黑字，用于深蓝底上的中性主按钮
         configuration.label.font(.system(size: 12, weight: .semibold))
+            // 统一内容行高：任何 SF Symbol 的固有高度都不会把个别按钮撑高，
+            // 走此样式的按钮严格等高（16 + 7×2 = 30pt）。
+            .frame(height: 16, alignment: .center)
             .foregroundStyle(tint == .white ? Color.black : Color.white)
             .padding(.horizontal, 11).padding(.vertical, 7)
             .background(tint.opacity(configuration.isPressed ? 0.65 : (tint == .white ? 0.16 : 0.85)))
