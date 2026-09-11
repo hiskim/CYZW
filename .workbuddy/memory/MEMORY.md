@@ -14,3 +14,12 @@
 - 同文件多次编辑必须串行（外置盘并行 Edit 有竞态/丢失风险），改完 sync 后验证。
 - 侧栏卡片/控件统一配方（脚本页、设置页通用）：白玻璃卡片 white 0.055 填充 + 顶亮底暗描边渐变（连续圆角 10–12）、卡头 28×28 图标磁贴、状态用 Capsule(.continuous) 胶囊（选中=实色填充白字+微光，未选中=white 0.05 + 描边同色文字）、开关 mini switch + glowGreen #22B170、强调青 .cyan。新设置类 UI 直接抄这套，不要用系统 Picker/Toggle 默认外观。
 - 游戏画质：MacRenderQuality（UserDefaults `ios2.renderQuality`，默认 high）→ bootstrapScript 注入 qualitySingle/qualityMulti → WebRuntime renderPixelRatio 决定画布像素比；档位只在实例启动时读取，改档需重启实例。
+
+## 游戏实例存储（踩过的坑）
+- 游戏内设置（省电模式等）写在 `window.localStorage`，`cc.sys.localStorage` 就是它。因此 WebKit 实例**绝不能用 `.nonPersistent()`**，否则关窗即丢配置；也**不能用 `.default()`**，会和 App 内其它网页内容混在一起。
+- 现行方案（MacWebKitGameWindow.swift，用户要求**所有账号共用一份配置**）：
+  - `MacGameDataStore`：`WKWebsiteDataStore(forIdentifier:)`，共享模式用固定 seed `"shared-game-store"`；`.nonPersistent()` 与"按账号各存一份"都可通过 UserDefaults 开关回退（`ios2.gameStorage.persistentDataStore` / `ios2.gameStorage.sharedAcrossAccounts`）。
+  - `MacGameSettingsStore`：原生镜像兜底自定义 scheme 不落盘，默认写 `Application Support/GameStorage/shared.json`（关闭共享时按账号各一份文件，已含一次性合并迁移）。
+- App 未沙盒化，实际路径就是 `~/Library/Application Support/GameStorage/` 与 `AccountBins/`。
+- 游戏真实配置键（已验证落盘）：`MUSIC_OPEN`、`SOUND_OPEN`、`VIBRATE_OPEN`、`SIMPLIFY_FLY_NUMBER`、`PRIVACY_OPEN`、`AFK_GAP`；账号相关键形如 `PREF#<角色uid>#GUIDE`、`SHOW_NIGHTMARE_WEEK_FACE-<uid>-...`，**游戏自己按 uid 区分**，所以全局共享一份存储与真机语义一致、不会串号。
+- iOS 版 `WebKitInstance.configureWebView()` 仍是 `.nonPersistent()` 硬编码（policy.allowsStorage 只管 JS 能否访问、不管是否落盘）；用户已明确 iOS 不用管。

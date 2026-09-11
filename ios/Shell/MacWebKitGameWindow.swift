@@ -62,6 +62,239 @@ enum MacWebKitGameWindowController {
     }
 }
 
+// MARK: - 游戏内设置持久化
+
+/// 游戏实例的持久化 website data store。
+///
+/// `.nonPersistent()` 让 localStorage 只活在内存里，游戏内的省电模式等配置
+/// （写入 `window.localStorage` / `cc.sys.localStorage`）关掉窗口就回到默认值；
+/// `.default()` 则会和 App 内其它网页内容混在一起。
+///
+/// 默认**所有账号共用一份**：游戏设置本来就该全局一致（真机也是一个 App 一份
+/// localStorage，切换账号时由游戏自己按 uid 区分数据），没必要每账号存一份。
+private enum MacGameDataStore {
+    /// 紧急回退开关：默认开启持久化。若某个游戏版本因为复用本地会话缓存导致
+    /// 登录异常，可执行
+    /// `defaults write com.xyzw.ios2.webkit.macos ios2.gameStorage.persistentDataStore -bool false`
+    /// 退回旧的 non-persistent 行为（此时仍由原生镜像层保证配置不丢）。
+    static let persistentStoreEnabledKey = "ios2.gameStorage.persistentDataStore"
+
+    /// 默认开启：所有账号共享同一份游戏内配置。设为 false 则退回「每账号独立」。
+    /// `defaults write com.xyzw.ios2.webkit.macos ios2.gameStorage.sharedAcrossAccounts -bool false`
+    static let sharedAcrossAccountsKey = "ios2.gameStorage.sharedAcrossAccounts"
+
+    /// 是否所有账号共用一份游戏内配置。
+    static var isShared: Bool {
+        UserDefaults.standard.object(forKey: sharedAcrossAccountsKey) as? Bool ?? true
+    }
+
+    static func store(forAccountID accountID: String) -> WKWebsiteDataStore {
+        let defaults = UserDefaults.standard
+        let persisted = defaults.object(forKey: persistentStoreEnabledKey) as? Bool ?? true
+        guard persisted else { return .nonPersistent() }
+        // 共享模式：所有账号同一个存储区，配置在一个账号里改过，其余账号同生效。
+        let seed = isShared ? "shared-game-store" : accountID
+        return WKWebsiteDataStore(forIdentifier: stableUUID(from: seed))
+    }
+
+    /// 由账号名确定性地派生 UUID，保证同一账号每次启动拿到同一个存储区。
+    private static func stableUUID(from seed: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data(("ios2-game-store-" + seed).utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x40   // UUID version 4
+        bytes[8] = (bytes[8] & 0x3F) | 0x80   // RFC 4122 variant
+        let bridged = bytes.withUnsafeBufferPointer { NSUUID(uuidBytes: $0.baseAddress!) }
+        return UUID(uuidString: bridged.uuidString) ?? UUID()
+    }
+}
+
+/// 游戏 localStorage 的原生镜像（`Application Support/GameStorage/shared.json`）。
+///
+/// 这是持久化 data store 之外的第二层保险：游戏跑在自定义 scheme
+/// `ios2-game://` 上，WebKit 对这类 origin 的 localStorage 落盘策略不稳定，
+/// 所以页面每次写 `localStorage` 都实时回传原生并节流落盘；下次登录在文档
+/// 创建之前把镜像写回 `localStorage`，配置就不会再回到默认值。
+///
+/// 镜像默认**所有账号共用一份**（与 WebKit 存储区口径一致），游戏内设置改一次
+/// 全账号生效；把 `ios2.gameStorage.sharedAcrossAccounts` 设为 false 可退回
+/// 每个账号各存一份。
+final class MacGameSettingsStore: @unchecked Sendable {
+    static let shared = MacGameSettingsStore()
+
+    /// 单条 value 超过该长度的一般是资源缓存而非配置，不做镜像。
+    static let maxMirroredValueLength = 262_144
+
+    private let directoryURL: URL
+    private let queue = DispatchQueue(label: "com.xyzw.ios2.gamestorage")
+    private var mirror: [String: [String: String]] = [:]
+    private var flushWork: [String: DispatchWorkItem] = [:]
+    private var loadedAccounts: Set<String> = []
+
+    private init() {
+        let fileManager = FileManager.default
+        var appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        if appSupport == nil {
+            let library = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library", isDirectory: true)
+            appSupport = library.appendingPathComponent("Application Support", isDirectory: true)
+        }
+        directoryURL = appSupport!.appendingPathComponent("GameStorage", isDirectory: true)
+        try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.flushAll() }
+        mergeLegacyPerAccountFilesIfNeeded()
+    }
+
+    // MARK: 读写
+
+    /// 存储分区：默认所有账号共用一份；关闭共享开关后按账号各自一份。
+    private func partition(for accountID: String) -> String {
+        MacGameDataStore.isShared ? "shared" : accountID
+    }
+
+    func snapshot(forAccount accountID: String) -> [String: String] {
+        let key = partition(for: accountID)
+        return queue.sync {
+            loadIfNeeded(key)
+            return mirror[key] ?? [:]
+        }
+    }
+
+    /// `value` 为 nil 表示删除该键。
+    func setValue(_ value: String?, forKey key: String, accountID: String) {
+        let partitionKey = partition(for: accountID)
+        queue.sync {
+            loadIfNeeded(partitionKey)
+            var storage = mirror[partitionKey] ?? [:]
+            if let value {
+                storage[key] = value
+            } else {
+                storage.removeValue(forKey: key)
+            }
+            mirror[partitionKey] = storage
+            scheduleFlush(partitionKey)
+        }
+    }
+
+    /// 用页面里的全量快照替换镜像（关窗前的兜底同步）。
+    func replaceAll(with storage: [String: String], accountID: String) {
+        let partitionKey = partition(for: accountID)
+        queue.sync {
+            mirror[partitionKey] = storage
+            loadedAccounts.insert(partitionKey)
+            scheduleFlush(partitionKey)
+        }
+    }
+
+    func flush(accountID: String) {
+        let partitionKey = partition(for: accountID)
+        queue.sync { write(partitionKey) }
+    }
+
+    func flushAll() {
+        queue.sync { mirror.keys.forEach(write) }
+    }
+
+    // MARK: 注入脚本
+
+    /// 文档创建之前把上次保存的配置写回 localStorage。
+    ///
+    /// 共享模式下直接覆盖本地值，保证「一个账号改过，所有账号都跟着变」，
+    /// 也顺便把从每账号独立模式切过来时残留的旧值统一掉；
+    /// 独立模式只补本地缺失的键，避免覆盖本次会话中更新的值。
+    func restoreScript(forAccount accountID: String) -> String {
+        let entries = snapshot(forAccount: accountID)
+        guard !entries.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: entries),
+              let json = String(data: data, encoding: .utf8) else { return "" }
+        let overwrite = MacGameDataStore.isShared ? "true" : "false"
+        return """
+        (() => {
+          const overwrite = \(overwrite);
+          const saved = \(json);
+          try {
+            for (const key of Object.keys(saved)) {
+              try { if (overwrite || window.localStorage.getItem(key) === null) window.localStorage.setItem(key, saved[key]); } catch (ignored) {}
+            }
+          } catch (ignored) {}
+        })();
+        """
+    }
+
+    /// Hook `Storage.prototype`，页面每次写 localStorage 都实时回传原生。
+    static let mirrorScript = """
+    (() => {
+      const limit = \(maxMirroredValueLength);
+      const post = (payload) => { try { window.webkit.messageHandlers.ios2Game.postMessage(payload); } catch (ignored) {} };
+      const nativeSetItem = Storage.prototype.setItem;
+      const nativeRemoveItem = Storage.prototype.removeItem;
+      Storage.prototype.setItem = function (key, value) {
+        try {
+          const text = String(value);
+          if (text.length <= limit) post({ type: 'storage', op: 'set', key: String(key), value: text });
+        } catch (ignored) {}
+        return nativeSetItem.apply(this, arguments);
+      };
+      Storage.prototype.removeItem = function (key) {
+        try { post({ type: 'storage', op: 'remove', key: String(key) }); } catch (ignored) {}
+        return nativeRemoveItem.apply(this, arguments);
+      };
+    })();
+    """
+
+    // MARK: 私有实现
+
+    /// 从「每账号一份」切到「全局共享」时，把已有的账号镜像合并进 shared.json，
+    /// 免得用户刚设好的配置看起来又没了。只在 shared.json 还不存在时跑一次。
+    private func mergeLegacyPerAccountFilesIfNeeded() {
+        guard MacGameDataStore.isShared else { return }
+        let sharedURL = fileURL(for: "shared")
+        guard !FileManager.default.fileExists(atPath: sharedURL.path),
+              let files = try? FileManager.default.contentsOfDirectory(at: directoryURL,
+                                                                      includingPropertiesForKeys: nil) else { return }
+        var merged: [String: String] = [:]
+        for file in files where file.pathExtension == "json" && file.lastPathComponent != "shared.json" {
+            guard let data = try? Data(contentsOf: file),
+                  let storage = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] else { continue }
+            merged.merge(storage) { _, latest in latest }
+        }
+        guard !merged.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: merged) else { return }
+        try? data.write(to: sharedURL, options: .atomic)
+        NSLog("[ios2-macos] migrated %d legacy game settings into shared.json", merged.count)
+    }
+
+    private func fileURL(for partition: String) -> URL {
+        let invalid = CharacterSet(charactersIn: "/\\:").union(.newlines).union(.controlCharacters)
+        let name = partition.unicodeScalars.map { invalid.contains($0) ? "_" : String($0) }.joined()
+        return directoryURL.appendingPathComponent((name.isEmpty ? "default" : name) + ".json")
+    }
+
+    private func loadIfNeeded(_ partition: String) {
+        guard !loadedAccounts.contains(partition) else { return }
+        loadedAccounts.insert(partition)
+        guard let data = try? Data(contentsOf: fileURL(for: partition)),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let storage = object as? [String: String] else { return }
+        mirror[partition] = storage
+    }
+
+    private func scheduleFlush(_ partition: String) {
+        flushWork[partition]?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.write(partition) }
+        flushWork[partition] = work
+        queue.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    private func write(_ partition: String) {
+        guard let storage = mirror[partition], !storage.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: storage) else { return }
+        try? data.write(to: fileURL(for: partition), options: .atomic)
+    }
+}
+
 final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHandler {
     private let account: Account
     /// 脚本运行环境：独立窗口 = 单开，多开矩阵实例 = 多开。
@@ -76,7 +309,12 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     private let loadingLabel = NSTextField(labelWithString: "正在准备游戏资源…")
     private var gameSessionStarted = false
     private var startupTask: Task<Void, Never>?
+    private var storageSyncTask: Task<Void, Never>?
     private var isStopped = false
+
+    /// 游戏内设置的存储分区：默认所有账号共用一份（"shared"），
+    /// 关闭共享开关后按 `Account.id`（= 账号文件名，跨启动稳定）各自一份。
+    private var accountStorageKey: String { account.id }
 
     init(account: Account, scriptEnvironment: ScriptEnvironment = .single) {
         self.account = account
@@ -185,8 +423,17 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     func stop() {
         guard !isStopped else { return }
         isStopped = true
+        // 关窗前把游戏内配置最后一次同步到磁盘（异步执行，抓不到就算了：
+        // 平时的实时回传已经把绝大部分配置写进镜像了）。
+        let snapshotWebView = webView
+        let accountKey = accountStorageKey
+        Task { @MainActor in
+            await Self.captureStorageSnapshot(from: snapshotWebView, accountID: accountKey)
+        }
         startupTask?.cancel()
         startupTask = nil
+        storageSyncTask?.cancel()
+        storageSyncTask = nil
         webView.stopLoading()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ios2Game")
         if gameSessionStarted {
@@ -199,11 +446,26 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         let contentController = WKUserContentController()
         contentController.add(self, name: "ios2Game")
 
+        // ① 文档创建之前先把上次保存的游戏配置写回 localStorage。
+        let restore = MacGameSettingsStore.shared.restoreScript(forAccount: accountStorageKey)
+        if !restore.isEmpty {
+            NSLog("[ios2-macos] restoring persisted game settings: %@", accountStorageKey)
+            contentController.addUserScript(
+                WKUserScript(source: restore, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            )
+        }
+        // ② 之后每一次写入都实时同步到原生镜像，关窗/崩溃都不丢配置。
+        contentController.addUserScript(
+            WKUserScript(source: MacGameSettingsStore.mirrorScript,
+                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(schemeHandler, forURLScheme: "ios2-game")
-        // A separate non-persistent store prevents account cookies and web
-        // storage from bleeding between independently opened game windows.
-        configuration.websiteDataStore = .nonPersistent()
+        // 改为「持久化存储」，且默认所有账号共用一份：non-persistent 会让游戏内
+        // 配置（省电模式等）每次登录都回到默认值；.default() 会和 App 内其它网页
+        // 内容混在一起。
+        configuration.websiteDataStore = MacGameDataStore.store(forAccountID: accountStorageKey)
         configuration.userContentController = contentController
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -349,6 +611,15 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 return
             }
             handleHSDKRequest(requestJSON)
+        case "storage":
+            // 游戏内配置（省电模式等）写入 localStorage 的实时回传，落盘到
+            // Application Support/GameStorage/<账号>.json。
+            guard let key = body["key"] as? String else { return }
+            if (body["op"] as? String) == "remove" {
+                MacGameSettingsStore.shared.setValue(nil, forKey: key, accountID: accountStorageKey)
+            } else if let value = body["value"] as? String {
+                MacGameSettingsStore.shared.setValue(value, forKey: key, accountID: accountStorageKey)
+            }
         case "console":
             NSLog("[ios2-macos] JS %@: %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
         case "memory":
@@ -379,6 +650,48 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadingOverlay.isHidden = true
         NSLog("[ios2-macos] WebKit game document loaded")
+        startStorageSync()
+    }
+
+    // MARK: 游戏内设置持久化
+
+    /// 兜底同步：即使实时回传被绕过（例如页面直接改 storage 的内部实现），
+    /// 每 20 秒也会把页面里的 localStorage 全量镜像一次到磁盘。
+    private func startStorageSync() {
+        storageSyncTask?.cancel()
+        storageSyncTask = Task { @MainActor [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self, !self.isStopped else { return }
+                await Self.captureStorageSnapshot(from: self.webView, accountID: self.accountStorageKey)
+            }
+        }
+    }
+
+    private static func captureStorageSnapshot(from webView: WKWebView, accountID: String) async {
+        let script = """
+        (() => {
+          try {
+            const limit = \(MacGameSettingsStore.maxMirroredValueLength);
+            const store = window.localStorage;
+            const out = {};
+            for (let index = 0; index < store.length; index++) {
+              const key = store.key(index);
+              if (key === null) continue;
+              const value = store.getItem(key);
+              if (typeof value === 'string' && value.length <= limit) out[key] = value;
+            }
+            return JSON.stringify(out);
+          } catch (error) { return '{}'; }
+        })()
+        """
+        guard let result = try? await webView.evaluateJavaScript(script),
+              let json = result as? String,
+              let data = json.data(using: .utf8),
+              let storage = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              !storage.isEmpty else { return }
+        MacGameSettingsStore.shared.replaceAll(with: storage, accountID: accountID)
+        MacGameSettingsStore.shared.flush(accountID: accountID)
     }
 
     private func showNavigationError(_ error: Error) {
