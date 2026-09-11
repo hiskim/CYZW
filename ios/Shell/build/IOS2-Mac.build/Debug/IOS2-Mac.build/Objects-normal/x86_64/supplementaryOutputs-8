@@ -1,0 +1,23 @@
+{
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/MacCDNResourceManager.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacCDNResourceManager.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacCDNResourceManager.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacCDNResourceManager.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacCDNResourceManager.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacCDNResourceManager.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/MacScriptManagerView.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacScriptManagerView.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacScriptManagerView.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacScriptManagerView.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacScriptManagerView.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacScriptManagerView.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/MockEngineHost.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MockEngineHost.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MockEngineHost.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MockEngineHost.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MockEngineHost.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MockEngineHost.swiftdeps"
+  }
+}

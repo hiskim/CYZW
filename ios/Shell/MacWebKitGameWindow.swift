@@ -7,12 +7,13 @@ import WebKit
 
 /// SwiftUI bridge used by the macOS multi-open matrix. Each representable
 /// creates a fresh `MacWebKitGameView`, and therefore a fresh non-persistent
-/// website data store and isolated game session.
+/// website data store and isolated game session. The matrix is the 多开
+/// environment, so script injection respects the 多开全局门禁.
 struct MacEmbeddedGameView: NSViewRepresentable {
     let account: Account
 
     func makeNSView(context: Context) -> MacWebKitGameView {
-        let view = MacWebKitGameView(account: account)
+        let view = MacWebKitGameView(account: account, scriptEnvironment: .multi)
         view.start()
         return view
     }
@@ -63,6 +64,9 @@ enum MacWebKitGameWindowController {
 
 final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHandler {
     private let account: Account
+    /// 脚本运行环境：独立窗口 = 单开，多开矩阵实例 = 多开。
+    /// 决定注入哪些脚本（单开生效 / 单多开生效）以及是否受多开门禁约束。
+    private let scriptEnvironment: ScriptEnvironment
     private let instanceID = UUID().uuidString
     private var authenticatedAccountID = ""
     private let schemeHandler = MacGameSchemeHandler()
@@ -74,8 +78,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     private var startupTask: Task<Void, Never>?
     private var isStopped = false
 
-    init(account: Account) {
+    init(account: Account, scriptEnvironment: ScriptEnvironment = .single) {
         self.account = account
+        self.scriptEnvironment = scriptEnvironment
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -149,6 +154,22 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                                                          manifestJSON: authentication.manifestJSON),
                                   injectionTime: .atDocumentStart, forMainFrameOnly: true)
                 )
+                // 注入启用中的 JS 脚本（iOS 版 _enabledScriptRecords 的语义）：
+                // 总开关关闭 → 不注入任何脚本；多开实例还要过「多开全局门禁」；
+                // 按脚本自身状态过滤（单开生效 / 单多开生效 / 禁用）。
+                let scriptRecords = ScriptManager.shared.enabledScripts(for: scriptEnvironment)
+                for record in scriptRecords {
+                    guard let source = ScriptManager.shared.scriptSource(named: record.name),
+                          !source.isEmpty else {
+                        NSLog("[ios2-macos] user script skipped (unreadable): %@", record.name)
+                        continue
+                    }
+                    webView.configuration.userContentController.addUserScript(
+                        WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+                    )
+                    NSLog("[ios2-macos] user script injected: %@ (%@)",
+                          record.name, scriptEnvironment == .single ? "single" : "multi")
+                }
                 let entry = URL(string: "ios2-game://app/index.html?revision=macos-webkit-2")!
                 NSLog("[ios2-macos] loading WebKit game document: %@", entry.absoluteString)
                 webView.load(URLRequest(url: entry))

@@ -1,0 +1,23 @@
+{
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/TokenButtonStyles.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/TokenButtonStyles.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/TokenButtonStyles.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/TokenButtonStyles.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/TokenButtonStyles.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/TokenButtonStyles.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/WorkspaceView.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceView.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceView.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceView.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceView.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceView.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/WorkspaceViewModel.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceViewModel.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceViewModel.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceViewModel.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceViewModel.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/WorkspaceViewModel.swiftdeps"
+  }
+}

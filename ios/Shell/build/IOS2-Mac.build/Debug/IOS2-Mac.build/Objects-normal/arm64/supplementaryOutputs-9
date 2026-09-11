@@ -1,0 +1,23 @@
+{
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/PluginPanelView.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/PluginPanelView.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/PluginPanelView.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/PluginPanelView.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/PluginPanelView.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/PluginPanelView.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/SettingsView.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/SettingsView.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/SettingsView.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/SettingsView.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/SettingsView.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/SettingsView.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/ShellModels.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/ShellModels.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/ShellModels.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/ShellModels.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/ShellModels.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/arm64/ShellModels.swiftdeps"
+  }
+}

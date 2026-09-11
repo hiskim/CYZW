@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="pLDBEM9V3Bb1vl5drlKlWa">
+<head data-page-node-id="5VdiQ0Qd8Kz18EnCYDtNHe">
+<meta charset="UTF-8" data-page-node-id="9hCGZqEXBaNlFGoBDK6Kw6">
+<title>macOS · JS 脚本管理器 · UI 预览</title>
+<style>
+  :root {
+    --glow-green: rgb(34, 177, 112);
+    --tag-blue: rgb(41, 150, 255);
+    --tag-purple: rgb(176, 99, 240);
+    --tag-gray: rgb(143, 143, 153);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", -apple-system, sans-serif;
+    background: rgb(3, 8, 20);
+    color: #fff;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  /* 氛围光 */
+  .ambient {
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(780px at 14% 32%, rgba(37,99,235,.30), transparent 70%),
+      radial-gradient(820px at 55% 38%, rgba(29,78,216,.24), transparent 70%),
+      radial-gradient(860px at 95% 42%, rgba(34,211,238,.24), transparent 70%),
+      radial-gradient(660px at 72% 2%, rgba(59,130,246,.22), transparent 70%),
+      rgb(3, 8, 19);
+  }
+  .wrap { position: relative; z-index: 1; display: flex; min-height: 100vh; }
+
+  /* 侧栏 */
+  .sidebar {
+    width: 264px; flex-shrink: 0;
+    background: rgba(255,255,255,.035);
+    border-right: 1px solid rgba(255,255,255,.10);
+    padding: 20px 14px;
+  }
+  .side-title { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .side-title .dot { color: #67E8F9; }
+  .side-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px; border-radius: 8px; font-size: 13px;
+    color: rgba(255,255,255,.55); margin-bottom: 4px;
+  }
+  .side-item.active { background: rgba(103,232,249,.16); color: #fff; }
+  .side-card {
+    margin-top: 18px; background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px;
+  }
+  .sum-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 5px 0; color: rgba(255,255,255,.55); }
+  .sum-row b { margin-left: auto; font-family: ui-monospace, monospace; font-size: 12px; color: #fff; }
+  .dot-g { width: 7px; height: 7px; border-radius: 50%; background: #34D399; }
+  .dot-r { width: 7px; height: 7px; border-radius: 50%; background: #F87171; }
+  .dot-c { width: 7px; height: 7px; border-radius: 50%; background: #22D3EE; }
+
+  /* 主区 */
+  .main { flex: 1; padding: 20px 26px 26px; }
+  .head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
+  .head h1 { font-size: 22px; font-weight: 700; }
+  .head p { font-size: 12px; color: rgba(255,255,255,.5); }
+  .head .btn-import {
+    margin-left: auto; font-size: 12px; font-weight: 600;
+    background: rgba(34,211,238,.85); color: #fff;
+    padding: 7px 13px; border-radius: 7px; border: 1px solid rgba(255,255,255,.2);
+  }
+
+  /* 双卡片磁贴 */
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+  .tile {
+    display: flex; align-items: center; gap: 12px;
+    padding: 15px 16px; border-radius: 14px;
+    background: rgba(255,255,255,.055);
+    border: 1.4px solid var(--glow-green);
+    box-shadow: 0 0 13px rgba(34,177,112,.35);
+  }
+  .tile.off { opacity: .88; border: 1px solid rgba(143,143,153,.55); box-shadow: 0 6px 8px rgba(0,0,0,.3); background: rgba(255,255,255,.035); }
+  .tile.off.danger { border-color: rgba(248,113,113,.55); }
+  .tile-icon {
+    width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 18px;
+    background: rgba(34,177,112,.16); color: var(--glow-green);
+    box-shadow: 0 0 8px rgba(34,177,112,.45);
+  }
+  .tile.off .tile-icon { background: rgba(255,255,255,.07); color: rgba(255,255,255,.5); box-shadow: none; }
+  .tile-txt h3 { font-size: 14px; font-weight: 600; }
+  .tile-txt p { font-size: 12px; color: rgba(255,255,255,.5); margin-top: 3px; }
+  .switch { margin-left: auto; width: 38px; height: 22px; border-radius: 11px; position: relative; flex-shrink: 0; background: var(--glow-green); }
+  .switch::after { content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%; background: #fff; top: 2px; right: 2px; }
+  .switch.off { background: rgba(143,143,153,.55); }
+  .switch.off::after { right: auto; left: 2px; }
+
+  /* 列表 */
+  .list-head { display: flex; align-items: baseline; margin-bottom: 10px; padding: 0 4px; }
+  .list-head h2 { font-size: 14px; font-weight: 600; }
+  .list-head span { margin-left: auto; font-size: 12px; color: rgba(255,255,255,.45); }
+
+  .canvas {
+    position: relative; border-radius: 14px;
+    background: rgba(13, 20, 38, .55);
+    border: 1px solid rgba(255,255,255,.12);
+    padding: 16px; box-shadow: 0 16px 24px rgba(0,0,0,.38);
+  }
+  .card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px; border-radius: 10px; margin-bottom: 10px;
+    background: rgba(255,255,255,.055);
+    border: 1px solid rgba(255,255,255,.14);
+  }
+  .card.disabled { background: rgba(255,255,255,.03); border-color: rgba(255,255,255,.07); }
+  .capsule {
+    font-size: 11px; font-weight: 700; padding: 5px 11px; border-radius: 999px;
+    flex-shrink: 0; cursor: default;
+  }
+  .cap-single { color: var(--tag-blue); background: rgba(41,150,255,.18); border: 1px solid rgba(41,150,255,.85); }
+  .cap-multi  { color: var(--tag-purple); background: rgba(176,99,240,.18); border: 1px solid rgba(176,99,240,.85); }
+  .cap-off    { color: var(--tag-gray); background: rgba(143,143,153,.10); border: 1px solid rgba(143,143,153,.35); }
+  .card-txt { min-width: 0; }
+  .card-txt .n { font-size: 13px; font-weight: 600; }
+  .card-txt .m { font-size: 11px; color: rgba(255,255,255,.45); margin-top: 2px; }
+  .card .switch { width: 32px; height: 19px; border-radius: 10px; }
+  .card .switch::after { width: 15px; height: 15px; }
+  .card .switch.sm-off { background: rgba(143,143,153,.45); }
+
+  /* 全局已暂停蒙版 */
+  .mask { position: relative; }
+  .mask .cards { opacity: .6; }
+  .paused {
+    position: absolute; top: 22px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; font-weight: 600; color: #fff;
+    background: rgba(0,0,0,.72); border: 1px solid rgba(255,255,255,.18);
+    padding: 8px 15px; border-radius: 999px; white-space: nowrap;
+    box-shadow: 0 6px 10px rgba(0,0,0,.4);
+  }
+
+  /* 弹窗 */
+  .overlay { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+  .popup {
+    width: 400px; border-radius: 14px; padding: 18px;
+    background: rgba(24, 32, 52, .92);
+    border: 1px solid rgba(255,255,255,.16);
+    box-shadow: 0 18px 40px rgba(0,0,0,.5);
+  }
+  .popup-head { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+  .popup-head .ic { color: #67E8F9; font-size: 18px; }
+  .popup-head h3 { font-size: 15px; font-weight: 700; }
+  .popup-head .badge { margin-left: auto; font-size: 11px; font-weight: 700; color: rgba(255,255,255,.6); background: rgba(255,255,255,.08); padding: 4px 9px; border-radius: 999px; }
+  .opt {
+    display: flex; align-items: center; gap: 12px;
+    padding: 9px 10px; border-radius: 9px; margin-bottom: 9px;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+  }
+  .opt.sel { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.22); }
+  .opt .oi { width: 28px; height: 28px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14px; background: rgba(255,255,255,.05); color: rgba(255,255,255,.5); }
+  .opt.sel .oi { background: rgba(34,211,238,.12); color: #67E8F9; }
+  .opt .ot b { font-size: 13px; display: block; }
+  .opt .ot span { font-size: 11px; color: rgba(255,255,255,.45); }
+  .opt .ck { margin-left: auto; color: #67E8F9; font-weight: 700; visibility: hidden; }
+  .opt.sel .ck { visibility: visible; }
+  .del {
+    width: 100%; text-align: center; font-size: 13px; font-weight: 600; color: #fff;
+    background: rgba(255,69,58,.85); border-radius: 9px; padding: 10px 0; margin-top: 2px;
+  }
+  .hint { text-align: center; font-size: 11px; color: rgba(255,255,255,.4); margin-top: 12px; }
+</style>
+</head>
+<body data-page-node-id="qyDf9R4zTHnnlGnf58hKV5">
+<div class="ambient" data-page-node-id="90xadzaFTuc58SiHDqgUGW"></div>
+<div class="wrap" data-page-node-id="9xSYK63jXhgFBKmdlIwov4">
+  <aside class="sidebar" data-page-node-id="Qf3qi5Y0lFGLhjHEpDhJsG">
+    <div class="side-title" data-page-node-id="3TzXOzu7ZzBZxHKqoebsER"><span class="dot" data-page-node-id="Eal0XpUcVTQCIiUxpUvJ1z">▣</span> 中控台</div>
+    <div class="side-item" data-page-node-id="KJYzGgSxDb35FFhgR7Lbdo">👤 账号</div>
+    <div class="side-item active" data-page-node-id="BrZ8OaprId0v7tdv7dhn8U">🧩 脚本</div>
+    <div class="side-item" data-page-node-id="kAf6DQePE2cTV9UOhE7sQF">⚙ 设置</div>
+    <div class="side-card" data-page-node-id="CJ4FcBRLGsRFlMpeqWmn5j">
+      <div class="sum-row" data-page-node-id="U6XJwodmKqTMFNfiUKBmt2"><span class="dot-g" data-page-node-id="P7kzbHxYZpzdXCRcnX3wfd"></span>JS 引擎总开关<b data-page-node-id="KquIGcYTgc7qUeCl9clnEP">运行中</b></div>
+      <div class="sum-row" data-page-node-id="fKlxAtgV3pGnGiIkJLtRmL"><span class="dot-r" data-page-node-id="21f9qSEsHuYncpjywyiiPf"></span>多开全局门禁<b data-page-node-id="kdPoMGXNu5NSDLNIQ1KyW5">禁止</b></div>
+      <div class="sum-row" data-page-node-id="NnsugFmaFeiACdcnlbjbOr"><span class="dot-c" data-page-node-id="njFORuUFfUakbfFNXZJBU5"></span>已启用脚本<b data-page-node-id="PKIvTkIBYyWl8YjFMPqFCN">2/3</b></div>
+    </div>
+  </aside>
+
+  <main class="main" data-page-node-id="YirRPQv0EpgXef1tnzCPBj">
+    <div class="head" data-page-node-id="vFfqHVdPQsJ3BBDyLp7vac">
+      <h1 data-page-node-id="AqF5ZcSHYpllBJa58wrJwR">JS 脚本管理器</h1>
+      <p data-page-node-id="Mh1aTpPqHGpfTgIRkZX2nU">导入本地 .js 脚本，登录后注入游戏窗口 · 总开关关闭时不注入任何脚本</p>
+      <span class="btn-import" data-page-node-id="a0zfEQ2I1qaCq9iFAzLGoT">＋ 导入脚本</span>
+    </div>
+
+    <div class="tiles" data-page-node-id="xn62bDH1BIF0r4suA8D0RA">
+      <div class="tile" data-page-node-id="6SVGygmCOV0wpPwhiNSdsN">
+        <div class="tile-icon" data-page-node-id="Y2GkgKVCHIwYGRpERmfm1r">⌘</div>
+        <div class="tile-txt" data-page-node-id="Ezr75CLY1YBtftzpJqKlVR"><h3 data-page-node-id="NVmV8TPa9ImpGFpRe4WAek">JS 引擎总开关</h3><p data-page-node-id="VAIQ0D6uScTHzSajs45i5p">控制全部脚本运行状态</p></div>
+        <div class="switch" data-page-node-id="YaWRKITPc3tAWAkHhLVd22"></div>
+      </div>
+      <div class="tile off danger" data-page-node-id="RSavTb0KusvLgImkxiM4aH">
+        <div class="tile-icon" data-page-node-id="cXgHy5lS8ppTikL8sfb92j">🛡</div>
+        <div class="tile-txt" data-page-node-id="sTliWJACGT1Tv8O3NcWsvG"><h3 data-page-node-id="TihZvEHVZKw2rfD2BfQ4F9">多开全局门禁</h3><p data-page-node-id="YtNuk78GlAXbVCCnsc4t49">多开脚本已禁止执行</p></div>
+        <div class="switch off" data-page-node-id="kbxGuBVMcgchTENQ3rf9sf"></div>
+      </div>
+    </div>
+
+    <div class="list-head" data-page-node-id="kRDmLY1HSXw6wDg3YeMaxA">
+      <h2 data-page-node-id="mQ0PXUH3UdrjH0N2H801sn">脚本列表 · 已启用 2/3</h2>
+      <span data-page-node-id="jKqOrDyorukp38CZ9aOFbk">点击卡片配置状态 · 胶囊标签即切环境</span>
+    </div>
+
+    <div class="canvas" data-page-node-id="XDJ6OwkzH4rDvmhIzFiDCn">
+      <div class="cards" data-page-node-id="DsTgSkMGhW6FbvfQyAXKgI">
+        <div class="card" data-page-node-id="HOeX4CFCSMAn5sE31d4EXK">
+          <span class="capsule cap-single" data-page-node-id="v9yFLLkeuAAkFr9FrXVVUP">单开生效</span>
+          <div class="card-txt" data-page-node-id="TyopZnWMAOjlaKBYf1K8dy"><div class="n" data-page-node-id="4KBqicSXzMGfNUzxk4RJfC">auto-farm.js</div><div class="m" data-page-node-id="QCy83MfiBKyBu5SIYw7ewP">12.3 KB · 仅单开窗口注入</div></div>
+          <div class="switch" data-page-node-id="PWtE8KH9abBzIFINmhI4Bi"></div>
+        </div>
+        <div class="card" data-page-node-id="e8oBBHICuVafIPX5j79SOq">
+          <span class="capsule cap-multi" data-page-node-id="sAFH3kwAG1eUjJ3ulLe3Ux">单多开生效</span>
+          <div class="card-txt" data-page-node-id="65er8K44y6ACUP8EiPAdIQ"><div class="n" data-page-node-id="zLrjxzFl55R46btFFRyLZn">auto-quest.js</div><div class="m" data-page-node-id="tCvR5k8SvhpMyzp2tn1tfR">8.1 KB · 单开 + 多开窗口都注入</div></div>
+          <div class="switch" data-page-node-id="AVSOd0JMrCG10rvUKBdjyk"></div>
+        </div>
+        <div class="card disabled" data-page-node-id="MYxoPCWdwHaEA4cU61xQ3F">
+          <span class="capsule cap-off" data-page-node-id="Cuy6pmEOBxBEW7yTiERZvK">禁用</span>
+          <div class="card-txt" data-page-node-id="DJ4ATj1Xq5Lw81REzr5616"><div class="n" style="color:rgba(255,255,255,.55)" data-page-node-id="H6l6wzuogQ0fIU1bDPL6EG">legacy-helper.js</div><div class="m" data-page-node-id="3CG5lRV03iTm99sriiGEOZ">1.2 KB · 不注入任何窗口</div></div>
+          <div class="switch sm-off" data-page-node-id="a6Nx3wnEpoB4gb5a8KGKvv"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="canvas mask" style="margin-top:22px" data-page-node-id="sE3KGqsBQSzidXCkzwuaGm">
+      <div class="paused" data-page-node-id="JvTNuzLBMbbkuQMv7d4HHg">⏸ 全局已暂停 · 打开总开关后按脚本自身状态注入</div>
+      <div class="cards" data-page-node-id="A8zoVqWkz0Me4b0HD5nmvn">
+        <div class="card" data-page-node-id="lKGzjFRQ4IugtJfTQG1HDv">
+          <span class="capsule cap-single" data-page-node-id="HySDjoeoY6jHmLJL5gbs0i">单开生效</span>
+          <div class="card-txt" data-page-node-id="HV6sETsDLhPFn8gkHB7gwL"><div class="n" data-page-node-id="QR9pPVeDGxwDVE4kBANEEi">auto-farm.js</div><div class="m" data-page-node-id="TfM4LtqGJpbOgSMqFcFDzI">12.3 KB · 仅单开窗口注入</div></div>
+          <div class="switch" data-page-node-id="r1ZlXSZoDShtInomZNA8ae"></div>
+        </div>
+        <div class="card" data-page-node-id="1WuoLJiG4bEHFwh0rEHarj">
+          <span class="capsule cap-multi" data-page-node-id="OBX3kW7yvlQBOWPAppZfTb">单多开生效</span>
+          <div class="card-txt" data-page-node-id="e3bmLwsRD8A8GBT6BCMJ07"><div class="n" data-page-node-id="A4DZSdp4Lh9qFnL9Ex0kIa">auto-quest.js</div><div class="m" data-page-node-id="H4BMbxuHEJ6V4z8rx5dbAj">8.1 KB · 单开 + 多开窗口都注入</div></div>
+          <div class="switch" data-page-node-id="hA2prLXnDK8AAJkTdjLO2k"></div>
+        </div>
+      </div>
+      <p style="font-size:11px;color:rgba(255,255,255,.4);text-align:center" data-page-node-id="IvcAZvhC7DQeXN0Y99Sqtr">↑ 总开关关闭时：整列 60% 透明蒙版 + 悬浮提示（子开关状态保持不变）</p>
+    </div>
+  </main>
+</div>
+
+<div class="overlay" data-page-node-id="GTOHvjbxpwkzKPNz6d1DUl">
+  <div class="popup" data-page-node-id="9tgmzGf1PBE5YUjZQCGZfO">
+    <div class="popup-head" data-page-node-id="EChLEK141Q8Tx7lFN7x5Jv">
+      <span class="ic" data-page-node-id="06avinquitgAWtacNej6w9">🧩</span>
+      <h3 data-page-node-id="S6TGGhRsPUkoY5eXYHheO8">auto-quest.js</h3>
+      <span class="badge" data-page-node-id="09A40UJk9Sjrr3VeBxB2KT">单多开生效</span>
+    </div>
+    <div class="opt" data-page-node-id="RoPde5efKeqDX6BmD0WouJ">
+      <div class="oi" data-page-node-id="DRwtKAeL3xhubXDKPfmYvF">🗔</div>
+      <div class="ot" data-page-node-id="EJUWEvb9CHyDcO9PUEGMC4"><b data-page-node-id="3Xu5WACLOs82AnCSfnD7Pi">单开生效</b><span data-page-node-id="4rPBt6hHBSJuaWHpFbO8nN">只有单开窗口加载此脚本</span></div>
+      <div class="ck" data-page-node-id="F7NYMyttMVgRgQUvHwrGPW">✓</div>
+    </div>
+    <div class="opt sel" data-page-node-id="PGfOXzqh1IEanWXjvfFKgs">
+      <div class="oi" data-page-node-id="JsYOVEl53nUU6sqpD04kNQ">▦</div>
+      <div class="ot" data-page-node-id="L0RXBQ5QY5BsimfR70pYNq"><b data-page-node-id="biBvD6KlmG9JvsahSohDLB">单多开生效</b><span data-page-node-id="hw28hlTgj6hKztFRQ3qNHX">单开和多开窗口都加载此脚本</span></div>
+      <div class="ck" data-page-node-id="A0qoM6NSzjOz40NIZ92ZjJ">✓</div>
+    </div>
+    <div class="opt" data-page-node-id="N14YXK3ECO2qE50DTxTE9p">
+      <div class="oi" data-page-node-id="fuIkLCg4jpc6kx32WZ7q4U">⏸</div>
+      <div class="ot" data-page-node-id="UGvFoeLFZhTuZzTgg8UDgk"><b data-page-node-id="qTAXLUAxAPIznzPeeFC6AG">禁用</b><span data-page-node-id="LQxjgYTA9j5Gegw3rIvqsx">不加载此脚本（保留文件）</span></div>
+      <div class="ck" data-page-node-id="API9DhD6d5SPHxxLNFBOcr">✓</div>
+    </div>
+    <div class="del" data-page-node-id="xsD4Z45pmWW71P6qFrzx66">🗑 删除此脚本</div>
+    <div class="hint" data-page-node-id="RhM6ZWHApIbtcc2CcgoUik">新导入的脚本默认「单开生效」</div>
+  </div>
+</div>
+</body>
+</html>

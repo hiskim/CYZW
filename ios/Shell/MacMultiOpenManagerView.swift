@@ -40,7 +40,7 @@ struct MacMultiOpenManagerView: View {
             switch self { case .accounts: return "账号"; case .scripts: return "脚本"; case .settings: return "设置" }
         }
         var icon: String {
-            switch self { case .accounts: return "person.2"; case .scripts: return "curlybraces"; case .settings: return "gearshape" }
+            switch self { case .accounts: return "person.2"; case .scripts: return "puzzlepiece.extension"; case .settings: return "gearshape" }
         }
     }
 
@@ -111,6 +111,8 @@ struct MacMultiOpenManagerView: View {
             }
 
             // ── 内容层：尊重安全区，列宽与背景层一一对应。
+            // 「脚本」分节与「账号」同构：管理界面在左侧中控台侧栏内，
+            // 右侧工作区始终是多开矩阵（运行中的实例窗口）。
             HStack(spacing: 0) {
                 if sidebarVisible {
                     sidebar
@@ -569,15 +571,22 @@ struct MacMultiOpenManagerView: View {
         deletionRequest = AccountDeletionRequest(accounts: targets)
     }
 
+    @ViewBuilder
     private var secondarySection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(selectedSection.title).font(.system(size: 20, weight: .bold))
-            Text(selectedSection == .scripts ? "脚本插件将在这里管理。" : "应用与缓存设置。")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
-            if selectedSection == .settings { SettingsView().frame(maxHeight: 430) }
-            if selectedSection == .scripts { PluginPanelView(workspace: liveWorkspace).frame(maxHeight: 430) }
+        // 「脚本」分节：与「账号」同构——完整管理界面放在左侧中控台侧栏内
+        // （导入按钮、总开关/门禁磁贴、脚本卡片列表、操作弹窗），
+        // 右侧工作区保持多开矩阵不变。
+        if selectedSection == .scripts {
+            MacScriptManagerView()
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(selectedSection.title).font(.system(size: 20, weight: .bold))
+                Text("应用与缓存设置。")
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
+                if selectedSection == .settings { SettingsView().frame(maxHeight: 430) }
+            }
+            .padding(18)
         }
-        .padding(18)
     }
 
     private var workspace: some View {
@@ -1152,7 +1161,8 @@ private struct EmptyMatrixView: View {
 
 /// macOS 悬停高亮：鼠标移入时在控件上叠加一层白色薄层，给 .plain 按钮/卡片
 /// 补上原生按钮式的 hover 反馈（plain 样式在深色玻璃上默认几乎无悬停表现）。
-private struct HoverHighlightModifier: ViewModifier {
+/// internal：脚本管理页（MacScriptManagerView）复用同一悬停配方。
+struct HoverHighlightModifier: ViewModifier {
     @State private var isHovering = false
     var cornerRadius: CGFloat = 6
     /// 高亮强度（白色叠加透明度）。
@@ -1170,14 +1180,15 @@ private struct HoverHighlightModifier: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     /// 鼠标悬停时叠加白色薄高亮；胶囊形控件传大圆角（如 50）即可。
     func hoverHighlight(cornerRadius: CGFloat = 6, intensity: Double = 0.08) -> some View {
         modifier(HoverHighlightModifier(cornerRadius: cornerRadius, intensity: intensity))
     }
 }
 
-private struct MacManagerButtonStyle: ButtonStyle {
+/// 深色玻璃主按钮样式（internal：脚本管理页等分节复用）。
+struct MacManagerButtonStyle: ButtonStyle {
     let tint: Color
     func makeBody(configuration: Configuration) -> some View {
         // tint == .white 是「白色玻璃」特殊档：白 16% 填充 + 黑字，用于深蓝底上的中性主按钮
@@ -1291,7 +1302,8 @@ private struct AmbientGlowBackground: View {
 /// 折射增压：把氛围光主色斑以低透明度再叠一层到玻璃表面，模拟玻璃对背后
 /// 高饱和光源的折射着色（参考稿的侧栏/画布都明显带着氛围光色）。系统材质
 /// 在不同系统版本对窗内内容的采样强度不一，这层保证玻璃始终吃进颜色。
-private struct AmbientRefractionTint: View {
+/// internal：脚本管理页画布复用。
+struct AmbientRefractionTint: View {
     var body: some View {
         ZStack {
             glowBlob(0x2563EB, 0.15, UnitPoint(x: 0.10, y: 0.28), 540)
@@ -1312,12 +1324,12 @@ private extension Color {
     }
 }
 
-/// 配方 02–06 · 卡片级玻璃面：
+/// 配方 02–06 · 卡片级玻璃面（internal：脚本管理页弹窗复用）：
 /// 02 玻璃填充 白 5%；03 ultraThin 模糊（≈28px 档，与面板 .thin≈50 拉开层级）；
 /// 04 1px 白描边（strokeBorder = Inside 对齐）；05 顶边内高光（上亮下暗渐变描边，
 /// 等效 Inner Shadow 白 16% / y=1 / blur=1）；06 外投影 黑 38% / y 18 / blur≈40
 /// （「负 spread / 关闭投影穿透」在 SwiftUI 中天然成立：投影不会穿透半透明填充）。
-private struct GlassCardModifier: ViewModifier {
+struct GlassCardModifier: ViewModifier {
     var cornerRadius: CGFloat
     var fillOpacity: Double
     /// nil = 不加材质：小卡片叠在已模糊的面板上时，省一层模糊合成
@@ -1346,8 +1358,9 @@ private struct GlassCardModifier: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     /// 按六步配方给卡片挂玻璃面；fillOpacity 取 0.04–0.07。
+    /// internal：脚本管理页操作弹窗复用。
     func glassCard(cornerRadius: CGFloat = 12, fillOpacity: Double = 0.05, material: Material? = .ultraThin) -> some View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius, fillOpacity: fillOpacity, material: material))
     }

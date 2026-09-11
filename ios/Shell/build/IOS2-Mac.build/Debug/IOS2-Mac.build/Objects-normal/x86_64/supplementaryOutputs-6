@@ -1,0 +1,23 @@
+{
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/MacMultiOpenManagerView.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacMultiOpenManagerView.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacMultiOpenManagerView.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacMultiOpenManagerView.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacMultiOpenManagerView.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacMultiOpenManagerView.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/MacWebKitGameWindow.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacWebKitGameWindow.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacWebKitGameWindow.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacWebKitGameWindow.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacWebKitGameWindow.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/MacWebKitGameWindow.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/ScriptManager.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/ScriptManager.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/ScriptManager.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/ScriptManager.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/ScriptManager.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/ScriptManager.swiftdeps"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/AccountFileManager.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountFileManager.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountFileManager.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountFileManager.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountFileManager.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountFileManager.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/AccountLibraryViewModel.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountLibraryViewModel.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountLibraryViewModel.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountLibraryViewModel.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountLibraryViewModel.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/AccountLibraryViewModel.swiftdeps"
+  },
+  "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/DesignTokenLoader.swift" : {
+    "const-values" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/DesignTokenLoader.swiftconstvalues",
+    "dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/DesignTokenLoader.d",
+    "diagnostics" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/DesignTokenLoader.dia",
+    "object" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/DesignTokenLoader.o",
+    "swift-dependencies" : "/Volumes/WD/XY/XY_CODE/824f/CYZW/ios/Shell/build/IOS2-Mac.build/Debug/IOS2-Mac.build/Objects-normal/x86_64/DesignTokenLoader.swiftdeps"
+  }
+}

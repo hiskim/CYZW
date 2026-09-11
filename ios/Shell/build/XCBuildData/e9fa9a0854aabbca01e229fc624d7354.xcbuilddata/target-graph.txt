@@ -1,0 +1,2 @@
+Target dependency graph (1 target)
+Target 'IOS2-Mac' in project 'IOS2-Mac' (no dependencies)
