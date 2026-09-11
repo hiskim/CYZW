@@ -20,6 +20,13 @@
 - **矩阵实例数 = `matrixEntries.count`**（运行账号 × WorkspaceItem 一一对应），适配计数/副标题/读数/ForEach 必须共用它。注意 `AccountGroup.all` 是「全部」伪分组，展平分组树时必须排除，否则每个运行中账号被数两遍（2 开算 4 开 → 按 4 列排版、高度占不满）。
 - 尺寸模式开关：`@AppStorage("ios2.matrix.autoSize")`（默认自动）；点 ± 以当前实际宽度为起点自动切手动。网格用 `layout.gridWidth` 收紧 + `minHeight`=内容区高实现居中且不滚动。
 
+## 键鼠同步 / 群控（2026-09-12 新增，JS IPC 方案，禁止 CGEvent/NSEvent 坐标模拟）
+- 全部逻辑在 `ios/Shell/MacInputSync.swift`：`MacInputSyncEvent`（坐标恒为 0...1 归一化）+ `MacGameInstanceRegistry`（账号 ID → MacWebKitGameView 弱引用）+ `MacInputSyncController.shared`（master/receiver 状态 + 分发）+ `MacInputSyncScript.agent`（捕获器 + 回放器 + 波纹，二合一脚本）。
+- **脚本必须 atDocumentStart 预注入到每个实例**，运行时只用 `setCapture(on)` 切角色——WKUserScript 无法在运行时追加；因此 didFinish / 实例重建后必须补一次 `refreshCapture`。
+- 回放派发到 `document.elementFromPoint()` 的元素（冒泡即可覆盖 document/window 上的监听，Cocos 挂 canvas 或 window 都收得到）；mousemove 走 rAF 合并 + Swift 侧 1/60s 节流双保险。
+- 主窗口身份按**账号 ID**记，卡片重载（换 WebView）不会退位；只有账号级关闭（`WorkspaceViewModel.close`）才 `retire` 退位。
+- UI：卡片 Header 的 👑/🔗 两个按钮 + 主窗口金色描边；顶部标题栏群控胶囊（点击退位），无 master 时不占位。
+
 ## 游戏实例存储（踩过的坑）
 - 游戏内设置（省电模式等）写在 `window.localStorage`，`cc.sys.localStorage` 就是它。因此 WebKit 实例**绝不能用 `.nonPersistent()`**，否则关窗即丢配置；也**不能用 `.default()`**，会和 App 内其它网页内容混在一起。
 - 现行方案（MacWebKitGameWindow.swift，用户要求**所有账号共用一份配置**）：

@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 struct MacMultiOpenManagerView: View {
     @ObservedObject var coordinator: AppCoordinator
     @ObservedObject private var liveWorkspace: WorkspaceViewModel
+    /// 群控中控（主窗口 / 接收同步），全局单例：卡片、标题栏、WebKit 实例都读它。
+    @ObservedObject private var sync = MacInputSyncController.shared
     @StateObject private var accounts = AccountLibraryViewModel()
     @State private var selectedSection: Section = .accounts
     @State private var searchText = ""
@@ -650,6 +652,34 @@ struct MacMultiOpenManagerView: View {
         return "\(mode) \(Int(matrixLayout.cardWidth))×\(Int(matrixLayout.gameHeight)) · 9:16"
     }
 
+    /// 群控状态胶囊：有主窗口时出现，点击 = 主窗口退位（同步停止）。
+    /// 没有主窗口时完全不占位，标题栏高度与密度分档不受影响。
+    @ViewBuilder
+    private var syncStatusChip: some View {
+        if let masterID = sync.masterAccountID {
+            let nickname = liveWorkspace.items
+                .first { $0.account.id == masterID }?.account.nickname ?? "未运行"
+            let followers = sync.receiverCount
+            Button { sync.setMaster(nil) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "crown.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(followers > 0 ? "\(nickname) · \(followers) 跟随" : "\(nickname) · 无跟随")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color.yellow)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule(style: .continuous).fill(Color.yellow.opacity(0.14)))
+                .overlay(Capsule(style: .continuous).strokeBorder(Color.yellow.opacity(0.55), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .hoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("主窗口：\(nickname)。点击停止群控（主窗口退位，所有窗口恢复普通）")
+        }
+    }
+
     private var workspace: some View {
         VStack(spacing: 0) {
             workspaceHeader
@@ -687,6 +717,7 @@ struct MacMultiOpenManagerView: View {
             .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
             Text("多开矩阵").font(.system(size: titleSize, weight: .bold))
                 .help(count > 1 ? "\(count) 个活跃实例 · 每个账号独立 WebKit 会话" : "多开矩阵")
+            syncStatusChip
             Spacer()
             HStack(spacing: 6) {
                 Text(sizeReadout)
@@ -1188,6 +1219,8 @@ private extension AccountGroup {
 private struct MacGameMatrixCell: View {
     let item: WorkspaceItem
     @ObservedObject var workspace: WorkspaceViewModel
+    /// 群控中控：皇冠（主窗口）与链接（接收同步）两个开关都落在它身上。
+    @ObservedObject private var sync = MacInputSyncController.shared
     let width: CGFloat
     /// 顶栏高度（单开 32 / 多开单行 24 / 多开多行 20），由 MacMatrixFit 决定。
     let headerHeight: CGFloat
@@ -1206,6 +1239,11 @@ private struct MacGameMatrixCell: View {
     private var iconSize: CGFloat { density == .regular ? 11 : (density == .compact ? 10 : 9) }
     private var barPadding: CGFloat { density == .regular ? 9 : (density == .compact ? 7 : 5) }
     private var barSpacing: CGFloat { density == .regular ? 7 : (density == .compact ? 6 : 4) }
+    /// 群控开关：主窗口（👑 皇冠，全局唯一）/ 接收同步（🔗 链接，每窗口独立）。
+    private var isMaster: Bool { sync.isMaster(item.account.id) }
+    private var isReceiver: Bool { sync.isReceiver(item.account.id) }
+    /// 两个群控按钮的命中区（dense 档收到 12pt，把空间让给昵称）。
+    private var syncHitSize: CGFloat { density == .dense ? 12 : badgeSize }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: barSpacing) {
@@ -1213,7 +1251,34 @@ private struct MacGameMatrixCell: View {
                     .font(.system(size: density == .regular ? 11 : 9, weight: .bold, design: .monospaced)).foregroundStyle(.black)
                     .frame(width: badgeSize, height: badgeSize).background(.white).clipShape(Circle())
                 Text(item.account.nickname).font(.system(size: nicknameSize, weight: .semibold)).lineLimit(1)
-                Spacer()
+                Spacer(minLength: 2)
+                // 👑 主窗口：点一次登基（其它窗口自动退位），再点一次退位——
+                // 退位后同步停止，所有窗口回到普通状态，直到重新指定。
+                Button { sync.toggleMaster(item.account.id) } label: {
+                    Image(systemName: isMaster ? "crown.fill" : "crown")
+                        .font(.system(size: iconSize, weight: .semibold))
+                        .foregroundStyle(isMaster ? Color.yellow : Color.white.opacity(0.5))
+                        .frame(width: syncHitSize, height: syncHitSize)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(cornerRadius: 4, intensity: 0.16)
+                .help(isMaster ? "取消主窗口（同步停止，所有窗口恢复普通）" : "设为主窗口：此窗口的操作同步到已开启接收的窗口")
+                .accessibilityLabel(isMaster ? "取消主窗口" : "设为主窗口")
+                // 🔗 接收同步：每个窗口独立开关；主窗口不需要接收（不会被自己回灌）。
+                Button { sync.toggleReceiver(item.account.id) } label: {
+                    Image(systemName: isReceiver ? "link.circle.fill" : "link.circle")
+                        .font(.system(size: iconSize, weight: .semibold))
+                        .foregroundStyle(isReceiver ? Color.cyan : Color.white.opacity(0.45))
+                        .frame(width: syncHitSize, height: syncHitSize)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(cornerRadius: 4, intensity: 0.16)
+                .help(isMaster
+                      ? "主窗口不需要接收同步（自己的操作不会被回灌）"
+                      : (isReceiver ? "关闭接收同步（不再跟随主窗口）" : "开启接收同步（跟随主窗口的操作）"))
+                .accessibilityLabel(isReceiver ? "关闭接收同步" : "开启接收同步")
                 Circle().fill(item.host.state == .running ? Color.green : Color.orange)
                     .frame(width: density == .dense ? 5 : 7, height: density == .dense ? 5 : 7)
                 Button { Task { if item.host.state == .running { await workspace.pause(id: item.id) } else { await workspace.resume(id: item.id) } } } label: { Image(systemName: item.host.state == .paused ? "play.fill" : "pause.fill") }
@@ -1240,9 +1305,12 @@ private struct MacGameMatrixCell: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(
-                    LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.10)],
+                    // 主窗口换成金色描边：一眼看出哪张卡在发号施令。
+                    LinearGradient(colors: isMaster
+                                   ? [Color.yellow.opacity(0.9), Color.orange.opacity(0.45)]
+                                   : [Color.white.opacity(0.16), Color.white.opacity(0.10)],
                                    startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1
+                    lineWidth: isMaster ? 1.6 : 1
                 )
         }
         // 06 外投影：黑 35% / y 12 / blur≈32——卡片浮在画布玻璃上，投影比画布轻一档

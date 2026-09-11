@@ -86,10 +86,15 @@ final class WorkspaceViewModel: ObservableObject {
     func close(id: UUID) async {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         let host = items[index].host
+        let accountID = items[index].account.id
         // Remove the card first so the matrix responds to the close button
         // immediately; host/WebKit cleanup can finish asynchronously.
         items.remove(at: index)
         EngineHostRegistry.shared.unregister(id: id)
+#if os(macOS)
+        // 群控退位：关掉的是主窗口就停止同步，同时摘掉它的接收标记。
+        MacInputSyncController.shared.retire(accountID: accountID)
+#endif
         if selectedID == id {
             selectedID = items.first?.id
         }

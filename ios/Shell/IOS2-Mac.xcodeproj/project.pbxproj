@@ -35,6 +35,7 @@
 		A1000000000000000000001C /* MacScriptManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001C /* MacScriptManagerView.swift */; };
 		A1000000000000000000001D /* MacRenderQuality.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001D /* MacRenderQuality.swift */; };
 		A1000000000000000000001E /* MacMatrixFit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001E /* MacMatrixFit.swift */; };
+		A1000000000000000000001F /* MacInputSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001F /* MacInputSync.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +48,7 @@
 		A2000000000000000000001C /* MacScriptManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacScriptManagerView.swift; sourceTree = "<group>"; };
 		A2000000000000000000001D /* MacRenderQuality.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacRenderQuality.swift; sourceTree = "<group>"; };
 		A2000000000000000000001E /* MacMatrixFit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMatrixFit.swift; sourceTree = "<group>"; };
+		A2000000000000000000001F /* MacInputSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacInputSync.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* MacWebKitGameWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWebKitGameWindow.swift; sourceTree = "<group>"; };
 		A20000000000000000000019 /* MacMultiOpenManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMultiOpenManagerView.swift; sourceTree = "<group>"; };
@@ -105,6 +107,7 @@
 				A2000000000000000000001C /* MacScriptManagerView.swift */,
 				A2000000000000000000001D /* MacRenderQuality.swift */,
 				A2000000000000000000001E /* MacMatrixFit.swift */,
+				A2000000000000000000001F /* MacInputSync.swift */,
 				A20000000000000000000018 /* MacCDNResourceManager.swift */,
 				A20000000000000000000007 /* MockEngineHost.swift */,
 				A20000000000000000000008 /* PluginPanelView.swift */,
@@ -244,6 +247,7 @@
 				A1000000000000000000001C,
 				A1000000000000000000001D,
 				A1000000000000000000001E,
+				A1000000000000000000001F,
 				A10000000000000000000018,
 				A10000000000000000000007,
 				A10000000000000000000008,

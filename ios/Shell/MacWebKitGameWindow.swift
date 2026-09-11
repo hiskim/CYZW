@@ -354,6 +354,8 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
             loadingLabel.topAnchor.constraint(equalTo: loadingSpinner.bottomAnchor, constant: 12),
             loadingLabel.centerXAnchor.constraint(equalTo: loadingOverlay.centerXAnchor)
         ])
+        // 登记到群控注册表：中控只认账号 ID，实例的 JS 注入全靠它寻址。
+        MacGameInstanceRegistry.shared.register(self, accountID: account.id)
     }
 
     required init?(coder: NSCoder) {
@@ -367,6 +369,20 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     override func layout() {
         super.layout()
         webView.frame = bounds
+    }
+
+    // MARK: 键鼠同步
+
+    /// 向本实例的页面注入 JS（群控中控用：回放事件 / 切换捕获开关）。
+    func evaluateJavaScript(_ script: String, completion: ((Error?) -> Void)? = nil) {
+        webView.evaluateJavaScript(script) { _, error in completion?(error) }
+    }
+
+    /// 抢焦点：键盘事件只会派发给第一响应者，主窗口必须是它。
+    func focusWebView() {
+        guard let window = webView.window ?? window else { return }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(webView)
     }
 
     func start() {
@@ -423,6 +439,8 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     func stop() {
         guard !isStopped else { return }
         isStopped = true
+        // 从群控注册表摘除（identity 校验：重载卡片时新视图已登记，不能误删）。
+        MacGameInstanceRegistry.shared.unregister(self, accountID: account.id)
         // 关窗前把游戏内配置最后一次同步到磁盘（异步执行，抓不到就算了：
         // 平时的实时回传已经把绝大部分配置写进镜像了）。
         let snapshotWebView = webView
@@ -457,6 +475,13 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // ② 之后每一次写入都实时同步到原生镜像，关窗/崩溃都不丢配置。
         contentController.addUserScript(
             WKUserScript(source: MacGameSettingsStore.mirrorScript,
+                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        // ③ 键鼠同步代理：捕获器 + 回放器 + 波纹特效层。每个实例都装，
+        // 谁是主窗口由 MacInputSyncController 用 setCapture(on) 切换
+        // （WKUserScript 只能在导航时注入，运行时无法追加，所以必须预先装好）。
+        contentController.addUserScript(
+            WKUserScript(source: MacInputSyncScript.agent,
                          injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
@@ -611,6 +636,10 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 return
             }
             handleHSDKRequest(requestJSON)
+        case "input":
+            // 键鼠同步：本实例只有被指定为主窗口时才会捕获事件，中控会再校验一次。
+            guard let event = MacInputSyncEvent.decode(from: body) else { return }
+            MacInputSyncController.shared.publish(event, from: account.id)
         case "storage":
             // 游戏内配置（省电模式等）写入 localStorage 的实时回传，落盘到
             // Application Support/GameStorage/<账号>.json。
@@ -650,6 +679,10 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadingOverlay.isHidden = true
         NSLog("[ios2-macos] WebKit game document loaded")
+        // 页面就绪后把「是否为主窗口」写回页面：WKUserScript 在导航时已注入代理，
+        // 但捕获开关是运行时状态（重载/新建实例都必须补一次）。
+        MacInputSyncController.shared.refreshCapture(forAccountID: account.id)
+        self.evaluateJavaScript(MacInputSyncScript.setRipple(MacInputSyncController.shared.showsRipple))
         startStorageSync()
     }
 
