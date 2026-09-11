@@ -48,6 +48,11 @@ struct MacMultiOpenManagerView: View {
 
     var body: some View {
         ZStack {
+            // ── 第 -1 层 · 真实毛玻璃：behindWindow 直接折射桌面壁纸。
+            // 壁纸的纹理和色彩透过整窗，毛玻璃不再靠渐变自证。
+            VibrancyBackdrop()
+                .ignoresSafeArea()
+
             // ── 第 0 层 · 底层氛围光（配方 01）：深色底 + 超大径向色斑。
             // 玻璃的观感 = 对背后内容的高斯采样；没有这层，透出来的永远是
             // 同一块纯色，玻璃只会变成灰板。顺序必须反过来：先铺氛围光，再做玻璃。
@@ -61,11 +66,11 @@ struct MacMultiOpenManagerView: View {
             HStack(spacing: 0) {
                 if sidebarVisible {
                     ZStack {
-                        Rectangle()
-                            .fill(.thinMaterial)                     // 03 侧栏模糊 ≈50
-                        Rectangle()
-                            .fill(Color.black.opacity(0.30))         // 压暗玻璃，保侧栏文字可读
-                        AmbientRefractionTint()                      // 折射增压：玻璃吃进氛围光色
+                        // 真实毛玻璃：直接折射桌面壁纸（访达侧栏同款 .sidebar 材质），
+                        // 比窗内 Material 明显得多；壁纸移动时玻璃内容实时变化
+                        VibrancyBackdrop(material: .sidebar)
+                        Color.black.opacity(0.34)                    // 压暗：侧栏直接采壁纸，亮壁纸上必须重压
+                        AmbientRefractionTint()                      // 品牌深蓝统一
                         Rectangle()
                             .fill(Color.white.opacity(0.05))         // 02 玻璃填充 白 5%
                     }
@@ -82,6 +87,10 @@ struct MacMultiOpenManagerView: View {
                     .zIndex(1)
                 }
             }
+            // 关键：HStack 里只有侧栏一个孩子时，它会被 ZStack 默认居中——
+            // 304pt 宽的玻璃面板会「飞」到窗口中央变成一块灰板（灰板悬案的元凶）。
+            // 必须显式靠左铺满，让玻璃垫回侧栏正下方。
+            .frame(maxWidth: .infinity, alignment: .leading)
             .ignoresSafeArea()
             // 05 窗口顶边 1px 内高光：整块玻璃的「顶面」受光线（左亮右暗）
             .overlay(alignment: .top) {
@@ -583,14 +592,15 @@ struct MacMultiOpenManagerView: View {
     /// 画布玻璃面：材质模糊（03）→ 氛围光折射增压 → 压暗 → 白填充（02）。
     private var canvasGlass: some View {
         ZStack {
+            // ultraThin：材质自带的灰色填充更少——thin 的灰在暗底上会显成一整块灰板
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.thinMaterial)                // 03 模糊升档：ultraThin≈28 → thin≈50，更糊更雾
+                .fill(.ultraThinMaterial)
             AmbientRefractionTint()
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            // 深藏蓝罩代替「黑+白」双层：纯黑/纯白是中性色，混进深蓝氛围必被读成灰；
+            // 用同色相的深蓝压暗，玻璃面与周围氛围保持同一色温
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.04))    // thin 本身更不透明，压暗减半防暗板
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(Color(red: 0.012, green: 0.032, blue: 0.085).opacity(0.42))
         }
     }
 
@@ -949,17 +959,76 @@ private func glowBlob(_ rgb: UInt32, _ opacity: Double, _ center: UnitPoint, _ r
 /// 配方 01 · 底层氛围光：深色底 + 超大径向色斑。玻璃 = 对背后内容的高斯采样，
 /// 这层就是被折射的「内容」；色斑错落布置，避免叠成均匀色。
 /// 浓度对齐参考稿：靛蓝/紫/青高饱和大色斑，肉眼可辨的星云感。
+/// 高对比细节层（星场 + 光束）：毛玻璃的「证据」。玻璃外它们是锐利亮点/亮带，
+/// 透过侧栏与画布材质后变成柔光斑——锐与柔的同屏对比就是「真的是毛玻璃」的
+/// 直观证明，比单纯的大渐变色斑明显得多。点位置用固定种子 LCG 生成，启动间完全一致。
 private struct AmbientGlowBackground: View {
+    static let starColors: [Color] = [.white, Color(rgb: 0x7DD3FC), Color(rgb: 0x67E8F9)]
+
+    private struct Star {
+        let x, y, diameter, opacity: Double
+        let colorIndex: Int
+    }
+
+    private static let stars: [Star] = {
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func next() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double((seed >> 11) & 0xFFFF) / Double(0xFFFF)
+        }
+        var result: [Star] = []
+        for i in 0..<46 {
+            if i % 9 == 0 {
+                // 大颗「虚化光斑」：透过玻璃后是明显的 bokeh 圆盘
+                result.append(Star(x: next(), y: next(),
+                                   diameter: 14 + next() * 14,
+                                   opacity: 0.10 + next() * 0.10,
+                                   colorIndex: i % 3))
+            } else {
+                result.append(Star(x: next(), y: next(),
+                                   diameter: 1.2 + next() * 2.4,
+                                   opacity: 0.25 + next() * 0.55,
+                                   colorIndex: i % 3))
+            }
+        }
+        return result
+    }()
+
     var body: some View {
         ZStack {
-            // 渊黑蓝底（最终档）：色斑是仅存的光源，再暗玻璃就没东西可折射了
-            Color(red: 0.01, green: 0.028, blue: 0.075)
-            glowBlob(0x2563EB, 0.58, UnitPoint(x: 0.14, y: 0.32), 780) // 深蓝 · 左侧主光（侧栏后）
-            glowBlob(0x1D4ED8, 0.47, UnitPoint(x: 0.55, y: 0.38), 820) // 深蓝 · 画布正后方（玻璃要有东西可折射）
-            glowBlob(0x1E40AF, 0.42, UnitPoint(x: 0.38, y: 0.92), 760) // 藏蓝 · 底部
-            glowBlob(0x22D3EE, 0.47, UnitPoint(x: 0.95, y: 0.42), 860) // 青 · 右缘（与账号区青色呼应）
-            glowBlob(0x3B82F6, 0.42, UnitPoint(x: 0.72, y: 0.02), 660) // 蓝 · 顶部
-            glowBlob(0x0EA5E9, 0.26, UnitPoint(x: 0.04, y: 0.96), 520) // 天青 · 左下角
+            // 渊黑蓝底（94% 近不透明）：壁纸只透 6% 的明暗纹理——玻璃折射的
+            // 证据保留，但壁纸上的灰亮区块不再显形为「灰色团」
+            Color(red: 0.01, green: 0.028, blue: 0.075).opacity(0.94)
+            glowBlob(0x2563EB, 0.30, UnitPoint(x: 0.14, y: 0.32), 780) // 深蓝 · 左侧主光（侧栏后）
+            glowBlob(0x1D4ED8, 0.24, UnitPoint(x: 0.55, y: 0.38), 820) // 深蓝 · 画布正后方（玻璃要有东西可折射）
+            glowBlob(0x1E40AF, 0.22, UnitPoint(x: 0.40, y: 0.04), 500) // 藏蓝 · 顶部左段（工作区头部，堵住无光死区的灰）
+            glowBlob(0x1E40AF, 0.22, UnitPoint(x: 0.38, y: 0.92), 760) // 藏蓝 · 底部
+            glowBlob(0x22D3EE, 0.24, UnitPoint(x: 0.95, y: 0.42), 860) // 青 · 右缘（与账号区青色呼应）
+            glowBlob(0x3B82F6, 0.22, UnitPoint(x: 0.72, y: 0.02), 660) // 蓝 · 顶部
+            glowBlob(0x0EA5E9, 0.14, UnitPoint(x: 0.04, y: 0.96), 520) // 天青 · 左下角
+
+            GeometryReader { proxy in
+                ZStack {
+                    ForEach(Self.stars.indices, id: \.self) { i in
+                        let s = Self.stars[i]
+                        Circle()
+                            .fill(Self.starColors[s.colorIndex].opacity(s.opacity))
+                            .frame(width: s.diameter, height: s.diameter)
+                            .position(x: s.x * proxy.size.width, y: s.y * proxy.size.height)
+                    }
+                    // 两道斜向光束：玻璃外是清晰亮带，玻璃内被抹成柔光
+                    LinearGradient(colors: [.clear, Color.white.opacity(0.16), .clear],
+                                   startPoint: .leading, endPoint: .trailing)
+                        .frame(width: proxy.size.width * 0.9, height: 2)
+                        .rotationEffect(.degrees(-24))
+                        .position(x: proxy.size.width * 0.5, y: proxy.size.height * 0.30)
+                    LinearGradient(colors: [.clear, Color(rgb: 0x67E8F9).opacity(0.14), .clear],
+                                   startPoint: .leading, endPoint: .trailing)
+                        .frame(width: proxy.size.width * 0.7, height: 1.5)
+                        .rotationEffect(.degrees(-24))
+                        .position(x: proxy.size.width * 0.62, y: proxy.size.height * 0.62)
+                }
+            }
         }
     }
 }
@@ -970,10 +1039,10 @@ private struct AmbientGlowBackground: View {
 private struct AmbientRefractionTint: View {
     var body: some View {
         ZStack {
-            glowBlob(0x2563EB, 0.22, UnitPoint(x: 0.10, y: 0.28), 540)
-            glowBlob(0x1D4ED8, 0.26, UnitPoint(x: 0.55, y: 0.45), 640) // 表面中心主 tint
-            glowBlob(0x22D3EE, 0.18, UnitPoint(x: 1.0, y: 0.45), 560)
-            glowBlob(0x3B82F6, 0.16, UnitPoint(x: 0.80, y: 0.0), 500)
+            glowBlob(0x2563EB, 0.15, UnitPoint(x: 0.10, y: 0.28), 540)
+            glowBlob(0x1D4ED8, 0.18, UnitPoint(x: 0.55, y: 0.45), 640) // 表面中心主 tint
+            glowBlob(0x22D3EE, 0.13, UnitPoint(x: 1.0, y: 0.45), 560)
+            glowBlob(0x3B82F6, 0.10, UnitPoint(x: 0.80, y: 0.0), 500)
         }
     }
 }
@@ -1007,7 +1076,8 @@ private struct GlassCardModifier: ViewModifier {
                     if let material {
                         shape.fill(material)
                     }
-                    shape.fill(Color.white.opacity(fillOpacity))
+                    // 冷蓝白代替中性白：中性白叠在深蓝氛围上必被读成灰
+                    shape.fill(Color(red: 0.55, green: 0.68, blue: 0.90).opacity(fillOpacity))
                 }
             )
             .overlay {
@@ -1025,6 +1095,26 @@ private extension View {
     /// 按六步配方给卡片挂玻璃面；fillOpacity 取 0.04–0.07。
     func glassCard(cornerRadius: CGFloat = 12, fillOpacity: Double = 0.05, material: Material? = .ultraThin) -> some View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius, fillOpacity: fillOpacity, material: material))
+    }
+}
+
+/// 真实毛玻璃底：NSVisualEffectView 以 behindWindow 混合直接折射窗口后的桌面
+/// 壁纸——访达侧栏/邮件 App 的同款效果，比 SwiftUI Material（窗内模糊+自带灰填充）
+/// 明显得多。强制 darkAqua 外观保证暗色振动，上面再由调用方叠品牌深蓝 tint。
+private struct VibrancyBackdrop: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .underWindowBackground
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.appearance = NSAppearance(named: .darkAqua)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
     }
 }
 
