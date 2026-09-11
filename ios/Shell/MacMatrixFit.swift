@@ -31,11 +31,13 @@ struct MacMatrixLayout {
     let rows: Int
     /// 卡片宽度 = 游戏画面宽度（卡片没有左右内边距）
     let cardWidth: CGFloat
+    /// 顶部控制条高度（单行 38 / 多行 28，见 MacMatrixFit.headerHeight(forRows:)）
+    let headerHeight: CGFloat
 
     /// 游戏画面高度：由宽度严格反推 9:16（宽:高 = 9:16 → 高 = 宽 × 16/9）。
     var gameHeight: CGFloat { cardWidth / MacMatrixFit.gameAspect }
     /// 卡片总高 = 顶部控制条 + 游戏画面。
-    var cardHeight: CGFloat { gameHeight + MacMatrixFit.headerHeight }
+    var cardHeight: CGFloat { gameHeight + headerHeight }
     /// 网格实际占宽（用于容器内居中）。
     var gridWidth: CGFloat {
         MacMatrixFit.spacing * CGFloat(max(0, columns - 1)) + cardWidth * CGFloat(columns)
@@ -71,8 +73,25 @@ struct MacMatrixLayout {
 enum MacMatrixFit {
     /// 卡片间距
     static let spacing: CGFloat = 14
-    /// 卡片顶部控制条高度（序号 / 昵称 / 暂停 / 刷新 / 关闭）
-    static let headerHeight: CGFloat = 38
+    /// 顶栏高度三档（越密越矮，省下的高度全部还给 9:16 画面）：
+    /// 单开 32pt → 多开单行 24pt → 多开多行 20pt。
+    /// 之所以值得收：卡片宽度是按「行可用高 − 顶栏」反推的，顶栏每减 1pt，
+    /// 画面就多 0.5625pt 宽；多开时行数越多，每省 1pt 的收益 × 行数。
+    static let headerHeightSingle: CGFloat = 32
+    static let headerHeightMulti: CGFloat = 24
+    static let headerHeightDense: CGFloat = 20
+
+    /// 向后兼容的默认值（单开档），外部只做兜底用。
+    static let headerHeight: CGFloat = headerHeightSingle
+
+    /// 按「实例数 + 行数」取顶栏高度：
+    /// 单开 32pt；多开但一行 24pt；多开且排到 2 行及以上 20pt。
+    /// 两层条件缺一不可——只看行数的话，双开在宽窗口下是 1 行 × 2 列，永远触发不了收窄。
+    static func headerHeight(forInstanceCount count: Int, rows: Int) -> CGFloat {
+        guard count > 1 else { return headerHeightSingle }
+        return rows > 1 ? headerHeightDense : headerHeightMulti
+    }
+
     /// 游戏画面宽高比（宽 / 高）
     static let gameAspect: CGFloat = 9.0 / 16.0
     /// 卡片宽度下限（再小游戏 UI 就没法用了）
@@ -101,8 +120,12 @@ enum MacMatrixFit {
             columns = bestColumnCount(count: n, width: width, height: height)
         }
         let rows = (n + columns - 1) / columns
-        let cardWidth = clampedCardWidth(columns: columns, rows: rows, width: width, height: height)
-        return MacMatrixLayout(columns: columns, rows: rows, cardWidth: cardWidth)
+        let header = headerHeight(forInstanceCount: n, rows: rows)
+        let cardWidth = clampedCardWidth(columns: columns, rows: rows, width: width, height: height, header: header)
+        return MacMatrixLayout(columns: columns,
+                               rows: rows,
+                               cardWidth: cardWidth,
+                               headerHeight: header)
     }
 
     /// 手动尺寸：沿用旧的「按首选宽度排、列数固定时收缩」行为，
@@ -120,7 +143,11 @@ enum MacMatrixFit {
             ? min(maxCardWidth, max(minCardWidth, preferredWidth))
             : min(maxCardWidth, max(minCardWidth, min(preferredWidth, fitted)))
         let rows = (n + columns - 1) / columns
-        return MacMatrixLayout(columns: columns, rows: rows, cardWidth: cardWidth.rounded(.down))
+        let header = headerHeight(forInstanceCount: count, rows: rows)
+        return MacMatrixLayout(columns: columns,
+                               rows: rows,
+                               cardWidth: cardWidth.rounded(.down),
+                               headerHeight: header)
     }
 
     // MARK: - 内部
@@ -136,7 +163,10 @@ enum MacMatrixFit {
             // 单调剪枝：wByWidth 递减，一旦它够不到当前最优，后面全部不可能更优。
             if widthByWidth <= bestWidth { break }
             let rows = (count + columns - 1) / columns
-            let widthByHeight = usableGameWidth(rowHeight: (height - spacing * CGFloat(rows - 1)) / CGFloat(rows))
+            // 顶栏按候选行数取档，但 wByWidth 与顶栏无关，上面的单调剪枝依然成立。
+            let header = headerHeight(forInstanceCount: count, rows: rows)
+            let widthByHeight = usableGameWidth(rowHeight: (height - spacing * CGFloat(rows - 1)) / CGFloat(rows),
+                                                header: header)
             let candidate = min(widthByWidth, widthByHeight)
             if candidate > bestWidth {
                 bestWidth = candidate
@@ -148,17 +178,17 @@ enum MacMatrixFit {
     }
 
     /// 给定列数/行数后反算卡片宽度（两个方向取小，保证整屏放得下）。
-    private static func clampedCardWidth(columns: Int, rows: Int, width: CGFloat, height: CGFloat) -> CGFloat {
+    private static func clampedCardWidth(columns: Int, rows: Int, width: CGFloat, height: CGFloat, header: CGFloat) -> CGFloat {
         let widthByWidth = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
         let rowHeight = (height - spacing * CGFloat(rows - 1)) / CGFloat(rows)
-        let widthByHeight = usableGameWidth(rowHeight: rowHeight)
+        let widthByHeight = usableGameWidth(rowHeight: rowHeight, header: header)
         let raw = min(widthByWidth, widthByHeight)
         return min(maxCardWidth, max(minCardWidth, raw.rounded(.down)))
     }
 
     /// 一行可用高度（扣掉控制条）能撑起多宽的 9:16 画面。
-    private static func usableGameWidth(rowHeight: CGFloat) -> CGFloat {
-        max(0, rowHeight - headerHeight) * gameAspect
+    private static func usableGameWidth(rowHeight: CGFloat, header: CGFloat) -> CGFloat {
+        max(0, rowHeight - header) * gameAspect
     }
 }
 #endif

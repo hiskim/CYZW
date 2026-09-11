@@ -647,18 +647,23 @@ struct MacMultiOpenManagerView: View {
     }
 
     /// 顶部控制条：固定在氛围光上，不随卡片滚动（参考稿同款布局）。
+    /// 大厅矩阵标题栏：单行、随实例密度收档（正常 18pt / 多开单行 16pt / 两行以上 14pt）。
+    /// 副标题（活跃实例说明）已移除——两行文字把标题栏撑到 ~90pt，白白吃掉矩阵高度；
+    /// 信息挪进悬停 tooltip，不占高度。
     private var workspaceHeader: some View {
-        HStack(alignment: .firstTextBaseline) {
+        let count = matrixEntries.count
+        let rows = matrixLayout.rows
+        let titleSize: CGFloat = count > 1 ? (rows > 1 ? 14 : 16) : 18
+        let topPad: CGFloat = count > 1 ? (rows > 1 ? 4 : 6) : 10
+        let bottomPad: CGFloat = count > 1 ? (rows > 1 ? 3 : 5) : 8
+        return HStack(spacing: 10) {
             Button { withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible.toggle() } } label: {
                 Image(systemName: sidebarVisible ? "sidebar.left" : "sidebar.right")
             }
             .buttonStyle(MacManagerButtonStyle(tint: .gray))
             .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
-            VStack(alignment: .leading, spacing: 4) {
-                Text("多开矩阵").font(.system(size: 24, weight: .bold))
-                Text("\(matrixEntries.count) 个活跃实例 · 每个账号独立 WebKit 会话")
-                    .font(.system(size: 13)).foregroundStyle(.secondary)
-            }
+            Text("多开矩阵").font(.system(size: titleSize, weight: .bold))
+                .help(count > 1 ? "\(count) 个活跃实例 · 每个账号独立 WebKit 会话" : "多开矩阵")
             Spacer()
             HStack(spacing: 6) {
                 Text(sizeReadout)
@@ -718,8 +723,8 @@ struct MacMultiOpenManagerView: View {
             .buttonStyle(MacManagerButtonStyle(tint: .gray))
         }
         .padding(.horizontal, 24)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.top, topPad)
+        .padding(.bottom, bottomPad)
     }
 
     /// 玻璃画布容器（参考稿主区的大圆角玻璃面）：卡片矩阵装在玻璃里，
@@ -740,7 +745,10 @@ struct MacMultiOpenManagerView: View {
                         spacing: MacMatrixFit.spacing
                     ) {
                         ForEach(matrixEntries) { item in
-                            MacGameMatrixCell(item: item, workspace: liveWorkspace, width: layout.cardWidth)
+                            MacGameMatrixCell(item: item,
+                                              workspace: liveWorkspace,
+                                              width: layout.cardWidth,
+                                              headerHeight: layout.headerHeight)
                         }
                     }
                     // 网格按真实占宽收紧（列宽固定，剩余空间留白）→ 在画布内水平居中；
@@ -1154,24 +1162,43 @@ private struct MacGameMatrixCell: View {
     let item: WorkspaceItem
     @ObservedObject var workspace: WorkspaceViewModel
     let width: CGFloat
+    /// 顶栏高度（单开 32 / 多开单行 24 / 多开多行 20），由 MacMatrixFit 决定。
+    let headerHeight: CGFloat
     @State private var reloadKey = UUID()
     /// 游戏画面高度：由宽度严格反推（9:16），与 MacMatrixFit 的求解口径一致。
     private var gameHeight: CGFloat { width / MacMatrixFit.gameAspect }
+    /// 顶栏密度分档：内容随高度整体收档，20pt 档下也不挤。
+    private enum HeaderDensity { case regular, compact, dense }
+    private var density: HeaderDensity {
+        if headerHeight >= MacMatrixFit.headerHeightSingle - 2 { return .regular }
+        if headerHeight >= MacMatrixFit.headerHeightMulti - 2 { return .compact }
+        return .dense
+    }
+    private var badgeSize: CGFloat { density == .regular ? 20 : (density == .compact ? 16 : 14) }
+    private var nicknameSize: CGFloat { density == .regular ? 12 : (density == .compact ? 11 : 10) }
+    private var iconSize: CGFloat { density == .regular ? 11 : (density == .compact ? 10 : 9) }
+    private var barPadding: CGFloat { density == .regular ? 9 : (density == .compact ? 7 : 5) }
+    private var barSpacing: CGFloat { density == .regular ? 7 : (density == .compact ? 6 : 4) }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: barSpacing) {
                 Text("\(workspace.items.firstIndex(where: { $0.id == item.id }).map { $0 + 1 } ?? 0)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundStyle(.black)
-                    .frame(width: 22, height: 22).background(.white).clipShape(Circle())
-                Text(item.account.nickname).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    .font(.system(size: density == .regular ? 11 : 9, weight: .bold, design: .monospaced)).foregroundStyle(.black)
+                    .frame(width: badgeSize, height: badgeSize).background(.white).clipShape(Circle())
+                Text(item.account.nickname).font(.system(size: nicknameSize, weight: .semibold)).lineLimit(1)
                 Spacer()
-                Circle().fill(item.host.state == .running ? Color.green : Color.orange).frame(width: 7, height: 7)
+                Circle().fill(item.host.state == .running ? Color.green : Color.orange)
+                    .frame(width: density == .dense ? 5 : 7, height: density == .dense ? 5 : 7)
                 Button { Task { if item.host.state == .running { await workspace.pause(id: item.id) } else { await workspace.resume(id: item.id) } } } label: { Image(systemName: item.host.state == .paused ? "play.fill" : "pause.fill") }
                 Button { reloadKey = UUID() } label: { Image(systemName: "arrow.clockwise") }
                 Button { Task { await workspace.close(id: item.id) } } label: { Image(systemName: "xmark") }.foregroundStyle(.red)
             }
-            // 卡片头部条：深色玻璃面（参考稿同款），不与氛围光抢色
-            .padding(.horizontal, 10).frame(height: MacMatrixFit.headerHeight).background(Color.black.opacity(0.45))
+            // 卡片头部条：深色玻璃面（参考稿同款），不与氛围光抢色。
+            // 高度由 MacMatrixFit 给定：多开 24pt、排到 2 行以上 20pt，高度让给游戏画面。
+            .font(.system(size: iconSize))
+            .padding(.horizontal, barPadding)
+            .frame(height: headerHeight)
+            .background(Color.black.opacity(0.45))
             MacEmbeddedGameView(account: item.account).id(reloadKey)
                 // 严格 9:16：高度由宽度反推，不再交给 aspectRatio 推断
                 // （父级给定宽高时 fit 模式可能保留横向留白，比例会被打破）。
