@@ -40,6 +40,18 @@ struct MacMultiOpenManagerView: View {
         _liveWorkspace = ObservedObject(wrappedValue: coordinator.workspace)
     }
 
+    /// 侧栏固定宽度。玻璃面板宽、内容层列宽、顶部拖拽条宽度必须同源。
+    private static let sidebarWidth: CGFloat = 304
+    /// hiddenTitleBar 顶部拖拽条高度。条带内的 mouseDown 会被 AppKit 直接消费成
+    /// 「拖动窗口」——单击不移动就完全没有反馈。所以**任何交互控件都必须排在
+    /// 这条带之外**，联动两处：body 里的拖拽条宽度 + workspaceHeader 的左侧留白。
+    private static let topDragHeight: CGFloat = 28
+    /// 红黄绿交通灯那一带的宽度（3 个按钮 + 左右边距，实测约 78pt，留余量取 96）。
+    /// 侧栏隐藏时工作区铺满整窗，控制条必须从这里之后开始：既躲开交通灯本身，
+    /// 也躲开只铺到这里的顶部拖拽条。**只加左侧缩进、不动顶部留白**——
+    /// 隐藏/显示侧栏两个状态的顶部高度必须完全一致。
+    private static let trafficLightsClearance: CGFloat = 96
+
     enum Section: String, CaseIterable, Identifiable {
         case accounts, scripts, settings
         var id: String { rawValue }
@@ -99,7 +111,7 @@ struct MacMultiOpenManagerView: View {
                         Rectangle()
                             .fill(Color.white.opacity(0.05))         // 02 玻璃填充 白 5%
                     }
-                    .frame(width: 304)
+                    .frame(width: Self.sidebarWidth)
                     // 04 右缘 1px 描边（上亮下暗）——玻璃的「厚度感」全靠这条线
                     .overlay(alignment: .trailing) {
                         Rectangle()
@@ -132,18 +144,29 @@ struct MacMultiOpenManagerView: View {
             HStack(spacing: 0) {
                 if sidebarVisible {
                     sidebar
-                        .frame(width: 304)
+                        .frame(width: Self.sidebarWidth)
                     Color.clear.frame(width: 1)
                 }
                 workspace
             }
         }
-        .overlay(alignment: .top) {
-            // hiddenTitleBar 顶部拖拽兜底：一条 28pt 的隐形拖拽区，
-            // 按住可拖动窗口；条带内没有交互控件，不影响点击。
-            TitleBarDragRegion()
-                .frame(height: 28)
-                .frame(maxWidth: .infinity)
+        .overlay(alignment: .topLeading) {
+            // hiddenTitleBar 顶部拖拽兜底：一条 28pt 的隐形拖拽区，按住可拖动窗口。
+            //
+            // ⚠️ 这条带会吞掉落在其中的 mouseDown（AppKit 把它当窗口拖动，单击
+            // 不动就毫无反馈）。工作区顶部控制条（侧栏开关 / ± / 自动手动 / 布局）
+            // 纵向只占 y≈4–40，视觉中心（y≈19–25）整块压在 0–28 的条带里，
+            // 正是「按钮要点几次才响应」的真因。因此条带必须避开工作区那一列：
+            // · 侧栏可见 → 只铺侧栏这一列（侧栏标题有 36pt 顶部留白，条带内无控件）；
+            // · 侧栏隐藏 → 只铺交通灯那一带，工作区控制条从它右边开始
+            //   （见 trafficLightsClearance）。两态顶部高度一致，不加纵向留白。
+            if sidebarVisible {
+                TitleBarDragRegion()
+                    .frame(width: Self.sidebarWidth, height: Self.topDragHeight)
+            } else {
+                TitleBarDragRegion()
+                    .frame(width: Self.trafficLightsClearance, height: Self.topDragHeight)
+            }
         }
         .task { accounts.refresh() }
         .fileImporter(isPresented: $isPresentingImporter,
@@ -722,7 +745,11 @@ struct MacMultiOpenManagerView: View {
             .menuStyle(.borderlessButton)
             .buttonStyle(MacManagerButtonStyle(tint: .gray))
         }
-        .padding(.horizontal, 24)
+        // 侧栏隐藏时工作区铺满整窗：控制条必须让开红黄绿交通灯那一带
+        // （顶部拖拽条此时也只铺到那里）。只改左侧缩进、不动顶部留白——
+        // 隐藏/显示侧栏两态的顶部高度必须一致，不能为了躲拖拽条把控制条下移。
+        .padding(.leading, sidebarVisible ? 24 : Self.trafficLightsClearance)
+        .padding(.trailing, 24)
         .padding(.top, topPad)
         .padding(.bottom, bottomPad)
     }
