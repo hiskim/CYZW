@@ -227,14 +227,18 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         } else {
             manifestValue = "{}"
         }
+        // 画质档位来自设置面板（ios2.renderQuality）。WebRuntime 只在场景加载前
+        // 读一次，用来决定画布 backing store 的像素比，所以已运行的实例改档位
+        // 后需要重新启动才生效。
+        let quality = MacRenderQuality.current()
         return """
         window.__IOS2_GAME_INSTANCE__ = {
           id: \(idJSON ?? "\\\"\\\""),
           account: \(accountJSON ?? "\\\"账号\\\""),
           authResponse: \(authJSON ?? "\\\"\\\"") ,
           frameRate: 60,
-          qualitySingle: 'high',
-          qualityMulti: 'medium',
+          qualitySingle: '\(quality.rawValue)',
+          qualityMulti: '\(quality.rawValue)',
           // macOS matrix cells are resizable multi-open surfaces. This also
           // enables the web bootstrap's EXACT_FIT policy to avoid side bars.
           multiOpen: true,

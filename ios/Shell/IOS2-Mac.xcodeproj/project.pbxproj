@@ -33,6 +33,7 @@
 		A1000000000000000000001A /* AccountFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A /* AccountFileManager.swift */; };
 		A1000000000000000000001B /* ScriptManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001B /* ScriptManager.swift */; };
 		A1000000000000000000001C /* MacScriptManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001C /* MacScriptManagerView.swift */; };
+		A1000000000000000000001D /* MacRenderQuality.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001D /* MacRenderQuality.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +44,7 @@
 		A2000000000000000000001A /* AccountFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountFileManager.swift; sourceTree = "<group>"; };
 		A2000000000000000000001B /* ScriptManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptManager.swift; sourceTree = "<group>"; };
 		A2000000000000000000001C /* MacScriptManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacScriptManagerView.swift; sourceTree = "<group>"; };
+		A2000000000000000000001D /* MacRenderQuality.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacRenderQuality.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* MacWebKitGameWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWebKitGameWindow.swift; sourceTree = "<group>"; };
 		A20000000000000000000019 /* MacMultiOpenManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMultiOpenManagerView.swift; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 				A20000000000000000000019 /* MacMultiOpenManagerView.swift */,
 				A2000000000000000000001B /* ScriptManager.swift */,
 				A2000000000000000000001C /* MacScriptManagerView.swift */,
+				A2000000000000000000001D /* MacRenderQuality.swift */,
 				A20000000000000000000018 /* MacCDNResourceManager.swift */,
 				A20000000000000000000007 /* MockEngineHost.swift */,
 				A20000000000000000000008 /* PluginPanelView.swift */,
@@ -236,6 +239,7 @@
 				A10000000000000000000019,
 				A1000000000000000000001B,
 				A1000000000000000000001C,
+				A1000000000000000000001D,
 				A10000000000000000000018,
 				A10000000000000000000007,
 				A10000000000000000000008,

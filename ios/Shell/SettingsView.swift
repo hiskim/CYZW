@@ -6,50 +6,6 @@ import AppKit
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
-    enum AccentChoice: String, CaseIterable, Identifiable {
-        case accent
-        case primaryButton
-        case success
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .accent: return "强调蓝"
-            case .primaryButton: return "主按钮蓝"
-            case .success: return "成功绿"
-            }
-        }
-
-        var token: DesignColorToken {
-            switch self {
-            case .accent: return .accent
-            case .primaryButton: return .primaryButton
-            case .success: return .success
-            }
-        }
-    }
-
-    enum PerformanceProfile: String, CaseIterable, Identifiable {
-        case balanced
-        case performance
-        case batterySaver
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .balanced: return "均衡"
-            case .performance: return "性能优先"
-            case .batterySaver: return "省电"
-            }
-        }
-    }
-
-    @Published var accentChoice: AccentChoice = .accent
-    @Published var fontToken: DesignFontToken = .lg
-    @Published var performanceProfile: PerformanceProfile = .balanced
-
 #if os(macOS)
     @Published var cdnCacheStatus: MacCDNCacheStatus?
     @Published var isCDNBusy = false
@@ -94,153 +50,41 @@ final class SettingsViewModel: ObservableObject {
 #endif
 }
 
+/// 设置页（中控台侧栏「设置」分节）。
+/// 视觉与脚本管理页同配方：白玻璃卡片 + 胶囊控件 + mini 开关；
+/// 页面标题由外层 secondarySection 提供，这里只铺两张卡片。
 struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
+    /// 游戏画质档位：设置面板与 WebKit 启动注入共用同一个 UserDefaults 键。
+    @AppStorage(MacRenderQuality.defaultsKey) private var renderQualityRaw = MacRenderQuality.fallback.rawValue
     #if os(macOS)
     @State private var showingClearCDNConfirmation = false
     @AppStorage(MacCDNResourceManager.automaticCachingKey) private var automaticCachingEnabled = true
     @AppStorage(MacCDNResourceManager.idleOnlyCachingKey) private var idleOnlyCachingEnabled = false
     #endif
 
+    /// 与 iOS 版脚本页磁贴同源的成功绿（#22B170），开关统一用它。
+    private static let glowGreen = Color(red: 34 / 255.0, green: 177 / 255.0, blue: 112 / 255.0)
+    /// 中控台侧栏强调青：与「中控台」标题、分组标签的强调色一致。
+    private static let accentCyan = Color.cyan
+    /// 危险操作红（清理缓存）。
+    private static let dangerRed = Color(red: 1.0, green: 0.37, blue: 0.34)
+
+    private var renderQuality: MacRenderQuality {
+        MacRenderQuality(rawValue: renderQualityRaw) ?? MacRenderQuality.fallback
+    }
+
     var body: some View {
-        let tokens = DesignTokens.shared
         ScrollView {
-            VStack(alignment: .leading, spacing: tokens.spacing(.lg)) {
-                Text("设置")
-                    .font(tokens.font(.xxl, weight: .semibold))
-                    .foregroundStyle(tokens.color(.textPrimary))
-
-                TokenSettingsCard(title: "主题色") {
-                    Picker("主题色", selection: $viewModel.accentChoice) {
-                        ForEach(SettingsViewModel.AccentChoice.allCases) { choice in
-                            HStack(spacing: tokens.spacing(.sm)) {
-                                Circle()
-                                    .fill(tokens.color(choice.token))
-                                    .frame(width: tokens.spacing(.md), height: tokens.spacing(.md))
-                                Text(choice.label).font(tokens.font(.lg))
-                            }
-                            .tag(choice)
-                        }
-                    }
-                    .font(tokens.font(.lg))
-                    .tint(tokens.color(.accent))
-                }
-
-                TokenSettingsCard(title: "字号") {
-                    Picker("字号", selection: $viewModel.fontToken) {
-                        ForEach(DesignFontToken.allCases, id: \.self) { token in
-                            Text("\(token.rawValue) · \(Int(tokens.fontSize(token)))px")
-                                .font(tokens.font(token))
-                                .tag(token)
-                        }
-                    }
-                    .font(tokens.font(.lg))
-                    .tint(tokens.color(.accent))
-                    Text("预览文本")
-                        .font(tokens.font(viewModel.fontToken))
-                        .foregroundStyle(tokens.color(.textPrimary))
-                }
-
-                TokenSettingsCard(title: "性能档位") {
-                    Picker("性能档位", selection: $viewModel.performanceProfile) {
-                        ForEach(SettingsViewModel.PerformanceProfile.allCases) { profile in
-                            Text(profile.label)
-                                .font(tokens.font(.lg))
-                                .tag(profile)
-                        }
-                    }
-                    .font(tokens.font(.lg))
-                    .tint(tokens.color(.accent))
-                }
-
+            VStack(alignment: .leading, spacing: 12) {
+                qualityCard
 #if os(macOS)
-                TokenSettingsCard(title: "多开实例") {
-                    Text("每个 macOS 进程使用独立的 Shell 状态，可分别登录不同账号。")
-                        .font(tokens.font(.md))
-                    Button {
-                        MacOSShellInstanceLauncher.openNewInstance()
-                    } label: {
-                        Label("打开新的应用实例", systemImage: "plus.rectangle.on.rectangle")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(TokenSecondaryButtonStyle())
-                }
-
-                TokenSettingsCard(title: "CDN 缓存") {
-                    VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
-                        Text("所有账号和实例共享同一份 CDN 缓存。")
-                            .font(tokens.font(.md))
-
-                        Toggle("自动缓存 CDN 资源", isOn: $automaticCachingEnabled)
-                            .font(tokens.font(.md, weight: .medium))
-                        Text("开启后，应用会自动准备 CDN 资源；关闭后只由游戏进入后按需缓存。")
-                            .font(tokens.font(.sm))
-                            .foregroundStyle(tokens.color(.textMuted))
-
-                        Toggle("仅空闲时自动缓存", isOn: $idleOnlyCachingEnabled)
-                            .font(tokens.font(.md, weight: .medium))
-                            .disabled(!automaticCachingEnabled)
-                        Text("开启后，仅在没有登录账号时后台预缓存；登录后暂停，改由游戏自身按需缓存。")
-                            .font(tokens.font(.sm))
-                            .foregroundStyle(tokens.color(.textMuted))
-
-                        if let status = viewModel.cdnCacheStatus {
-                            Text("已缓存 \(status.fileCount) 个文件 · \(ByteCountFormatter.string(fromByteCount: status.byteCount, countStyle: .file))")
-                                .font(tokens.font(.md, weight: .medium))
-                                .foregroundStyle(tokens.color(.textPrimary))
-                            Text(status.directoryPath)
-                                .font(.system(size: tokens.fontSize(.sm), design: .monospaced))
-                                .foregroundStyle(tokens.color(.textMuted))
-                                .textSelection(.enabled)
-                                .lineLimit(2)
-                        } else {
-                            Text("正在读取缓存状态...")
-                                .font(tokens.font(.md))
-                        }
-
-                        HStack(spacing: tokens.spacing(.sm)) {
-                            Button {
-                                viewModel.synchronizeCDNCache()
-                            } label: {
-                                Label("同步缓存", systemImage: "arrow.triangle.2.circlepath")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(TokenPrimaryButtonStyle())
-
-                            Button {
-                                showingClearCDNConfirmation = true
-                            } label: {
-                                Label("清理缓存", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(TokenSecondaryButtonStyle())
-
-                            Button {
-                                viewModel.openCDNCacheDirectory()
-                            } label: {
-                                Label("打开目录", systemImage: "folder")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(TokenSecondaryButtonStyle())
-                        }
-                        .disabled(viewModel.isCDNBusy)
-
-                        if viewModel.isCDNBusy {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        if !viewModel.cdnMessage.isEmpty {
-                            Text(viewModel.cdnMessage)
-                                .font(tokens.font(.sm))
-                                .foregroundStyle(tokens.color(.textSecondary))
-                        }
-                    }
-                }
+                cdnCard
 #endif
             }
-            .padding(tokens.spacing(.xl))
+            // 视口高于内容时顶部对齐（ScrollView 默认会把小内容垂直居中）。
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        // 背景保持透明：macOS 下让侧栏毛玻璃材质透出来（iOS 由外层 TabView 统一铺底色）。
 #if os(macOS)
         .task {
             viewModel.refreshCDNCacheStatus()
@@ -265,43 +109,317 @@ struct SettingsView: View {
         }
 #endif
     }
-}
 
-private struct TokenSettingsCard<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
+    // MARK: - 画质卡片
 
-    var body: some View {
-        let tokens = DesignTokens.shared
-        VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
-            Text(title)
-                .font(tokens.font(.xl, weight: .semibold))
-                .foregroundStyle(tokens.color(.textPrimary))
-            content
-                .foregroundStyle(tokens.color(.textSecondary))
+    private var qualityCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // 卡头：图标磁贴 + 标题 + 行尾当前像素比胶囊。
+            HStack(spacing: 10) {
+                settingsIconTile("slider.horizontal.3", tint: Self.accentCyan)
+                Text("画质")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 8)
+                Text(renderQuality.pixelRatioLabel)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Self.accentCyan)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule(style: .continuous).fill(Self.accentCyan.opacity(0.18)))
+                    .overlay(Capsule(style: .continuous)
+                        .strokeBorder(Self.accentCyan.opacity(0.85), lineWidth: 1))
+            }
+
+            qualitySegmentedCapsule
+
+            Text(renderQuality.summary)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color.white.opacity(0.78))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Label {
+                Text("重新启动游戏实例后生效")
+                    .font(.system(size: 10.5))
+            } icon: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
         }
-        .padding(tokens.spacing(.lg))
-        .background(tokens.color(.card))
-        .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.card)))
-        .overlay {
-            RoundedRectangle(cornerRadius: tokens.radius(.card))
-                .stroke(tokens.color(.border))
+        .padding(12)
+        .settingsCardSurface(cornerRadius: 12)
+    }
+
+    /// 胶囊分段选择器：外层深色胶囊轨道，三枚等宽胶囊选项；
+    /// 选中 = 实心青 + 白字 + 微光，未选中 = 白玻璃 + 描边（与分组标签同款）。
+    private var qualitySegmentedCapsule: some View {
+        HStack(spacing: 4) {
+            ForEach(MacRenderQuality.allCases) { quality in
+                let isSelected = quality == renderQuality
+                Button {
+                    guard !isSelected else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        renderQualityRaw = quality.rawValue
+                    }
+                } label: {
+                    Text(quality.label)
+                        .font(.system(size: 12, weight: isSelected ? .bold : .medium))
+                        .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.60))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(isSelected ? Self.accentCyan.opacity(0.85) : Color.white.opacity(0.05))
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(
+                                    isSelected ? Self.accentCyan : Color.white.opacity(0.12),
+                                    lineWidth: 1
+                                )
+                        )
+                        .shadow(color: isSelected ? Self.accentCyan.opacity(0.35) : .clear,
+                                radius: 6, x: 0, y: 0)
+                        .contentShape(Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .settingsHoverHighlight(cornerRadius: 50, intensity: isSelected ? 0.04 : 0.10)
+                .accessibilityLabel("画质：\(quality.label)")
+            }
         }
+        .padding(4)
+        .background(Capsule(style: .continuous).fill(Color.black.opacity(0.28)))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
+    // MARK: - CDN 缓存卡片
+
+#if os(macOS)
+    private var cdnCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // 卡头：图标磁贴 + 标题 + 行尾缓存规模胶囊。
+            HStack(spacing: 10) {
+                settingsIconTile("externaldrive.badge.icloud", tint: Self.accentCyan)
+                Text("CDN 缓存")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 8)
+                cdnStatusCapsule
+            }
+
+            Text("所有账号和实例共享同一份 CDN 缓存。")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+
+            cdnToggleRows
+
+            if let status = viewModel.cdnCacheStatus {
+                Text(status.directoryPath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 6) {
+                capsuleButton(title: "同步", systemImage: "arrow.triangle.2.circlepath", tone: .accent) {
+                    viewModel.synchronizeCDNCache()
+                }
+                capsuleButton(title: "清理", systemImage: "trash", tone: .danger) {
+                    showingClearCDNConfirmation = true
+                }
+                capsuleButton(title: "目录", systemImage: "folder", tone: .plain) {
+                    viewModel.openCDNCacheDirectory()
+                }
+            }
+            .disabled(viewModel.isCDNBusy)
+
+            HStack(spacing: 6) {
+                if viewModel.isCDNBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                if !viewModel.cdnMessage.isEmpty {
+                    Text(viewModel.cdnMessage)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(12)
+        .settingsCardSurface(cornerRadius: 12)
+    }
+
+    /// 行尾缓存规模胶囊：读取中显示占位，就绪后显示「N 个 · 大小」。
+    @ViewBuilder
+    private var cdnStatusCapsule: some View {
+        if let status = viewModel.cdnCacheStatus {
+            Text("\(status.fileCount) 个 · \(ByteCountFormatter.string(fromByteCount: status.byteCount, countStyle: .file))")
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(0.75))
+                .lineLimit(1)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.08)))
+        } else {
+            Text("读取中…")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.06)))
+        }
+    }
+
+    private var cdnToggleRows: some View {
+        VStack(spacing: 6) {
+            SettingsToggleRow(
+                title: "自动缓存 CDN 资源",
+                caption: "开启后自动准备 CDN 资源；关闭则由游戏按需缓存",
+                isOn: $automaticCachingEnabled,
+                tint: Self.glowGreen
+            )
+            SettingsToggleRow(
+                title: "仅空闲时自动缓存",
+                caption: "无登录账号时后台预缓存，登录后暂停",
+                isOn: $idleOnlyCachingEnabled,
+                tint: Self.glowGreen
+            )
+            .disabled(!automaticCachingEnabled)
+            .opacity(automaticCachingEnabled ? 1 : 0.55)
+        }
+    }
+#endif
+
+    // MARK: - 复用小件
+
+    /// 卡头图标磁贴（28×28 圆角 8，主题色淡染），与脚本磁贴同款。
+    private func settingsIconTile(_ systemImage: String, tint: Color) -> some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tint.opacity(0.16))
+            )
+    }
+
+    private enum CapsuleTone {
+        case accent   // 实心青：主操作
+        case plain    // 白玻璃描边：普通操作
+        case danger   // 红描边：危险操作
+    }
+
+    /// 胶囊按钮：等宽铺满一行三枚，语义用颜色区分。
+    private func capsuleButton(title: String, systemImage: String, tone: CapsuleTone,
+                               action: @escaping () -> Void) -> some View {
+        let filled: Bool
+        let tint: Color
+        switch tone {
+        case .accent: filled = true; tint = Self.accentCyan
+        case .plain: filled = false; tint = Color.white.opacity(0.75)
+        case .danger: filled = false; tint = Self.dangerRed
+        }
+        return Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(filled ? Color.white : tint)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(filled ? tint.opacity(0.85) : Color.white.opacity(0.05))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(tint.opacity(filled ? 0.9 : 0.55), lineWidth: 1)
+            )
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .settingsHoverHighlight(cornerRadius: 50, intensity: filled ? 0.06 : 0.10)
     }
 }
 
 #if os(macOS)
-/// Starts another process of the installed app. This stays in the Shell layer
-/// and does not change authentication or game startup.
-enum MacOSShellInstanceLauncher {
-    static func openNewInstance() {
-        guard #available(macOS 10.15, *) else { return }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: Bundle.main.bundleURL,
-            configuration: configuration
+/// 侧栏窄幅开关行：标题 + 一行说明 + 行尾 mini 开关（与脚本卡片同款质感）。
+private struct SettingsToggleRow: View {
+    let title: String
+    let caption: String
+    @Binding var isOn: Bool
+    var tint: Color = .green
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.90))
+                    .lineLimit(1)
+                Text(caption)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(isOn ? tint : Color.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
         )
     }
 }
 #endif
+
+// MARK: - 设置页局部样式扩展
+
+private extension View {
+    /// 设置卡片表面：白玻璃填充 + 顶亮底暗的描边渐变（与脚本卡片同配方）。
+    func settingsCardSurface(cornerRadius: CGFloat) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(0.055))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.09)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 1
+                    )
+            }
+    }
+
+    /// 悬停高亮：macOS 走 AppKit tracking-area 版 hoverHighlight；
+    /// iOS 目标下为空实现（该页在 iOS 上仍走系统 TabView 外观）。
+    @ViewBuilder
+    func settingsHoverHighlight(cornerRadius: CGFloat, intensity: Double = 0.08) -> some View {
+#if os(macOS)
+        self.hoverHighlight(cornerRadius: cornerRadius, intensity: intensity)
+#else
+        self
+#endif
+    }
+}

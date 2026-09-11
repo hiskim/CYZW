@@ -568,11 +568,15 @@ struct MacMultiOpenManagerView: View {
         } else {
             VStack(alignment: .leading, spacing: 14) {
                 Text(selectedSection.title).font(.system(size: 20, weight: .bold))
-                Text("应用与缓存设置。")
+                Text("画质与 CDN 缓存。")
                     .font(.system(size: 13)).foregroundStyle(.secondary)
-                if selectedSection == .settings { SettingsView().frame(maxHeight: 430) }
+                // 不再写死 maxHeight: 430——两张设置卡片 ≈450pt，430 会截断
+                // 导致必须滚动。与脚本分节同构：铺满侧栏剩余高度，内容不足时
+                // 顶部对齐留白，窗口过矮时才滚动。
+                if selectedSection == .settings { SettingsView() }
             }
             .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 

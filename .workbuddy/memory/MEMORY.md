@@ -12,3 +12,5 @@
 - macOS 文件选择用 NSOpenPanel（ScriptImporter 模式）；SwiftUI .fileImporter 在深层子视图会静默不弹。
 - sheet 内部模式受"入口 + 弹窗内切换"双重控制时用父级 Binding；弹窗尺寸只在 macBody 内定义一处。
 - 同文件多次编辑必须串行（外置盘并行 Edit 有竞态/丢失风险），改完 sync 后验证。
+- 侧栏卡片/控件统一配方（脚本页、设置页通用）：白玻璃卡片 white 0.055 填充 + 顶亮底暗描边渐变（连续圆角 10–12）、卡头 28×28 图标磁贴、状态用 Capsule(.continuous) 胶囊（选中=实色填充白字+微光，未选中=white 0.05 + 描边同色文字）、开关 mini switch + glowGreen #22B170、强调青 .cyan。新设置类 UI 直接抄这套，不要用系统 Picker/Toggle 默认外观。
+- 游戏画质：MacRenderQuality（UserDefaults `ios2.renderQuality`，默认 high）→ bootstrapScript 注入 qualitySingle/qualityMulti → WebRuntime renderPixelRatio 决定画布像素比；档位只在实例启动时读取，改档需重启实例。
