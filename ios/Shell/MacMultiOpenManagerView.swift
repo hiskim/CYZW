@@ -191,6 +191,7 @@ struct MacMultiOpenManagerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 7))
                     }
                     .buttonStyle(.plain)
+                    .hoverHighlight(cornerRadius: 7, intensity: 0.08)
                 }
             }
             .padding(.horizontal, 12)
@@ -249,6 +250,7 @@ struct MacMultiOpenManagerView: View {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .hoverHighlight(cornerRadius: 4, intensity: 0.12)
                     .help("清除搜索")
                 }
             }
@@ -328,6 +330,7 @@ struct MacMultiOpenManagerView: View {
                             .foregroundStyle(.cyan)
                     }
                     .buttonStyle(.plain)
+                    .hoverHighlight(cornerRadius: 4, intensity: 0.12)
                     .help("全选当前列表")
                     Text(accounts.selectedGroupTitle)
                         .font(.system(size: 12, weight: .semibold))
@@ -400,6 +403,7 @@ struct MacMultiOpenManagerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 5, intensity: 0.12)
         .help(isSortingAccounts ? "完成排序" : "拖动排序（在当前分组内生效，重启保留）")
     }
 
@@ -416,6 +420,7 @@ struct MacMultiOpenManagerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 4, intensity: 0.10)
         .accessibilityLabel("取消所有勾选")
         .help("一键取消所有勾选（含其他分组）")
     }
@@ -433,6 +438,7 @@ struct MacMultiOpenManagerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 4, intensity: 0.10)
         .accessibilityLabel("删除已选账号")
         .help("删除勾选的账号（弹出确认后才会删除）")
     }
@@ -787,6 +793,7 @@ struct GroupFilterView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.cyan)
+                    .hoverHighlight(cornerRadius: 5, intensity: 0.12)
                     .help("增加分组")
                     .accessibilityLabel("增加分组")
                 }
@@ -797,6 +804,7 @@ struct GroupFilterView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.cyan)
+                    .hoverHighlight(cornerRadius: 5, intensity: 0.12)
                     .help("管理分组")
                     .accessibilityLabel("管理分组")
                 }
@@ -853,6 +861,7 @@ private struct GroupFilterChip: View {
             )
         }
         .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 50, intensity: 0.10)
         .help(data.title)
     }
 }
@@ -947,6 +956,8 @@ private struct AccountManagerRow: View {
                 )
         )
         .contentShape(Rectangle())
+        // 悬停提亮：暗示该行可拖动排序。
+        .hoverHighlight(cornerRadius: 6, intensity: 0.06)
     }
 
     private var normalBody: some View {
@@ -961,12 +972,15 @@ private struct AccountManagerRow: View {
             }
             .buttonStyle(.plain)
             .disabled(isRunning)
+            .hoverHighlight(cornerRadius: 6, intensity: 0.18)
             .help(isRunning ? "请先关闭实例" : "删除账号")
             .opacity(isDeleteRevealed ? 1 : 0)
             .zIndex(2)
 
             HStack(spacing: 8) {
-                Button(action: onToggle) { Image(systemName: isSelected ? "checkmark.square.fill" : "square").foregroundStyle(.cyan) }.buttonStyle(.plain)
+                Button(action: onToggle) { Image(systemName: isSelected ? "checkmark.square.fill" : "square").foregroundStyle(.cyan) }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(cornerRadius: 4, intensity: 0.15)
                 Text(account.nickname).lineLimit(1).font(.system(size: 13, weight: .medium))
                 Spacer(minLength: 4)
                 Menu { groupActions } label: {
@@ -975,11 +989,14 @@ private struct AccountManagerRow: View {
                         .foregroundStyle(.cyan)
                 }
                 .menuStyle(.borderlessButton)
+                .hoverHighlight(cornerRadius: 4, intensity: 0.15)
                 .help("移动到分组")
                 .accessibilityLabel("移动到分组")
                 Circle().fill(isRunning ? Color.green : Color.gray.opacity(0.55)).frame(width: 7, height: 7)
                 Button(action: isRunning ? onStop : onStart) { Image(systemName: isRunning ? "stop.fill" : "play.fill") }
-                    .buttonStyle(.plain).foregroundStyle(isRunning ? .orange : .green)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(isRunning ? .orange : .green)
+                    .hoverHighlight(cornerRadius: 4, intensity: 0.15)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 9)
@@ -1029,6 +1046,7 @@ private struct AccountManagerRow: View {
         .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
+        .hoverHighlight(cornerRadius: 6, intensity: 0.05)
     }
 
     /// 收起删除按钮并复位卡片位置。
@@ -1130,6 +1148,35 @@ private struct EmptyMatrixView: View {
     }
 }
 
+// MARK: - 悬停反馈
+
+/// macOS 悬停高亮：鼠标移入时在控件上叠加一层白色薄层，给 .plain 按钮/卡片
+/// 补上原生按钮式的 hover 反馈（plain 样式在深色玻璃上默认几乎无悬停表现）。
+private struct HoverHighlightModifier: ViewModifier {
+    @State private var isHovering = false
+    var cornerRadius: CGFloat = 6
+    /// 高亮强度（白色叠加透明度）。
+    var intensity: Double = 0.08
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(isHovering ? intensity : 0))
+                    // 关键：高亮层不参与 hit test，否则会挡住下层按钮的点击。
+                    .allowsHitTesting(false)
+            )
+            .onHover { isHovering = $0 }
+    }
+}
+
+private extension View {
+    /// 鼠标悬停时叠加白色薄高亮；胶囊形控件传大圆角（如 50）即可。
+    func hoverHighlight(cornerRadius: CGFloat = 6, intensity: Double = 0.08) -> some View {
+        modifier(HoverHighlightModifier(cornerRadius: cornerRadius, intensity: intensity))
+    }
+}
+
 private struct MacManagerButtonStyle: ButtonStyle {
     let tint: Color
     func makeBody(configuration: Configuration) -> some View {
@@ -1144,6 +1191,8 @@ private struct MacManagerButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 6))
             // 1px 白描边：色块按钮从深蓝背景/玻璃上「浮起来」的最低成本手段
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.20)))
+            // 悬停提亮：所有主按钮统一的 hover 反馈。
+            .hoverHighlight(cornerRadius: 6, intensity: 0.15)
     }
 }
 
