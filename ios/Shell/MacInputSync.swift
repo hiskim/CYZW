@@ -113,22 +113,36 @@ final class MacGameInstanceRegistry {
 
 // MARK: - 群控中控
 
-/// 键鼠同步（群控 / 镜像操作）的中控。
+/// 群控当前的工作模式。
+enum MacSyncMode {
+    /// 没人参与同步（没有主控，参与者 < 2）。
+    case idle
+    /// 无主控：所有开启 🔗 的窗口**互相同步**——操作任意一个，其余参与者全部跟随。
+    case mutual
+    /// 有主控：只有 👑 主控发号施令，子窗口静默。
+    case masterDriven
+}
+
+/// 键鼠同步（群控 / 镜像操作）的中控——**主从 + 互相同步混合模式**。
 ///
-/// 主从模型：
-/// - `masterAccountID`：全局唯一的主窗口。只有它捕获事件并广播；
-/// - `receiverAccountIDs`：打开了「接收同步」的窗口集合；
-/// - 主窗口自身不会被回灌（避免回环），子窗口的操作也不会反向同步。
+/// 路由规则（本次重构的核心）：
+/// ```
+/// 有 👑 主控：  主控 → 所有开启 🔗 的窗口（主控自己不被回灌）
+///               其它窗口 → 谁也不发（子窗口静默）
+/// 无 👑 主控：  任一开启 🔗 的窗口 → 其余所有开启 🔗 的窗口（互相广播）
+///               未开启 🔗 的窗口既不发也不收
+/// ```
+/// 也就是说 🔗「参与同步」同时决定**收**和（无主控时的）**发**；
+/// 👑 一旦出现，就把「发」的权限收归主控独占。
 ///
-/// 主窗口退位：关闭主窗口 → `retire(accountID:)` → master 置空 →
-/// 所有窗口恢复普通窗口（捕获开关被逐个写回 false），直到用户重新指定。
+/// 主窗口退位：关闭主控 → `retire(accountID:)` → 主控置空 → 自动回落到互相同步模式。
 @MainActor
 final class MacInputSyncController: ObservableObject {
     static let shared = MacInputSyncController()
 
-    /// 当前主窗口的账号 ID（nil = 无人主事，群控停止）。
+    /// 当前主控的账号 ID（nil = 无主控，走互相同步模式）。
     @Published private(set) var masterAccountID: String?
-    /// 开启了「接收同步」的账号 ID 集合。
+    /// 开启了「参与同步」🔗 的账号 ID 集合：收件人名单，也是无主控时的发言人名单。
     @Published private(set) var receiverAccountIDs: Set<String> = []
 
     /// mousemove 是否同步（关掉可以省掉大量 IPC，点击/按键不受影响）。
@@ -140,7 +154,8 @@ final class MacInputSyncController: ObservableObject {
 
     /// mousemove 的派发节流间隔（与 JS 侧 rAF 合并一起，双保险）。
     private let moveInterval: TimeInterval = 1.0 / 60.0
-    private var lastMoveSentAt: TimeInterval = 0
+    /// 按账号分别节流：互相同步模式下多个窗口可能交替发言，不能共用一把尺子。
+    private var lastMoveSentAt: [String: TimeInterval] = [:]
 
     // MARK: 查询
 
@@ -148,9 +163,54 @@ final class MacInputSyncController: ObservableObject {
     func isReceiver(_ accountID: String) -> Bool { receiverAccountIDs.contains(accountID) }
     var receiverCount: Int { receiverAccountIDs.count }
 
-    // MARK: 主窗口
+    /// 当前模式：有主控即 masterDriven；无主控且 ≥2 个参与者才算真的在互相同步。
+    var mode: MacSyncMode {
+        if masterAccountID != nil { return .masterDriven }
+        return receiverAccountIDs.count >= 2 ? .mutual : .idle
+    }
 
-    /// 设为主窗口 / 取消（全局唯一）。
+    /// 该实例此刻是否应当**捕获**自己的键鼠事件。
+    /// 有主控时只有主控捕获；无主控时每个参与者都捕获（互相同步）。
+    func shouldCapture(_ accountID: String) -> Bool {
+        Self.shouldCapture(master: masterAccountID, receivers: receiverAccountIDs, account: accountID)
+    }
+
+    /// 该实例此刻是否**允许向外发送**事件。
+    func canSend(from accountID: String) -> Bool {
+        Self.canSend(master: masterAccountID, receivers: receiverAccountIDs, sender: accountID)
+    }
+
+    // MARK: 路由真值表（纯函数，可脱离 WebKit 单测）
+
+    /// 谁能发言：主控恒可发言；有主控时其它人一律静默；无主控时参与者才可发言。
+    static func canSend(master: String?, receivers: Set<String>, sender: String) -> Bool {
+        if master == sender { return true }
+        guard master == nil else { return false }
+        return receivers.contains(sender)
+    }
+
+    /// 谁该捕获：主控恒捕获；有主控时其它人一律不捕获；无主控时参与者捕获。
+    static func shouldCapture(master: String?, receivers: Set<String>, account: String) -> Bool {
+        if master == account { return true }
+        guard master == nil else { return false }
+        return receivers.contains(account)
+    }
+
+    /// 一次事件的回放目标 = 参与名单 − 发言者自己 − 主控（主控模式下发言者即主控）。
+    /// 不允许发言时返回空集。
+    static func routingTargets(master: String?,
+                               receivers: Set<String>,
+                               sender: String) -> Set<String> {
+        guard canSend(master: master, receivers: receivers, sender: sender) else { return [] }
+        var targets = receivers
+        targets.remove(sender)
+        if let master { targets.remove(master) }
+        return targets
+    }
+
+    // MARK: 主控
+
+    /// 设为主控 / 取消（全局唯一）。
     func toggleMaster(_ accountID: String) {
         setMaster(masterAccountID == accountID ? nil : accountID)
     }
@@ -158,61 +218,75 @@ final class MacInputSyncController: ObservableObject {
     func setMaster(_ accountID: String?) {
         let previous = masterAccountID
         masterAccountID = accountID
-        if let previous, previous != accountID {
-            // 旧主窗口退位：关掉它的捕获监听。
-            pushCapture(false, to: previous)
-        }
+        // 主控一变，整体格局就变（有主控 → 参与者停止捕获；无主控 → 参与者全部开始捕获），
+        // 所以旧主控、新主控、以及所有参与者都要重新写捕获开关。
+        var affected = receiverAccountIDs
+        if let previous { affected.insert(previous) }
+        if let accountID { affected.insert(accountID) }
+        for id in affected { pushCaptureState(to: id) }
         guard let accountID else { return }
-        pushCapture(true, to: accountID)
         pushRipple(showsRipple, to: accountID)
-        // 键盘事件只会派发给第一响应者，设为主窗口时顺手把焦点抢过来。
+        // 键盘事件只会派发给第一响应者，设为主控时顺手把焦点抢过来。
         MacGameInstanceRegistry.shared.view(for: accountID)?.focusWebView()
     }
 
-    // MARK: 接收开关
+    // MARK: 参与开关
 
     func toggleReceiver(_ accountID: String) {
         setReceiver(accountID, enabled: !receiverAccountIDs.contains(accountID))
     }
 
-    /// 每个窗口独立的「接收同步」开关。
+    /// 每个窗口独立的「参与同步」🔗 开关：既是收件人，也是无主控时的发言人。
     func setReceiver(_ accountID: String, enabled: Bool) {
         if enabled {
             receiverAccountIDs.insert(accountID)
         } else {
             receiverAccountIDs.remove(accountID)
         }
+        // 无主控时参与开关直接决定自己是否捕获；有主控时非主控恒为 false，写一次也不会错。
+        pushCaptureState(to: accountID)
+    }
+
+    /// 一键关闭所有参与（顶部「互相同步」胶囊的点击动作）。
+    func disableAllReceivers() {
+        let ids = receiverAccountIDs
+        receiverAccountIDs.removeAll()
+        for id in ids { pushCaptureState(to: id) }
     }
 
     // MARK: 生命周期
 
-    /// 实例关闭：主窗口退位 + 摘掉接收标记。
+    /// 实例关闭：主控退位 + 摘掉参与标记。
     /// 由账号级关闭（WorkspaceViewModel.close）调用；卡片重载只是换 WebView，
-    /// 不走这里，所以重载不会莫名其妙丢掉主窗口身份。
+    /// 不走这里，所以重载不会莫名其妙丢掉主控身份。
     func retire(accountID: String) {
-        if masterAccountID == accountID { setMaster(nil) }
+        let wasMaster = masterAccountID == accountID
         receiverAccountIDs.remove(accountID)
+        // 主控退位：置空后自动回落到互相同步模式（其余参与者重新打开捕获）。
+        if wasMaster { setMaster(nil) }
     }
 
     /// 页面加载完成 / 实例重建后，把「是否捕获」重新写回页面
     /// （WKUserScript 只在导航时注入，重载后必须补一次，否则脚本在但开关是关的）。
     func refreshCapture(forAccountID accountID: String) {
-        pushCapture(masterAccountID == accountID, to: accountID)
+        pushCaptureState(to: accountID)
     }
 
     // MARK: 事件分发
 
-    /// 主窗口发来一个事件 → 过滤出「开了接收同步且不是主窗口」的子窗口 → 逐个回放。
+    /// 收到一个实例的事件 → 按当前模式决定谁能发、发给谁 → 逐个回放。
     func publish(_ event: MacInputSyncEvent, from accountID: String) {
-        // 只有主窗口能广播；子窗口的事件一律丢弃。
-        guard accountID == masterAccountID else { return }
+        guard canSend(from: accountID) else { return }
         if event.isMove {
             guard syncMouseMove else { return }
             let now = ProcessInfo.processInfo.systemUptime
-            guard now - lastMoveSentAt >= moveInterval else { return }
-            lastMoveSentAt = now
+            if let last = lastMoveSentAt[accountID], now - last < moveInterval { return }
+            lastMoveSentAt[accountID] = now
         }
-        let targets = receiverAccountIDs.filter { $0 != accountID }
+        // 收件人 = 参与名单 − 发言者自己 − 主控（主控模式下发言者即主控，一并排除）。
+        let targets = Self.routingTargets(master: masterAccountID,
+                                          receivers: receiverAccountIDs,
+                                          sender: accountID)
         guard !targets.isEmpty, let literal = event.javaScriptLiteral else { return }
         let script = MacInputSyncScript.replay(literal: literal)
         for target in targets {
@@ -222,8 +296,11 @@ final class MacInputSyncController: ObservableObject {
 
     // MARK: 私有
 
-    private func pushCapture(_ enabled: Bool, to accountID: String) {
-        MacGameInstanceRegistry.shared.evaluate(MacInputSyncScript.setCapture(enabled), accountID: accountID)
+    /// 把「当前模式下该实例应不应该捕获」写回页面。
+    private func pushCaptureState(to accountID: String) {
+        MacGameInstanceRegistry.shared.evaluate(
+            MacInputSyncScript.setCapture(shouldCapture(accountID)), accountID: accountID
+        )
     }
 
     /// 波纹开关：to 为 nil 时下发给所有参与同步的实例（主窗口 + 接收方）。
@@ -311,27 +388,34 @@ enum MacInputSyncScript {
       const keyInput = (t, e) => ({ t: t, key: e.key || '', code: e.code || '', keyCode: e.keyCode || 0, mods: mods(e), repeat: !!e.repeat });
 
       // ── 捕获 ──
+      // 防回灌：混合模式下「无主控」时所有参与者都在捕获，A 的事件在 B 里回放后
+      // 会被 B 自己的捕获器再抓一次发回来 → 无限 ping-pong。因此回放出来的事件
+      // 一律打上 ECHO 标记，捕获器见到标记直接忽略。只有原生真实事件会外发。
+      const ECHO = '__ios2SyncEcho';
+      const isEcho = (e) => { try { return !!e[ECHO]; } catch (err) { return false; } };
+      const mark = (e) => { try { e[ECHO] = 1; } catch (err) {} return e; };
+      // 捕获开关 + 回灌标记双闸门。
+      const guard = (fn) => (e) => { if (!capturing || isEcho(e)) return; fn(e); };
+
       const onMove = (e) => {
-        if (!capturing) return;
         pendingMove = mouseInput('mousemove', e);
         if (!rafId) rafId = requestAnimationFrame(flushMove);
       };
       const flushMove = () => { rafId = 0; const p = pendingMove; pendingMove = null; if (p) post(p); };
       const onWheel = (e) => {
-        if (!capturing) return;
         const p = norm(e);
         post({ t: 'wheel', x: +p[0].toFixed(5), y: +p[1].toFixed(5), dx: e.deltaX || 0, dy: e.deltaY || 0, mods: mods(e) });
       };
-      const sendMouse = (t) => (e) => { if (capturing) post(mouseInput(t, e)); };
-      const sendKey = (t) => (e) => { if (capturing) post(keyInput(t, e)); };
+      const sendMouse = (t) => (e) => { post(mouseInput(t, e)); };
+      const sendKey = (t) => (e) => { post(keyInput(t, e)); };
 
-      window.addEventListener('mousedown', sendMouse('mousedown'), true);
-      window.addEventListener('mouseup', sendMouse('mouseup'), true);
-      window.addEventListener('contextmenu', sendMouse('contextmenu'), true);
-      window.addEventListener('mousemove', onMove, true);
-      window.addEventListener('wheel', onWheel, { capture: true, passive: true });
-      window.addEventListener('keydown', sendKey('keydown'), true);
-      window.addEventListener('keyup', sendKey('keyup'), true);
+      window.addEventListener('mousedown', guard(sendMouse('mousedown')), true);
+      window.addEventListener('mouseup', guard(sendMouse('mouseup')), true);
+      window.addEventListener('contextmenu', guard(sendMouse('contextmenu')), true);
+      window.addEventListener('mousemove', guard(onMove), true);
+      window.addEventListener('wheel', guard(onWheel), { capture: true, passive: true });
+      window.addEventListener('keydown', guard(sendKey('keydown')), true);
+      window.addEventListener('keyup', guard(sendKey('keyup')), true);
       // 指针移出窗口时补一个 mouseup，避免子窗口卡在「按下」状态。
       window.addEventListener('blur', () => { if (capturing) post({ t: 'mouseup', x: 0, y: 0, button: 0, buttons: 0, mods: 0 }); });
 
@@ -387,7 +471,8 @@ enum MacInputSyncScript {
               button: input.button || 0, buttons: input.buttons || 0,
               detail: t === 'mousedown' || t === 'mouseup' ? 1 : 0
             }, flags(m));
-            el.dispatchEvent(new MouseEvent(t, init));
+            const ev = new MouseEvent(t, init);
+            el.dispatchEvent(mark(ev));
             if (t === 'mousedown') ripple(x, y);
           } else if (t === 'wheel') {
             const el = targetAt(x, y);
@@ -397,7 +482,7 @@ enum MacInputSyncScript {
               screenX: x, screenY: y, clientX: x, clientY: y,
               deltaX: input.dx || 0, deltaY: input.dy || 0, deltaZ: 0, deltaMode: 0
             }, flags(m));
-            el.dispatchEvent(new WheelEvent('wheel', init));
+            el.dispatchEvent(mark(new WheelEvent('wheel', init)));
           } else if (t === 'keydown' || t === 'keyup') {
             const el = document.activeElement || document.body || document.documentElement;
             if (!el) return;
@@ -407,7 +492,7 @@ enum MacInputSyncScript {
               keyCode: input.keyCode || 0, charCode: 0, which: input.keyCode || 0,
               repeat: t === 'keydown' ? !!input.repeat : false
             }, flags(m));
-            el.dispatchEvent(new KeyboardEvent(t, init));
+            el.dispatchEvent(mark(new KeyboardEvent(t, init)));
           }
         } catch (e) {}
       };

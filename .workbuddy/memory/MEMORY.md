@@ -22,10 +22,16 @@
 
 ## 键鼠同步 / 群控（2026-09-12 新增，JS IPC 方案，禁止 CGEvent/NSEvent 坐标模拟）
 - 全部逻辑在 `ios/Shell/MacInputSync.swift`：`MacInputSyncEvent`（坐标恒为 0...1 归一化）+ `MacGameInstanceRegistry`（账号 ID → MacWebKitGameView 弱引用）+ `MacInputSyncController.shared`（master/receiver 状态 + 分发）+ `MacInputSyncScript.agent`（捕获器 + 回放器 + 波纹，二合一脚本）。
-- **脚本必须 atDocumentStart 预注入到每个实例**，运行时只用 `setCapture(on)` 切角色——WKUserScript 无法在运行时追加；因此 didFinish / 实例重建后必须补一次 `refreshCapture`。
+- **混合路由（2026-09-12 二次重构）**：🔗「参与同步」= 收件人 + 无主控时的发言人；👑「主控」一出现就把「发」的权限收归独占。
+  - 有主控：主控 → 所有参与者；其它窗口静默（既不发也不捕获）。
+  - 无主控：任一参与者 → 其余全部参与者（互相广播）；未参与者既不发也不收。
+  - 真值表抽成**纯静态函数** `canSend/shouldCapture/routingTargets(master:receivers:sender:)`，可脱离 WebKit 单测（用脚本从源码抽出这几个函数编译跑真值表）。
+- **防回灌是互相模式的生死线**：无主控时所有参与者都在捕获，回放出来的事件会被对方捕获器再抓一次 → 无限 ping-pong。解法是回放事件打 `__ios2SyncEcho` 标记，捕获器用 `guard()` 双闸门（capture 开关 + echo 标记）忽略。**只有原生真实事件会外发。**
+- 捕获开关不再等价于「是否主控」，而是 `shouldCapture()` 派生；主控切换 / 参与开关切换 / 页面 didFinish / 实例重建 都要重算并写回页面（主控一变，所有参与者的捕获态都翻转）。
+- **脚本必须 atDocumentStart 预注入到每个实例**，运行时只用 `setCapture(on)` 切角色——WKUserScript 无法在运行时追加。
 - 回放派发到 `document.elementFromPoint()` 的元素（冒泡即可覆盖 document/window 上的监听，Cocos 挂 canvas 或 window 都收得到）；mousemove 走 rAF 合并 + Swift 侧 1/60s 节流双保险。
 - 主窗口身份按**账号 ID**记，卡片重载（换 WebView）不会退位；只有账号级关闭（`WorkspaceViewModel.close`）才 `retire` 退位。
-- UI：卡片 Header 的 👑/🔗 两个按钮 + 主窗口金色描边；顶部标题栏群控胶囊（点击退位），无 master 时不占位。
+- UI：卡片 Header 的 👑/🔗 两个按钮 + 主控金色描边；顶部标题栏状态胶囊按 `mode` 三态显示——主控驱动（金色「主控 · N 跟随」，点击退位）/ 互相同步（青色「互相同步 · N 窗口」，点击全部关闭参与）/ idle 不占位。
 
 ## 游戏实例存储（踩过的坑）
 - 游戏内设置（省电模式等）写在 `window.localStorage`，`cc.sys.localStorage` 就是它。因此 WebKit 实例**绝不能用 `.nonPersistent()`**，否则关窗即丢配置；也**不能用 `.default()`**，会和 App 内其它网页内容混在一起。

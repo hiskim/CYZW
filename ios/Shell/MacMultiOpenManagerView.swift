@@ -652,31 +652,53 @@ struct MacMultiOpenManagerView: View {
         return "\(mode) \(Int(matrixLayout.cardWidth))×\(Int(matrixLayout.gameHeight)) · 9:16"
     }
 
-    /// 群控状态胶囊：有主窗口时出现，点击 = 主窗口退位（同步停止）。
-    /// 没有主窗口时完全不占位，标题栏高度与密度分档不受影响。
+    /// 群控状态胶囊：反映当前是「主控驱动」还是「互相同步」；没有同步时完全不占位，
+    /// 标题栏高度与密度分档不受影响。
     @ViewBuilder
     private var syncStatusChip: some View {
-        if let masterID = sync.masterAccountID {
-            let nickname = liveWorkspace.items
-                .first { $0.account.id == masterID }?.account.nickname ?? "未运行"
-            let followers = sync.receiverCount
-            Button { sync.setMaster(nil) } label: {
+        switch sync.mode {
+        case .masterDriven:
+            if let masterID = sync.masterAccountID {
+                let nickname = liveWorkspace.items
+                    .first { $0.account.id == masterID }?.account.nickname ?? "未运行"
+                let followers = sync.receiverCount
+                Button { sync.setMaster(nil) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "crown.fill").font(.system(size: 9, weight: .bold))
+                        Text(followers > 0 ? "\(nickname) · \(followers) 跟随" : "\(nickname) · 无跟随")
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(Color.yellow)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule(style: .continuous).fill(Color.yellow.opacity(0.14)))
+                    .overlay(Capsule(style: .continuous).strokeBorder(Color.yellow.opacity(0.55), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(cornerRadius: 50, intensity: 0.12)
+                .help("主控：\(nickname)。点击取消主控，回到互相同步模式")
+            }
+        case .mutual:
+            let count = sync.receiverCount
+            Button { sync.disableAllReceivers() } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 9, weight: .bold))
-                    Text(followers > 0 ? "\(nickname) · \(followers) 跟随" : "\(nickname) · 无跟随")
+                    Image(systemName: "link").font(.system(size: 9, weight: .bold))
+                    Text("互相同步 · \(count) 窗口")
                         .font(.system(size: 11, weight: .semibold))
                         .lineLimit(1)
                 }
-                .foregroundStyle(Color.yellow)
+                .foregroundStyle(Color.cyan)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(Capsule(style: .continuous).fill(Color.yellow.opacity(0.14)))
-                .overlay(Capsule(style: .continuous).strokeBorder(Color.yellow.opacity(0.55), lineWidth: 1))
+                .background(Capsule(style: .continuous).fill(Color.cyan.opacity(0.14)))
+                .overlay(Capsule(style: .continuous).strokeBorder(Color.cyan.opacity(0.5), lineWidth: 1))
             }
             .buttonStyle(.plain)
             .hoverHighlight(cornerRadius: 50, intensity: 0.12)
-            .help("主窗口：\(nickname)。点击停止群控（主窗口退位，所有窗口恢复普通）")
+            .help("无主控：任一参与窗口的操作都会同步到其余 \(count - 1) 个窗口。点击全部关闭参与同步")
+        case .idle:
+            EmptyView()
         }
     }
 
@@ -1244,6 +1266,16 @@ private struct MacGameMatrixCell: View {
     private var isReceiver: Bool { sync.isReceiver(item.account.id) }
     /// 两个群控按钮的命中区（dense 档收到 12pt，把空间让给昵称）。
     private var syncHitSize: CGFloat { density == .dense ? 12 : badgeSize }
+    /// 🔗 的提示文案随模式变化：无主控时它是「互相广播」的一份子，有主控时纯接收。
+    private var participateHelp: String {
+        if isMaster { return "主控不需要参与同步（自己的操作不会被回灌）" }
+        switch sync.mode {
+        case .masterDriven:
+            return isReceiver ? "关闭参与同步（不再接收主控的操作）" : "开启参与同步（接收主控的操作）"
+        case .mutual, .idle:
+            return isReceiver ? "关闭参与同步（本窗口不再参与互相同步）" : "开启参与同步（与其它参与窗口互相同步）"
+        }
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: barSpacing) {
@@ -1252,8 +1284,8 @@ private struct MacGameMatrixCell: View {
                     .frame(width: badgeSize, height: badgeSize).background(.white).clipShape(Circle())
                 Text(item.account.nickname).font(.system(size: nicknameSize, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 2)
-                // 👑 主窗口：点一次登基（其它窗口自动退位），再点一次退位——
-                // 退位后同步停止，所有窗口回到普通状态，直到重新指定。
+                // 👑 主控：全局唯一。点一次登基，再点一次退位（回到互相同步模式）。
+                // 没有主控时，所有开了 🔗 的窗口互相同步。
                 Button { sync.toggleMaster(item.account.id) } label: {
                     Image(systemName: isMaster ? "crown.fill" : "crown")
                         .font(.system(size: iconSize, weight: .semibold))
@@ -1263,9 +1295,9 @@ private struct MacGameMatrixCell: View {
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight(cornerRadius: 4, intensity: 0.16)
-                .help(isMaster ? "取消主窗口（同步停止，所有窗口恢复普通）" : "设为主窗口：此窗口的操作同步到已开启接收的窗口")
-                .accessibilityLabel(isMaster ? "取消主窗口" : "设为主窗口")
-                // 🔗 接收同步：每个窗口独立开关；主窗口不需要接收（不会被自己回灌）。
+                .help(isMaster ? "取消主控（回到互相同步模式）" : "设为主控：此后只有此窗口的操作会同步出去")
+                .accessibilityLabel(isMaster ? "取消主控" : "设为主控")
+                // 🔗 参与同步：每个窗口独立开关。既是收件人；无主控时同时也是发言人。
                 Button { sync.toggleReceiver(item.account.id) } label: {
                     Image(systemName: isReceiver ? "link.circle.fill" : "link.circle")
                         .font(.system(size: iconSize, weight: .semibold))
@@ -1275,10 +1307,8 @@ private struct MacGameMatrixCell: View {
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight(cornerRadius: 4, intensity: 0.16)
-                .help(isMaster
-                      ? "主窗口不需要接收同步（自己的操作不会被回灌）"
-                      : (isReceiver ? "关闭接收同步（不再跟随主窗口）" : "开启接收同步（跟随主窗口的操作）"))
-                .accessibilityLabel(isReceiver ? "关闭接收同步" : "开启接收同步")
+                .help(participateHelp)
+                .accessibilityLabel(isReceiver ? "关闭参与同步" : "开启参与同步")
                 Circle().fill(item.host.state == .running ? Color.green : Color.orange)
                     .frame(width: density == .dense ? 5 : 7, height: density == .dense ? 5 : 7)
                 Button { Task { if item.host.state == .running { await workspace.pause(id: item.id) } else { await workspace.resume(id: item.id) } } } label: { Image(systemName: item.host.state == .paused ? "play.fill" : "pause.fill") }
