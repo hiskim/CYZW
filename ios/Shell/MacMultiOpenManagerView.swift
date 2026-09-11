@@ -13,6 +13,13 @@ struct MacMultiOpenManagerView: View {
     @State private var sidebarVisible = true
     @State private var fixedColumnCount: Int?
     @State private var instanceWidth: CGFloat = 280
+    /// 尺寸模式：true = 自动适配（跟随大厅矩阵可视区，游戏画面严格 9:16，
+    /// 单实例优先吃满高度）；false = 手动（用 ± 调过的 instanceWidth）。
+    /// 点 ± 会自动切到手动——手动调过就不再被自适应覆盖。
+    @AppStorage("ios2.matrix.autoSize") private var isAutoSizing = true
+    /// 画布可视区尺寸（由画布区域的 GeometryReader 上报），自动适配的输入。
+    /// 首帧为 0（尚未测量），随后立即被真实尺寸覆盖。
+    @State private var canvasViewport: CGSize = .zero
     @State private var deletionRequest: AccountDeletionRequest?
     @State private var deletionBlockedMessage: String?
     @State private var isPresentingGroupManagement = false
@@ -49,6 +56,15 @@ struct MacMultiOpenManagerView: View {
     /// 右侧矩阵数据源：展平所有分组中处于运行中的账号（树序 = 分组顺序）。
     private var allRunningAccounts: [Account] {
         accounts.runningAccounts { isRunning($0) }
+    }
+
+    /// 矩阵单元格：运行账号 ↔ WorkspaceItem 一一对应后的最终列表。
+    /// 适配计数与 ForEach 渲染必须用同一份列表——任何一边多算/漏算，
+    /// 卡片尺寸都会错（列数多了高度占不满，少了会溢出）。
+    private var matrixEntries: [WorkspaceItem] {
+        allRunningAccounts.compactMap { account in
+            liveWorkspace.items.first { $0.account.id == account.id }
+        }
     }
 
     private func isRunning(_ account: Account) -> Bool {
@@ -487,6 +503,15 @@ struct MacMultiOpenManagerView: View {
         if let group = groupByID(groupID) { startGroup(group) }
     }
 
+    /// ± 调整实例尺寸：以**当前实际显示宽度**为起点（自动模式下就是自动算出的宽度），
+    /// 步进后切到手动模式——用户手动调过之后就不再被自适应覆盖。
+    private func stepInstanceWidth(_ delta: CGFloat) {
+        let base = isAutoSizing ? matrixLayout.cardWidth : instanceWidth
+        instanceWidth = min(MacMatrixFit.maxCardWidth,
+                            max(MacMatrixFit.minCardWidth, (base + delta).rounded(.down)))
+        isAutoSizing = false
+    }
+
     private func stopGroupByID(_ groupID: String) {
         if let group = groupByID(groupID) { stopGroup(group) }
     }
@@ -580,25 +605,44 @@ struct MacMultiOpenManagerView: View {
         }
     }
 
+    /// 当前矩阵布局：自动适配 / 手动尺寸统一输出同一份 MacMatrixLayout，
+    /// 两种模式共用下面的网格与卡片渲染代码。
+    private var matrixLayout: MacMatrixLayout {
+        let container = MacMatrixCanvasMetrics.contentSize(from: canvasViewport)
+        guard isAutoSizing else {
+            return MacMatrixFit.manual(count: matrixEntries.count,
+                                       preferredWidth: instanceWidth,
+                                       in: container,
+                                       forcedColumns: fixedColumnCount)
+        }
+        return MacMatrixFit.fit(count: matrixEntries.count,
+                                in: container,
+                                forcedColumns: fixedColumnCount)
+    }
+
+    /// 顶部尺寸读数：无实例时不显示具体像素（此时算出来的尺寸没有意义）。
+    private var sizeReadout: String {
+        let mode = isAutoSizing ? "自动" : "手动"
+        guard !matrixEntries.isEmpty else { return "\(mode) · 9:16" }
+        return "\(mode) \(Int(matrixLayout.cardWidth))×\(Int(matrixLayout.gameHeight)) · 9:16"
+    }
+
     private var workspace: some View {
-        GeometryReader { proxy in
-            let spacing: CGFloat = 14
-            // 画布容器外边距 24×2 + 容器内边距 16×2 = 80
-            let availableWidth = max(160, proxy.size.width - 80)
-            let automaticColumns = max(1, Int((availableWidth + spacing) / (instanceWidth + spacing)))
-            let columnCount = max(1, fixedColumnCount ?? automaticColumns)
-            // In a fixed-column layout, fit the requested number into the
-            // available width. The size buttons still control the preferred
-            // width, while the grid never creates an accidental landscape
-            // card or clips the game surface.
-            let fittedWidth = (availableWidth - spacing * CGFloat(max(0, columnCount - 1))) / CGFloat(columnCount)
-            let cardWidth = fixedColumnCount == nil ? instanceWidth : min(instanceWidth, max(96, fittedWidth))
-            VStack(spacing: 0) {
-                workspaceHeader
-                matrixCanvas(cardWidth: cardWidth, columnCount: columnCount, spacing: spacing)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 20)
+        VStack(spacing: 0) {
+            workspaceHeader
+            GeometryReader { proxy in
+                matrixCanvas(layout: matrixLayout, viewport: proxy.size)
+                    .padding(.horizontal, MacMatrixCanvasMetrics.outerHorizontal)
+                    .padding(.bottom, MacMatrixCanvasMetrics.outerBottom)
+                    // 把画布可视区尺寸回传给父级（自动适配的输入）。
+                    .preference(key: MatrixViewportKey.self, value: proxy.size)
             }
+        }
+        .onPreferenceChange(MatrixViewportKey.self) { size in
+            // 0.5pt 阈值：窗口拖拽时的亚像素抖动不再触发重排，省掉无意义重算。
+            guard abs(size.width - canvasViewport.width) > 0.5
+                    || abs(size.height - canvasViewport.height) > 0.5 else { return }
+            canvasViewport = size
         }
     }
 
@@ -612,26 +656,35 @@ struct MacMultiOpenManagerView: View {
             .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
             VStack(alignment: .leading, spacing: 4) {
                 Text("多开矩阵").font(.system(size: 24, weight: .bold))
-                Text("\(allRunningAccounts.count) 个活跃实例 · 每个账号独立 WebKit 会话")
+                Text("\(matrixEntries.count) 个活跃实例 · 每个账号独立 WebKit 会话")
                     .font(.system(size: 13)).foregroundStyle(.secondary)
             }
             Spacer()
-            HStack(spacing: 4) {
-                Text("尺寸 \(Int(instanceWidth)) · 9:16")
+            HStack(spacing: 6) {
+                Text(sizeReadout)
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Button {
-                    instanceWidth = max(160, instanceWidth - 20)
-                } label: {
+                    .help(isAutoSizing
+                          ? "自动适配：跟随大厅矩阵大小，单实例优先吃满高度，严格 9:16"
+                          : "手动尺寸：点“自动”交回自适应")
+                Button { stepInstanceWidth(-20) } label: {
                     Image(systemName: "minus")
                 }
                 .buttonStyle(MacManagerButtonStyle(tint: .gray))
-                Button {
-                    instanceWidth = min(720, instanceWidth + 20)
-                } label: {
+                .help("缩小实例（自动切到手动尺寸）")
+                Button { stepInstanceWidth(20) } label: {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(MacManagerButtonStyle(tint: .gray))
+                .help("放大实例（自动切到手动尺寸）")
+                MatrixModeChip(title: "自动", isSelected: isAutoSizing, tint: .cyan) {
+                    isAutoSizing = true
+                }
+                MatrixModeChip(title: "手动", isSelected: !isAutoSizing, tint: .cyan) {
+                    // 切到手动时以当前自动算出的宽度为起点，画面不会突然跳变。
+                    instanceWidth = matrixLayout.cardWidth
+                    isAutoSizing = false
+                }
             }
             Menu {
                 Button {
@@ -672,24 +725,33 @@ struct MacMultiOpenManagerView: View {
     /// 玻璃画布容器（参考稿主区的大圆角玻璃面）：卡片矩阵装在玻璃里，
     /// 四周留出氛围光。02 白填充 4% + 03 ultraThin 模糊 + 折射增压 + 压暗；
     /// 描边与投影挂在 background 之外，避免随滚动内容重绘。
-    private func matrixCanvas(cardWidth: CGFloat, columnCount: Int, spacing: CGFloat) -> some View {
+    private func matrixCanvas(layout: MacMatrixLayout, viewport: CGSize) -> some View {
         ScrollView {
             Group {
-                if allRunningAccounts.isEmpty {
+                if matrixEntries.isEmpty {
                     EmptyMatrixView { selectedSection = .accounts }
                 } else {
-                    // 矩阵数据源绑定 allRunningAccounts（flatMap 展平所有分组的运行中账号），
-                    // 单元格仍复用 WorkspaceItem 以保留暂停/恢复/关闭等实例控制。
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columnCount), spacing: spacing) {
-                        ForEach(allRunningAccounts) { account in
-                            if let item = liveWorkspace.items.first(where: { $0.account.id == account.id }) {
-                                MacGameMatrixCell(item: item, workspace: liveWorkspace, width: cardWidth)
-                            }
+                    // 数据源 = matrixEntries（运行账号 × WorkspaceItem 一一对应），
+                    // 与 matrixLayout 的计数同源：渲染几张卡就按几张适配。
+                    // 列宽/行高来自 MacMatrixFit：自动模式下整屏放下且严格 9:16。
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.fixed(layout.cardWidth), spacing: MacMatrixFit.spacing),
+                                       count: layout.columns),
+                        spacing: MacMatrixFit.spacing
+                    ) {
+                        ForEach(matrixEntries) { item in
+                            MacGameMatrixCell(item: item, workspace: liveWorkspace, width: layout.cardWidth)
                         }
                     }
+                    // 网格按真实占宽收紧（列宽固定，剩余空间留白）→ 在画布内水平居中；
+                    // minHeight 撑到可视区高度 → 实例少时垂直也居中，恰好放满时不滚动。
+                    .frame(width: layout.gridWidth, alignment: .top)
+                    .frame(maxWidth: .infinity,
+                           minHeight: MacMatrixCanvasMetrics.contentSize(from: viewport).height,
+                           alignment: .center)
                 }
             }
-            .padding(16)
+            .padding(MacMatrixCanvasMetrics.inner)
         }
         .background(canvasGlass)
         .overlay { canvasGlassStroke }
@@ -1093,6 +1155,8 @@ private struct MacGameMatrixCell: View {
     @ObservedObject var workspace: WorkspaceViewModel
     let width: CGFloat
     @State private var reloadKey = UUID()
+    /// 游戏画面高度：由宽度严格反推（9:16），与 MacMatrixFit 的求解口径一致。
+    private var gameHeight: CGFloat { width / MacMatrixFit.gameAspect }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -1107,13 +1171,11 @@ private struct MacGameMatrixCell: View {
                 Button { Task { await workspace.close(id: item.id) } } label: { Image(systemName: "xmark") }.foregroundStyle(.red)
             }
             // 卡片头部条：深色玻璃面（参考稿同款），不与氛围光抢色
-            .padding(.horizontal, 10).frame(height: 38).background(Color.black.opacity(0.45))
+            .padding(.horizontal, 10).frame(height: MacMatrixFit.headerHeight).background(Color.black.opacity(0.45))
             MacEmbeddedGameView(account: item.account).id(reloadKey)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // The game is a portrait surface: width:height = 9:16.
-                // Keeping this ratio prevents the WebView from being laid
-                // out as a landscape rectangle with side bars.
-                .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                // 严格 9:16：高度由宽度反推，不再交给 aspectRatio 推断
+                // （父级给定宽高时 fit 模式可能保留横向留白，比例会被打破）。
+                .frame(width: width, height: gameHeight)
         }
         .frame(width: width)
         // 卡片叠在已模糊 50 档的面板上，游戏 WebView 又几乎铺满卡面，
@@ -1131,6 +1193,41 @@ private struct MacGameMatrixCell: View {
         }
         // 06 外投影：黑 35% / y 12 / blur≈32——卡片浮在画布玻璃上，投影比画布轻一档
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 12)
+    }
+}
+
+/// 画布可视区尺寸上报（自动适配的输入）。
+private struct MatrixViewportKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+/// 自动 / 手动 尺寸切换胶囊（侧栏胶囊同款配方：选中 = 实色填充 + 白字，
+/// 未选中 = 白 5% 底 + 同色描边）。悬停走 AppKit 悬停层，不吃点击。
+private struct MatrixModeChip: View {
+    let title: String
+    let isSelected: Bool
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isSelected ? Color.white : tint)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(isSelected ? tint : Color.white.opacity(0.05))
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(tint.opacity(isSelected ? 1 : 0.85), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(cornerRadius: 50, intensity: 0.10)
     }
 }
 

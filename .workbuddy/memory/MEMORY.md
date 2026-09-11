@@ -14,6 +14,8 @@
 - 同文件多次编辑必须串行（外置盘并行 Edit 有竞态/丢失风险），改完 sync 后验证。
 - 侧栏卡片/控件统一配方（脚本页、设置页通用）：白玻璃卡片 white 0.055 填充 + 顶亮底暗描边渐变（连续圆角 10–12）、卡头 28×28 图标磁贴、状态用 Capsule(.continuous) 胶囊（选中=实色填充白字+微光，未选中=white 0.05 + 描边同色文字）、开关 mini switch + glowGreen #22B170、强调青 .cyan。新设置类 UI 直接抄这套，不要用系统 Picker/Toggle 默认外观。
 - 游戏画质：MacRenderQuality（UserDefaults `ios2.renderQuality`，默认 high）→ bootstrapScript 注入 qualitySingle/qualityMulti → WebRuntime renderPixelRatio 决定画布像素比；档位只在实例启动时读取，改档需重启实例。
+- **多开矩阵尺寸（2026-09-12 定稿）**：`MacMatrixFit.swift` 是唯一求解器（自动/手动都走它，输出 `MacMatrixLayout`）。卡片 = 38pt 头部条 + 严格 9:16 游戏画面（高 = 宽×16/9），间距 14；自动模式 `min(按宽分配, 按高分配)` 取最大 + 单调剪枝 break。改矩阵尺寸/比例相关逻辑只动这个文件；`MacMatrixCanvasMetrics` 是画布留白唯一口径（外 24×2+底 20、内 16），改 padding 必须同步它，否则自动适配会溢出或留白。
+- 尺寸模式开关：`@AppStorage("ios2.matrix.autoSize")`（默认自动）；点 ± 以当前实际宽度为起点自动切手动。网格用 `layout.gridWidth` 收紧 + `minHeight`=内容区高实现居中且不滚动。
 
 ## 游戏实例存储（踩过的坑）
 - 游戏内设置（省电模式等）写在 `window.localStorage`，`cc.sys.localStorage` 就是它。因此 WebKit 实例**绝不能用 `.nonPersistent()`**，否则关窗即丢配置；也**不能用 `.default()`**，会和 App 内其它网页内容混在一起。

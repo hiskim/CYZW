@@ -84,8 +84,15 @@ final class AccountLibraryViewModel: ObservableObject {
 
     /// 右侧矩阵数据源：展平所有分组中处于运行中的账号。
     /// 运行状态由视图层注入（WorkspaceViewModel 中存在同 ID 实例即视为运行中）。
+    ///
+    /// 必须跳过「全部」伪分组：它的成员与其余分组完全重叠，直接 flatMap
+    /// 会把每个运行中的账号数两遍（2 开被算成 4 开）——矩阵按 4 列适配、
+    /// 实际只渲染 2 张卡，卡片尺寸偏小且高度占不满。
     func runningAccounts(isRunning: (Account) -> Bool) -> [Account] {
-        groups.flatMap(\.accounts).filter(isRunning)
+        groups
+            .filter { $0.id != AccountGroup.all.id }
+            .flatMap(\.accounts)
+            .filter(isRunning)
     }
 
     // MARK: - 侧边栏分组过滤
