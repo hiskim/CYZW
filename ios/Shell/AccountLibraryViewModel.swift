@@ -406,6 +406,12 @@ final class AccountLibraryViewModel: ObservableObject {
         selectedIDs = allSelected ? [] : Set(accounts.map(\.id))
     }
 
+    /// 一键清空所有勾选（含其他分组的勾选项）。全选按钮只作用于当前视图，
+    /// 跨分组勾选后用它整体复位。
+    func clearSelection() {
+        selectedIDs.removeAll()
+    }
+
     func toggleSelection(in group: AccountGroup) {
         let ids = Set(accounts(in: group).map(\.id))
         guard !ids.isEmpty else { return }

@@ -343,9 +343,10 @@ struct MacMultiOpenManagerView: View {
                             .foregroundStyle(.secondary)
                     }
                     sortModeButton
-                    // 删除勾选账号的入口：嵌在列表头行尾（行高固定），出现/消失
-                    // 不挤占控制区布局，避免整个列表上下跳动。
+                    // 已选操作区：清空勾选（安全）在左，删除（危险）靠最右。
+                    // 都嵌在列表头行尾（行高固定），出现/消失不引起页面跳动。
                     if !accounts.selectedAccounts.isEmpty {
+                        clearSelectionButton
                         deleteSelectedButton
                     }
                 }
@@ -400,6 +401,23 @@ struct MacMultiOpenManagerView: View {
         }
         .buttonStyle(.plain)
         .help(isSortingAccounts ? "完成排序" : "拖动排序（在当前分组内生效，重启保留）")
+    }
+
+    /// 一键清空勾选的小入口：直接用文字表意（图标 ✗ 曾被反馈看不懂），
+    /// 中性灰描边样式，与红色删除按钮形成安全/危险的视觉区分。
+    private var clearSelectionButton: some View {
+        Button { accounts.clearSelection() } label: {
+            Text("取消勾选")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(Color.white.opacity(0.06))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.white.opacity(0.14), lineWidth: 0.8))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("取消所有勾选")
+        .help("一键取消所有勾选（含其他分组）")
     }
 
     /// 删除勾选账号的小入口：图标 + 数量的描边小按钮（红色低视觉权重，防误触；
