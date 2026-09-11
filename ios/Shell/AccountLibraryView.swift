@@ -274,8 +274,15 @@ struct GroupManagementView: View {
     @State private var isCreatingGroup = false
     @State private var editingGroup: AccountGroup?
     @State private var deletingGroup: AccountGroup?
-    /// macOS 专用：内联创建/编辑状态（无第二层弹窗）。
-    @State private var inlineEditorMode: GroupEditorMode?
+    /// macOS 专用：弹窗模式（列表 / 创建 / 编辑），三段式固定头尾布局。
+    @State private var mode: GroupManagementMode = .list
+    // 编辑器草稿状态：固定头部（名称/颜色/默认）与中间账号网格共享。
+    @State private var draftName = ""
+    @State private var draftColorName = "blue"
+    @State private var draftSelectedAccountIDs: Set<String> = []
+    @State private var draftIsDefault = false
+    @State private var draftSearchText = ""
+    @FocusState private var isDraftNameFocused: Bool
 
     var body: some View {
         Group {
@@ -297,37 +304,160 @@ struct GroupManagementView: View {
     }
 
 #if os(macOS)
+    // MARK: - macOS 三段式布局：固定头（不滚动）/ 中间滚动区 / 固定尾（永远可见）
+
     private var macBody: some View {
         let tokens = DesignTokens.shared
 
         return VStack(spacing: 0) {
+            macHeader(tokens: tokens)
+            Divider()
+            Group {
+                if mode == .list {
+                    groupList(tokens: tokens)
+                } else {
+                    editorPane(tokens: tokens)
+                }
+            }
+            .frame(maxHeight: .infinity)
+            Divider()
+            macFooter(tokens: tokens)
+        }
+        .frame(width: 560, height: 470)
+        .background(tokens.color(.canvas).ignoresSafeArea())
+        .onChange(of: mode) { _ in focusDraftNameIfNeeded() }
+    }
+
+    /// 固定头部：标题行 +（编辑器模式下的）名称输入 / 颜色圆点 / 设为默认开关。
+    @ViewBuilder
+    private func macHeader(tokens: DesignTokens) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("分组管理")
                         .font(.system(size: 20, weight: .semibold))
-                    Text("创建分组、调整账号归属和显示顺序")
+                    Text(headerSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Label("关闭", systemImage: "xmark")
+                if mode == .list {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Label("关闭", systemImage: "xmark")
+                    }
+                    .keyboardShortcut(.cancelAction)
+                } else {
+                    Button("返回列表", action: cancelEditing)
+                        .keyboardShortcut(.cancelAction)
                 }
-                .keyboardShortcut(.cancelAction)
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 16)
+
+            if mode != .list {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        TextField("分组名称，例如：日常挂机", text: $draftName)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($isDraftNameFocused)
+                            .onSubmit { if canSaveDraft { saveDraft() } }
+                        Toggle("设为默认分组", isOn: $draftIsDefault)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 12))
+                            .tint(tokens.color(.accent))
+                    }
+                    HStack(spacing: 8) {
+                        ForEach(AccountGroup.swatchNames, id: \.self) { color in
+                            Button {
+                                draftColorName = color
+                            } label: {
+                                Circle()
+                                    .fill(AccountGroup.swatchColor(named: color))
+                                    .frame(width: 20, height: 20)
+                                    .overlay {
+                                        if draftColorName == color {
+                                            Circle().stroke(tokens.color(.textPrimary), lineWidth: 2)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("选择\(color)色")
+                        }
+                        Spacer()
+                        if isDuplicateDraftName {
+                            Text("分组名称已存在")
+                                .font(.system(size: 12))
+                                .foregroundStyle(tokens.color(.danger))
+                        }
+                        Text("已选 \(draftSelectedAccountIDs.count) 个账号")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 16)
+        .padding(.bottom, 14)
+    }
+
+    /// 中间滚动区（编辑器模式）：顶部固定搜索条 + 两列账号卡片网格。
+    /// 没有 DisclosureGroup，弹窗高度恒定，账号再多也只在网格内滚动。
+    private func editorPane(tokens: DesignTokens) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索账号", text: $draftSearchText)
+                    .textFieldStyle(.plain)
+                if !draftSearchText.isEmpty {
+                    Button {
+                        draftSearchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清除搜索")
+                }
+                Text("\(draftFilteredAccounts.count)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(tokens.color(.panel))
 
             Divider()
-            groupList(tokens: tokens)
-                .frame(maxHeight: .infinity)
-            Divider()
-            HStack {
+
+            ScrollView {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 10),
+                        GridItem(.flexible(), spacing: 10)
+                    ],
+                    spacing: 10
+                ) {
+                    ForEach(draftFilteredAccounts) { account in
+                        AccountPickCard(
+                            account: account,
+                            isSelected: draftSelectedAccountIDs.contains(account.id),
+                            tokens: tokens,
+                            onToggle: { toggleDraftAccount(account) }
+                        )
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    /// 固定尾部：当前模式的操作按钮。永远可见，不随账号列表滚动。
+    @ViewBuilder
+    private func macFooter(tokens: DesignTokens) -> some View {
+        HStack {
+            switch mode {
+            case .list:
                 Button {
-                    // macOS：直接在列表内联创建，不再弹第二层编辑窗。
-                    inlineEditorMode = .create
+                    beginCreating()
                 } label: {
                     Label("新建分组", systemImage: "plus")
                 }
@@ -337,14 +467,110 @@ struct GroupManagementView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
+            case .create:
+                Button("返回列表", action: cancelEditing)
+                Spacer()
+                Button("创建分组", action: saveDraft)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSaveDraft)
+                    .buttonStyle(.borderedProminent)
+            case .edit:
+                Button("返回列表", action: cancelEditing)
+                Spacer()
+                Button("保存修改", action: saveDraft)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSaveDraft)
+                    .buttonStyle(.borderedProminent)
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 14)
         }
-        .frame(width: 560, height: 470)
-        .background(tokens.color(.canvas).ignoresSafeArea())
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
     }
 #endif
+
+    // MARK: - 编辑器草稿逻辑（groupRow 的编辑入口在两个平台都会调用 beginEditing）
+
+    private var headerSubtitle: String {
+        switch mode {
+        case .list: return "创建分组、调整账号归属和显示顺序"
+        case .create: return "命名、选颜色并勾选要归入的账号"
+        case .edit(let group): return "正在编辑「\(group.groupName)」"
+        }
+    }
+
+    private var editingGroupID: String? {
+        if case .edit(let group) = mode { return group.id }
+        return nil
+    }
+
+    private var trimmedDraftName: String {
+        draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isDuplicateDraftName: Bool {
+        viewModel.groups.contains { $0.groupName == trimmedDraftName && $0.id != editingGroupID }
+    }
+
+    private var canSaveDraft: Bool {
+        !trimmedDraftName.isEmpty && !isDuplicateDraftName
+    }
+
+    private var draftFilteredAccounts: [Account] {
+        let query = draftSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return viewModel.accounts }
+        return viewModel.accounts.filter {
+            $0.nickname.localizedCaseInsensitiveContains(query)
+                || $0.fileName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func toggleDraftAccount(_ account: Account) {
+        if draftSelectedAccountIDs.contains(account.id) {
+            draftSelectedAccountIDs.remove(account.id)
+        } else {
+            draftSelectedAccountIDs.insert(account.id)
+        }
+    }
+
+    private func beginCreating() {
+        draftName = ""
+        draftColorName = "blue"
+        draftSelectedAccountIDs = []
+        draftIsDefault = false
+        draftSearchText = ""
+        mode = .create
+    }
+
+    private func beginEditing(_ group: AccountGroup) {
+        draftName = group.groupName
+        draftColorName = group.colorName
+        draftSelectedAccountIDs = Set(viewModel.accounts(in: group).map(\.id))
+        draftIsDefault = viewModel.defaultGroupID == group.id
+        draftSearchText = ""
+        mode = .edit(group)
+    }
+
+    private func cancelEditing() {
+        mode = .list
+    }
+
+    private func saveDraft() {
+        guard canSaveDraft else { return }
+        switch mode {
+        case .create:
+            viewModel.addGroup(named: trimmedDraftName, colorName: draftColorName, accountIDs: draftSelectedAccountIDs, isDefault: draftIsDefault)
+        case .edit(let group):
+            viewModel.updateGroup(group, groupName: trimmedDraftName, colorName: draftColorName, accountIDs: draftSelectedAccountIDs, isDefault: draftIsDefault)
+        case .list:
+            break
+        }
+        mode = .list
+    }
+
+    private func focusDraftNameIfNeeded() {
+        guard mode != .list else { return }
+        DispatchQueue.main.async { isDraftNameFocused = true }
+    }
 
     private var iosBody: some View {
         let tokens = DesignTokens.shared
@@ -378,36 +604,13 @@ struct GroupManagementView: View {
             }
 
             Section("我的分组") {
-                #if os(macOS)
-                if inlineEditorMode == .create {
-                    GroupInlineEditor(
-                        viewModel: viewModel,
-                        mode: .create,
-                        onCancel: { inlineEditorMode = nil },
-                        onSaved: { inlineEditorMode = nil }
-                    )
-                }
-                #endif
                 if viewModel.visibleGroups.isEmpty {
                     Text("还没有自定义分组")
                         .font(tokens.font(.md))
                         .foregroundStyle(tokens.color(.textSecondary))
                 } else {
                     ForEach(viewModel.visibleGroups) { group in
-                        #if os(macOS)
-                        if inlineEditorMode == .edit(group) {
-                            GroupInlineEditor(
-                                viewModel: viewModel,
-                                mode: .edit(group),
-                                onCancel: { inlineEditorMode = nil },
-                                onSaved: { inlineEditorMode = nil }
-                            )
-                        } else {
-                            groupRow(group)
-                        }
-                        #else
                         groupRow(group)
-                        #endif
                     }
                     .onMove(perform: viewModel.moveGroups)
                 }
@@ -454,7 +657,7 @@ struct GroupManagementView: View {
             isDefault: viewModel.defaultGroupID == group.id,
             onEdit: {
                 #if os(macOS)
-                inlineEditorMode = .edit(group)
+                beginEditing(group)
                 #else
                 editingGroup = group
                 #endif
@@ -715,203 +918,56 @@ private struct GroupEditorSheet: View {
     }
 }
 
-/// macOS 分组管理专用：内联编辑模式（替代第二层弹窗）。
-enum GroupEditorMode: Equatable {
+/// macOS 分组管理弹窗模式：分组列表 / 创建分组 / 编辑分组。
+/// 三段式固定头尾布局，编辑器内容直接铺满弹窗中部，不再使用折叠面板。
+enum GroupManagementMode: Equatable {
+    case list
     case create
     case edit(AccountGroup)
 }
 
-/// macOS 分组管理的内联创建/编辑表单：直接嵌在分组列表中，
-/// 避免「分组管理 → 新建分组 → 编辑弹窗」的两层弹窗嵌套。
-private struct GroupInlineEditor: View {
-    @ObservedObject var viewModel: AccountLibraryViewModel
-    let mode: GroupEditorMode
-    let onCancel: () -> Void
-    let onSaved: () -> Void
-
-    @State private var name: String
-    @State private var colorName: String
-    @State private var selectedAccountIDs: Set<String>
-    @State private var isDefault: Bool
-    @State private var isAccountPickerExpanded = false
-    @State private var searchText = ""
-    @FocusState private var isNameFocused: Bool
-
-    init(
-        viewModel: AccountLibraryViewModel,
-        mode: GroupEditorMode,
-        onCancel: @escaping () -> Void,
-        onSaved: @escaping () -> Void
-    ) {
-        self.viewModel = viewModel
-        self.mode = mode
-        self.onCancel = onCancel
-        self.onSaved = onSaved
-        switch mode {
-        case .create:
-            _name = State(initialValue: "")
-            _colorName = State(initialValue: "blue")
-            _selectedAccountIDs = State(initialValue: [])
-            _isDefault = State(initialValue: false)
-        case .edit(let group):
-            _name = State(initialValue: group.groupName)
-            _colorName = State(initialValue: group.colorName)
-            _selectedAccountIDs = State(initialValue: Set(viewModel.accounts(in: group).map(\.id)))
-            _isDefault = State(initialValue: viewModel.defaultGroupID == group.id)
-        }
-    }
-
-    private var isCreating: Bool { mode == .create }
-
-    private var editingID: String? {
-        if case .edit(let group) = mode { return group.id }
-        return nil
-    }
-
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var isDuplicateName: Bool {
-        viewModel.groups.contains { $0.groupName == trimmedName && $0.id != editingID }
-    }
-
-    private var canSave: Bool {
-        !trimmedName.isEmpty && !isDuplicateName
-    }
-
-    private var filteredAccounts: [Account] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return viewModel.accounts }
-        return viewModel.accounts.filter {
-            $0.nickname.localizedCaseInsensitiveContains(query) || $0.fileName.localizedCaseInsensitiveContains(query)
-        }
-    }
+/// 编辑器模式的账号选择卡片：整卡可点击切换选中态，选中时背景高亮 + 描边。
+private struct AccountPickCard: View {
+    let account: Account
+    let isSelected: Bool
+    let tokens: DesignTokens
+    let onToggle: () -> Void
 
     var body: some View {
-        let tokens = DesignTokens.shared
-
-        VStack(alignment: .leading, spacing: tokens.spacing(.md)) {
+        Button(action: onToggle) {
             HStack(spacing: tokens.spacing(.md)) {
-                Text(isCreating ? "新建分组" : "编辑分组")
-                    .font(tokens.font(.lg, weight: .semibold))
-                    .foregroundStyle(tokens.color(.textPrimary))
-                Spacer()
-                HStack(spacing: 6) {
-                    ForEach(AccountGroup.swatchNames, id: \.self) { color in
-                        Button {
-                            colorName = color
-                        } label: {
-                            Circle()
-                                .fill(AccountGroup.swatchColor(named: color))
-                                .frame(width: 18, height: 18)
-                                .overlay {
-                                    if colorName == color {
-                                        Circle().stroke(tokens.color(.textPrimary), lineWidth: 2)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("选择\(color)色")
-                    }
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(isSelected ? tokens.color(.accent) : tokens.color(.textMuted))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.nickname)
+                        .font(tokens.font(.md, weight: .medium))
+                        .foregroundStyle(tokens.color(.textPrimary))
+                        .lineLimit(1)
+                    Text(account.fileName)
+                        .font(tokens.font(.xs))
+                        .foregroundStyle(tokens.color(.textSecondary))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, tokens.spacing(.md))
+            .padding(.vertical, tokens.spacing(.sm))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: tokens.radius(.control))
+                    .fill(isSelected ? tokens.color(.accent).opacity(0.16) : tokens.color(.card))
+            )
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: tokens.radius(.control))
+                        .strokeBorder(tokens.color(.accent).opacity(0.55), lineWidth: 1)
                 }
             }
-
-            HStack(spacing: tokens.spacing(.md)) {
-                TextField("分组名称，例如：日常挂机", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($isNameFocused)
-                    .onSubmit { if canSave { save() } }
-                Toggle("设为默认分组", isOn: $isDefault)
-                    .font(tokens.font(.sm))
-                    .tint(tokens.color(.accent))
-                    #if os(macOS)
-                    .toggleStyle(.checkbox)
-                    #endif
-            }
-
-            if isDuplicateName {
-                Text("分组名称已存在，请换一个。")
-                    .font(tokens.font(.sm))
-                    .foregroundStyle(tokens.color(.danger))
-            }
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isAccountPickerExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isAccountPickerExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text("选择账号")
-                        .font(tokens.font(.sm, weight: .semibold))
-                    Text("已选 \(selectedAccountIDs.count) 个")
-                        .font(tokens.font(.sm))
-                    Spacer()
-                }
-                .foregroundStyle(tokens.color(.textSecondary))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isAccountPickerExpanded {
-                TextField("搜索账号", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: 200), spacing: tokens.spacing(.sm)),
-                        GridItem(.flexible(minimum: 200), spacing: tokens.spacing(.sm))
-                    ],
-                    spacing: tokens.spacing(.sm)
-                ) {
-                    ForEach(filteredAccounts) { account in
-                        groupAccountSelectionRow(
-                            account,
-                            tokens: tokens,
-                            isSelected: selectedAccountIDs.contains(account.id),
-                            onToggle: {
-                                if selectedAccountIDs.contains(account.id) {
-                                    selectedAccountIDs.remove(account.id)
-                                } else {
-                                    selectedAccountIDs.insert(account.id)
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            HStack(spacing: tokens.spacing(.md)) {
-                Spacer()
-                Button("取消", action: onCancel)
-                    .keyboardShortcut(.cancelAction)
-                Button(isCreating ? "创建分组" : "保存修改", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave)
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding(.top, tokens.spacing(.sm))
+            .contentShape(Rectangle())
         }
-        .padding(tokens.spacing(.lg))
-        .background(tokens.color(.card))
-        .clipShape(RoundedRectangle(cornerRadius: tokens.radius(.card)))
-        .overlay {
-            RoundedRectangle(cornerRadius: tokens.radius(.card))
-                .stroke(tokens.color(.border), lineWidth: 1)
-        }
-        .onAppear { isNameFocused = true }
-    }
-
-    private func save() {
-        guard canSave else { return }
-        switch mode {
-        case .create:
-            viewModel.addGroup(named: trimmedName, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
-        case .edit(let group):
-            viewModel.updateGroup(group, groupName: trimmedName, colorName: colorName, accountIDs: selectedAccountIDs, isDefault: isDefault)
-        }
-        onSaved()
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(account.nickname)，\(isSelected ? "已选中" : "未选中")")
     }
 }
 
