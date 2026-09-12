@@ -1,0 +1,380 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- ===== 背景 ===== -->
+    <linearGradient id="bgGrad" x1="0.08" y1="0" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#0B1240"/>
+      <stop offset="0.45" stop-color="#1A1F63"/>
+      <stop offset="1" stop-color="#361A5E"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.4" r="0.62">
+      <stop offset="0" stop-color="#6C9BFF" stop-opacity="0.62"/>
+      <stop offset="0.45" stop-color="#4A3BB8" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#100A2C" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.46" r="0.78">
+      <stop offset="0.5" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.6"/>
+    </radialGradient>
+
+    <!-- ===== 头发 ===== -->
+    <linearGradient id="hairBack" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#FFE6A8"/>
+      <stop offset="0.32" stop-color="#F1D380"/>
+      <stop offset="0.72" stop-color="#BF8E36"/>
+      <stop offset="1" stop-color="#7A561B"/>
+    </linearGradient>
+    <linearGradient id="hairFront" x1="0.2" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#FFF1C0"/>
+      <stop offset="0.36" stop-color="#F6DB94"/>
+      <stop offset="0.74" stop-color="#D2A04A"/>
+      <stop offset="1" stop-color="#8E652A"/>
+    </linearGradient>
+
+    <!-- ===== 皮肤 ===== -->
+    <linearGradient id="skin" x1="0.3" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#FFEFE2"/>
+      <stop offset="0.45" stop-color="#FBDCC5"/>
+      <stop offset="1" stop-color="#D99877"/>
+    </linearGradient>
+
+    <!-- ===== 眼睛 ===== -->
+    <linearGradient id="iris" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0A2670"/>
+      <stop offset="0.42" stop-color="#2A78EE"/>
+      <stop offset="0.8" stop-color="#74CCFF"/>
+      <stop offset="1" stop-color="#D6F6FF"/>
+    </linearGradient>
+
+    <!-- ===== 铠甲 ===== -->
+    <linearGradient id="armor" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#313E72"/>
+      <stop offset="0.5" stop-color="#1A2246"/>
+      <stop offset="1" stop-color="#0D1228"/>
+    </linearGradient>
+    <linearGradient id="plate" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#F4F7FE"/>
+      <stop offset="0.5" stop-color="#D3DCED"/>
+      <stop offset="1" stop-color="#8898B6"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7FA8D8"/>
+      <stop offset="0.35" stop-color="#F2F8FF"/>
+      <stop offset="0.62" stop-color="#C6D8F0"/>
+      <stop offset="1" stop-color="#5A78A8"/>
+    </linearGradient>
+
+    <filter id="glowS" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <filter id="glowM" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="soft6" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="soft10" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+
+    <clipPath id="clipFace">
+      <path d="M 512 576 C 460 552, 406 504, 386 444 C 364 380, 378 306, 432 260
+               C 466 234, 558 234, 592 260 C 646 306, 660 380, 638 444
+               C 618 504, 564 552, 512 576 Z"/>
+    </clipPath>
+    <clipPath id="clipEyeL">
+      <path d="M 422 444 C 432 422, 452 412, 470 416 C 484 422, 490 434, 488 446
+               C 482 460, 464 468, 450 466 C 434 464, 422 456, 422 444 Z"/>
+    </clipPath>
+    <clipPath id="clipEyeR">
+      <path d="M 602 444 C 592 422, 572 412, 554 416 C 540 422, 534 434, 536 446
+               C 542 460, 560 468, 574 466 C 590 464, 602 456, 602 444 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- ============ 背景 ============ -->
+  <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+  <ellipse cx="512" cy="400" rx="520" ry="470" fill="url(#halo)"/>
+
+  <!-- 符文环 -->
+  <g opacity="0.30" stroke="#7FD2FF" fill="none">
+    <circle cx="512" cy="420" r="332" stroke-width="3" stroke-dasharray="10 22" opacity="0.7"/>
+    <circle cx="512" cy="420" r="370" stroke-width="2" stroke-dasharray="3 30" opacity="0.55"/>
+  </g>
+  <g fill="#9FE0FF" opacity="0.5" filter="url(#glowS)">
+    <circle cx="512" cy="90" r="7"/><circle cx="842" cy="420" r="6"/>
+    <circle cx="512" cy="750" r="6"/><circle cx="182" cy="420" r="6"/>
+    <circle cx="746" cy="154" r="5"/><circle cx="746" cy="686" r="5"/>
+    <circle cx="278" cy="686" r="5"/><circle cx="278" cy="154" r="5"/>
+  </g>
+  <g fill="#BFE4FF" opacity="0.55">
+    <circle cx="196" cy="248" r="5"/><circle cx="150" cy="560" r="4"/>
+    <circle cx="258" cy="848" r="4.5"/><circle cx="838" cy="300" r="4"/>
+    <circle cx="880" cy="640" r="5"/><circle cx="770" cy="880" r="4"/>
+    <circle cx="330" cy="140" r="3.5"/><circle cx="640" cy="948" r="3.5"/>
+  </g>
+
+  <!-- ============ 悬浮长剑 ============ -->
+  <g transform="translate(742,470) rotate(17)">
+    <g filter="url(#glowM)" opacity="0.75">
+      <path d="M 0 -372 L 26 -300 L 26 40 L -26 40 L -26 -300 Z" fill="#4FB6FF"/>
+    </g>
+    <path d="M 0 -372 L 24 -296 L 24 36 L -24 36 L -24 -296 Z" fill="url(#blade)"/>
+    <path d="M 0 -372 L 24 -296 L 24 36 L 2 36 L 2 -372 Z" fill="#FFFFFF" opacity="0.5"/>
+    <path d="M 0 -372 L 0 36 L -24 36 L -24 -296 Z" fill="#3D5A82" opacity="0.55"/>
+    <path d="M -78 34 L 78 34 L 70 62 L -70 62 Z" fill="#C9D6EC"/>
+    <path d="M -78 34 L 78 34 L 74 46 L -74 46 Z" fill="#F0F5FF"/>
+    <circle cx="0" cy="48" r="14" fill="#2FA6FF"/>
+    <circle cx="0" cy="48" r="7" fill="#CFF0FF"/>
+    <rect x="-17" y="62" width="34" height="118" rx="12" fill="#1B2344"/>
+    <rect x="-17" y="62" width="14" height="118" fill="#2E3B6B"/>
+    <g stroke="#4E6BB0" stroke-width="6" opacity="0.9">
+      <path d="M -15 88 L 15 100"/><path d="M -15 112 L 15 124"/>
+      <path d="M -15 136 L 15 148"/><path d="M -15 160 L 15 172"/>
+    </g>
+    <ellipse cx="0" cy="194" rx="22" ry="18" fill="#C9D6EC"/>
+    <ellipse cx="0" cy="192" rx="9" ry="7" fill="#1B2344"/>
+  </g>
+
+  <!-- 左侧悬浮短剑 -->
+  <g transform="translate(238,600) rotate(-24)" opacity="0.92">
+    <path d="M 0 -230 L 16 -180 L 16 24 L -16 24 L -16 -180 Z" fill="url(#blade)" opacity="0.88"/>
+    <path d="M 0 -230 L 16 -180 L 16 24 L 1 24 L 1 -230 Z" fill="#FFFFFF" opacity="0.42"/>
+    <path d="M -52 22 L 52 22 L 46 44 L -46 44 Z" fill="#C9D6EC"/>
+    <rect x="-12" y="44" width="24" height="76" rx="9" fill="#1B2344"/>
+    <rect x="-12" y="44" width="10" height="76" fill="#2E3B6B"/>
+    <ellipse cx="0" cy="128" rx="15" ry="12" fill="#C9D6EC"/>
+    <ellipse cx="0" cy="126" rx="6" ry="5" fill="#1B2344"/>
+  </g>
+
+  <!-- ============ 后发（简洁头型） ============ -->
+  <path d="M 512 172
+           C 614 166, 706 240, 718 340
+           C 728 416, 718 488, 696 552
+           C 676 604, 644 648, 604 670
+           C 552 690, 472 690, 420 670
+           C 380 648, 348 604, 328 552
+           C 306 488, 296 416, 306 340
+           C 318 240, 410 166, 512 172 Z"
+        fill="url(#hairBack)"/>
+  <!-- 后发暗部 -->
+  <path d="M 660 240 C 696 290, 720 360, 720 430 C 720 500, 700 568, 668 612 L 540 600 L 540 240 Z"
+        fill="#7A561B" opacity="0.32"/>
+  <path d="M 364 240 C 328 290, 304 360, 304 430 C 304 500, 324 568, 356 612 L 484 600 L 484 240 Z"
+        fill="#7A561B" opacity="0.22"/>
+
+  <!-- ============ 脖颈 ============ -->
+  <path d="M 462 538 C 462 590, 454 624, 440 656 L 584 656 C 570 624, 562 590, 562 538 Z" fill="#E7B694"/>
+  <path d="M 462 538 C 488 600, 536 600, 562 538 L 562 568 C 532 616, 488 616, 462 568 Z" fill="#B8795F" opacity="0.55"/>
+
+  <!-- ============ 身体 / 铠甲 ============ -->
+  <path d="M 196 1024
+           C 200 894, 246 800, 332 752
+           C 386 726, 432 700, 458 660
+           L 566 660
+           C 592 700, 638 726, 692 752
+           C 778 800, 824 894, 828 1024 Z"
+        fill="url(#armor)"/>
+
+  <!-- 立领 -->
+  <path d="M 446 638 C 458 678, 566 678, 578 638 C 588 662, 598 684, 606 706
+           C 560 724, 464 724, 418 706 C 426 684, 436 662, 446 638 Z"
+        fill="url(#plate)"/>
+  <path d="M 446 638 C 458 678, 566 678, 578 638 L 580 660 C 566 700, 458 700, 444 660 Z" fill="#7E8CAA" opacity="0.55"/>
+
+  <!-- 胸甲 -->
+  <path d="M 394 712 C 450 690, 574 690, 630 712
+           C 654 760, 648 814, 608 854 L 416 854
+           C 376 814, 370 760, 394 712 Z"
+        fill="url(#plate)"/>
+  <path d="M 394 712 C 450 690, 574 690, 630 712
+           C 638 728, 642 744, 644 758
+           C 580 738, 444 738, 380 758
+           C 382 744, 386 728, 394 712 Z" fill="#FFFFFF" opacity="0.55"/>
+  <path d="M 466 706 L 512 776 L 558 706 C 540 700, 484 700, 466 706 Z" fill="#1B2350"/>
+  <path d="M 466 706 L 512 776 L 558 706 C 540 700, 484 700, 466 706 Z" fill="#2E86FF" opacity="0.42"/>
+
+  <!-- 胸甲核心 -->
+  <g>
+    <circle cx="512" cy="798" r="30" fill="#2FA6FF" opacity="0.55" filter="url(#glowM)"/>
+    <path d="M 512 766 L 540 798 L 512 832 L 484 798 Z" fill="#63C6FF"/>
+    <path d="M 512 766 L 540 798 L 512 798 Z" fill="#E6F7FF"/>
+    <path d="M 512 766 L 484 798 L 512 798 Z" fill="#2A7BC0"/>
+  </g>
+
+  <!-- 肩甲 -->
+  <path d="M 312 794 C 336 754, 388 740, 422 754 C 434 798, 408 842, 360 856
+           C 326 864, 300 846, 298 820 C 297 806, 302 798, 312 794 Z"
+        fill="url(#plate)"/>
+  <path d="M 712 794 C 688 754, 636 740, 602 754 C 590 798, 616 842, 664 856
+           C 698 864, 724 846, 726 820 C 727 806, 722 798, 712 794 Z"
+        fill="url(#plate)"/>
+  <path d="M 318 798 C 338 762, 388 748, 422 762 L 416 778 C 384 770, 342 782, 322 808 Z" fill="#FFFFFF" opacity="0.55"/>
+  <path d="M 706 798 C 686 762, 636 748, 602 762 L 608 778 C 640 770, 682 782, 702 808 Z" fill="#FFFFFF" opacity="0.45"/>
+
+  <g fill="none" stroke="#8FD4FF" stroke-width="6" opacity="0.75" stroke-linecap="round">
+    <path d="M 320 796 C 342 760, 388 748, 422 760"/>
+    <path d="M 704 796 C 682 760, 636 748, 602 760"/>
+  </g>
+
+  <!-- ============ 脸 ============ -->
+  <path d="M 512 576 C 460 552, 406 504, 386 444 C 364 380, 378 306, 432 260
+           C 466 234, 558 234, 592 260 C 646 306, 660 380, 638 444
+           C 618 504, 564 552, 512 576 Z"
+        fill="url(#skin)"/>
+
+  <g clip-path="url(#clipFace)">
+    <!-- 右半脸厚涂阴影 -->
+    <path d="M 560 250 C 616 282, 644 340, 648 412 C 648 466, 624 510, 588 540
+             C 568 554, 544 564, 512 568 L 512 250 Z" fill="#C68B6B" opacity="0.36"/>
+    <!-- 左半脸微亮 -->
+    <path d="M 464 250 C 412 282, 388 340, 384 412 C 384 466, 402 504, 430 532
+             C 452 550, 478 562, 512 568 L 512 250 Z" fill="#FFEDDF" opacity="0.18"/>
+    <!-- 刘海投影（仅上方一条） -->
+    <path d="M 380 248 C 444 320, 580 320, 656 248 L 656 230 L 380 230 Z" fill="#B07648" opacity="0.32"/>
+    <!-- 鼻梁高光 -->
+    <path d="M 510 452 L 514 504 L 510 512 L 506 504 Z" fill="#FFF1E2" opacity="0.78"/>
+    <!-- 嘴下阴影 -->
+    <path d="M 480 558 C 502 574, 522 574, 544 558 L 544 580 C 522 596, 502 596, 480 580 Z" fill="#B77560" opacity="0.32"/>
+    <!-- 腮红 -->
+    <ellipse cx="430" cy="500" rx="44" ry="22" fill="#FF8FA0" opacity="0.30" filter="url(#soft10)"/>
+    <ellipse cx="594" cy="500" rx="44" ry="22" fill="#FF8FA0" opacity="0.30" filter="url(#soft10)"/>
+  </g>
+
+  <!-- 耳朵 -->
+  <path d="M 384 444 C 364 438, 350 452, 354 472 C 358 492, 376 502, 392 496 Z" fill="#F3CFAF"/>
+  <path d="M 640 444 C 660 438, 674 452, 670 472 C 666 492, 648 502, 632 496 Z" fill="#E9BE9C"/>
+  <path d="M 376 460 C 372 470, 376 480, 384 484" fill="none" stroke="#B27A5A" stroke-width="3" opacity="0.7"/>
+  <path d="M 648 460 C 652 470, 648 480, 640 484" fill="none" stroke="#B27A5A" stroke-width="3" opacity="0.7"/>
+
+  <!-- ============ 眉毛 ============ -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M 412 398 C 432 384, 462 380, 488 388" stroke="#8A5E1F" stroke-width="11"/>
+    <path d="M 412 398 C 432 384, 462 380, 488 388" stroke="#C2912E" stroke-width="4" opacity="0.6"/>
+    <path d="M 612 398 C 592 384, 562 380, 536 388" stroke="#8A5E1F" stroke-width="11"/>
+    <path d="M 612 398 C 592 384, 562 380, 536 388" stroke="#C2912E" stroke-width="4" opacity="0.6"/>
+  </g>
+
+  <!-- 左眼 -->
+  <g>
+    <path d="M 422 444 C 432 422, 452 412, 470 416 C 484 422, 490 434, 488 446
+             C 482 460, 464 468, 450 466 C 434 464, 422 456, 422 444 Z" fill="#FFFFFF"/>
+    <g clip-path="url(#clipEyeL)">
+      <ellipse cx="455" cy="443" rx="23" ry="29" fill="url(#iris)"/>
+      <ellipse cx="455" cy="443" rx="10" ry="15" fill="#06163A"/>
+      <circle cx="448" cy="432" r="7.5" fill="#FFFFFF"/>
+      <circle cx="464" cy="455" r="2.5" fill="#CFF3FF" opacity="0.8"/>
+      <path d="M 422 414 L 488 414 L 488 432 C 462 422, 440 426, 422 438 Z" fill="#0A1B45" opacity="0.55"/>
+    </g>
+    <path d="M 414 444 C 424 420, 448 408, 468 414 C 482 420, 490 432, 490 444"
+          fill="none" stroke="#15090A" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 410 442 C 406 428, 410 414, 418 406" fill="none" stroke="#15090A" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 490 444 C 486 458, 466 468, 450 466" fill="none" stroke="#15090A" stroke-width="4" opacity="0.65" stroke-linecap="round"/>
+  </g>
+
+  <!-- 右眼 -->
+  <g>
+    <path d="M 602 444 C 592 422, 572 412, 554 416 C 540 422, 534 434, 536 446
+             C 542 460, 560 468, 574 466 C 590 464, 602 456, 602 444 Z" fill="#FFFFFF"/>
+    <g clip-path="url(#clipEyeR)">
+      <ellipse cx="569" cy="443" rx="23" ry="29" fill="url(#iris)"/>
+      <ellipse cx="569" cy="443" rx="10" ry="15" fill="#06163A"/>
+      <circle cx="562" cy="432" r="7.5" fill="#FFFFFF"/>
+      <circle cx="578" cy="455" r="2.5" fill="#CFF3FF" opacity="0.8"/>
+      <path d="M 536 414 L 602 414 L 602 432 C 580 422, 558 426, 536 438 Z" fill="#0A1B45" opacity="0.55"/>
+    </g>
+    <path d="M 610 444 C 600 420, 576 408, 556 414 C 542 420, 534 432, 534 444"
+          fill="none" stroke="#15090A" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 614 442 C 618 428, 614 414, 606 406" fill="none" stroke="#15090A" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 534 444 C 538 458, 558 468, 574 466" fill="none" stroke="#15090A" stroke-width="4" opacity="0.65" stroke-linecap="round"/>
+  </g>
+
+  <!-- 鼻 -->
+  <path d="M 504 488 C 504 500, 510 506, 516 506 C 522 506, 526 500, 526 488"
+        fill="none" stroke="#B07359" stroke-width="4.5" stroke-linecap="round" opacity="0.8"/>
+  <path d="M 516 506 C 518 510, 522 512, 524 510" fill="none" stroke="#8E503E" stroke-width="3" opacity="0.6" stroke-linecap="round"/>
+
+  <!-- 嘴 -->
+  <path d="M 490 532 C 502 542, 522 542, 534 531" fill="none" stroke="#9A4845" stroke-width="6.5" stroke-linecap="round"/>
+  <path d="M 498 544 C 510 552, 520 552, 528 546" fill="none" stroke="#D78177" stroke-width="5" opacity="0.75" stroke-linecap="round"/>
+  <path d="M 510 528 C 514 532, 520 532, 524 528" fill="none" stroke="#E08C82" stroke-width="3" opacity="0.6" stroke-linecap="round"/>
+
+  <!-- ============ 前发 / 刘海（不遮眼） ============ -->
+  <path d="M 376 408
+           C 358 322, 408 232, 484 206
+           C 552 180, 626 220, 660 286
+           C 690 332, 690 392, 670 422
+           C 642 380, 588 340, 524 340
+           C 466 340, 422 376, 376 408 Z"
+        fill="url(#hairFront)"/>
+
+  <!-- 刘海下方微影（额头过渡，柔和模糊） -->
+  <path d="M 392 408 C 446 384, 580 380, 654 410 C 654 420, 642 432, 620 434
+           C 560 422, 466 422, 404 436 C 388 432, 380 422, 392 408 Z"
+        fill="#A07B2A" opacity="0.40" filter="url(#soft6)"/>
+
+  <!-- 刘海发丝分缕（深色） -->
+  <g fill="none" stroke="#A87B2E" stroke-width="6" opacity="0.55" stroke-linecap="round">
+    <path d="M 470 226 C 454 286, 452 350, 466 408"/>
+    <path d="M 516 218 C 514 280, 524 340, 540 376"/>
+    <path d="M 562 226 C 568 286, 576 340, 580 388"/>
+    <path d="M 612 258 C 624 308, 632 348, 622 384"/>
+    <path d="M 432 252 C 422 304, 414 354, 412 392"/>
+  </g>
+  <!-- 刘海阴影束（增强厚涂层次） -->
+  <g opacity="0.32" filter="url(#soft4)">
+    <path d="M 432 260 C 428 320, 428 380, 436 408 C 442 412, 446 406, 446 396 C 446 354, 444 308, 444 268 Z" fill="#8A5F22"/>
+    <path d="M 528 250 C 526 308, 530 360, 542 396 C 548 400, 552 394, 552 384 C 552 340, 548 296, 548 256 Z" fill="#8A5F22"/>
+    <path d="M 620 280 C 624 330, 632 376, 644 408 C 650 410, 654 402, 652 392 C 650 354, 642 314, 638 286 Z" fill="#8A5F22"/>
+  </g>
+  <!-- 刘海发丝高光 -->
+  <g fill="none" stroke="#FFF8DE" stroke-width="9" opacity="0.85" stroke-linecap="round">
+    <path d="M 422 268 C 458 232, 514 216, 562 228"/>
+    <path d="M 446 312 C 472 296, 510 296, 540 308"/>
+  </g>
+  <g fill="none" stroke="#FFEAB0" stroke-width="5" opacity="0.6" stroke-linecap="round">
+    <path d="M 596 264 C 624 290, 644 324, 656 360"/>
+  </g>
+
+  <!-- 刘海底部垂缕（让刘海有手剪感；只在外侧，避免落眼） -->
+  <g fill="url(#hairFront)">
+    <path d="M 388 408 C 386 422, 388 438, 396 446 C 402 444, 404 434, 402 422 C 400 416, 394 410, 388 408 Z"/>
+    <path d="M 644 392 C 638 412, 640 434, 650 446 C 658 442, 662 422, 658 404 C 654 392, 650 388, 644 392 Z"/>
+  </g>
+  <!-- 垂缕暗部细线 -->
+  <g fill="none" stroke="#A87B2E" stroke-width="3" opacity="0.55" stroke-linecap="round">
+    <path d="M 394 416 C 394 426, 396 436, 398 444"/>
+    <path d="M 648 400 C 648 416, 650 432, 652 442"/>
+  </g>
+
+  <!-- 侧发（脸颊两侧，长及下颌；上沿从眉下开始，避免堆太阳穴） -->
+  <path d="M 388 456
+           C 374 510, 372 568, 380 624
+           C 384 648, 392 666, 400 678
+           C 402 644, 400 614, 398 588
+           C 396 540, 398 500, 408 462 Z" fill="url(#hairFront)"/>
+  <path d="M 376 624 C 378 638, 384 654, 392 666" fill="none" stroke="#9B6E25" stroke-width="4" opacity="0.5" stroke-linecap="round"/>
+  <path d="M 636 456
+           C 650 510, 652 568, 644 624
+           C 640 648, 632 666, 624 678
+           C 622 644, 624 614, 626 588
+           C 628 540, 626 500, 616 462 Z" fill="url(#hairFront)"/>
+  <path d="M 648 624 C 646 638, 640 654, 632 666" fill="none" stroke="#9B6E25" stroke-width="4" opacity="0.5" stroke-linecap="round"/>
+
+  <!-- 头部冷光描边 -->
+  <g fill="none" stroke="#BCE7FF" stroke-width="9" opacity="0.85" stroke-linecap="round">
+    <path d="M 346 354 C 356 252, 422 188, 502 180" opacity="0.8"/>
+    <path d="M 380 408 C 362 466, 354 524, 358 580" stroke-width="6" opacity="0.55"/>
+  </g>
+  <g fill="none" stroke="#C7A9FF" stroke-width="7" opacity="0.55" stroke-linecap="round">
+    <path d="M 670 336 C 686 396, 684 460, 672 514" opacity="0.7"/>
+    <path d="M 644 408 C 662 466, 670 524, 666 580" stroke-width="5" opacity="0.5"/>
+  </g>
+
+  <!-- 头部大光斑 -->
+  <g filter="url(#soft10)" opacity="0.42">
+    <ellipse cx="450" cy="240" rx="80" ry="22" fill="#FFF8DE" transform="rotate(-18 450 240)"/>
+  </g>
+
+  <!-- 暗角 -->
+  <rect width="1024" height="1024" fill="url(#vig)"/>
+</svg>
