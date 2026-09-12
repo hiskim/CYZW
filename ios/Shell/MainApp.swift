@@ -5,12 +5,14 @@ struct MainApp: App {
     var body: some Scene {
         WindowGroup(id: "MainLobby") {
             ShellWindowRootView()
-                // 宽度下限 1000。高度必须显式 minHeight: 0：
-                // .windowResizability(.contentMinSize) 会把窗口最小高度绑定到
-                // 内容固有最小高度（侧栏固定控件约 400pt，压不扁），
-                // 不覆盖的话高度拖到那里就会卡住。
-                // 高度过矮时底部内容由窗口边缘自然裁剪。
-                .frame(minWidth: 1000, minHeight: 0)
+                // 窗口下限由 .windowResizability(.contentMinSize) 绑定到内容固有
+                // 最小尺寸，所以直接在这里给 frame 下限即可收住拖拽。
+                // 宽度下限 1000：低于此侧栏与矩阵区会挤在一起。
+                // 高度下限 640：再矮侧栏控件组 + 矩阵卡片的头部/缩略区会被压扁。
+                // iPad 仍保留 minHeight: 0，分屏 / 台前调度下高度可能不足 640，
+                // 不应强行把窗口顶开（超出部分由窗口边缘自然裁剪）。
+                .frame(minWidth: LobbyWindowMetrics.minWidth,
+                       minHeight: LobbyWindowMetrics.minHeight)
         }
         .defaultSize(width: 1280, height: 800)
         .windowResizability(.contentMinSize)
@@ -20,6 +22,16 @@ struct MainApp: App {
         .windowStyle(.hiddenTitleBar)
         #endif
     }
+}
+
+/// 大厅窗口下限。macOS 上 1000×640 是侧栏 + 矩阵区都还能正常显示的临界值。
+private enum LobbyWindowMetrics {
+    static let minWidth: CGFloat = 880
+    #if os(macOS)
+    static let minHeight: CGFloat = 640
+    #else
+    static let minHeight: CGFloat = 0
+    #endif
 }
 
 /// Keep coordinator state at the window boundary. WindowGroup can then create
