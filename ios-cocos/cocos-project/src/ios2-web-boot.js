@@ -278,13 +278,11 @@
         runtimeMemoryState.lastCleanup = Date.now();
         reason = reason || 'page transition';
         var before = postRuntimeMemorySnapshot(reason, 'before');
-        try {
-            if (cc.Object && typeof cc.Object._deferredDestroy === 'function') {
-                cc.Object._deferredDestroy();
-            }
-        } catch (error) {
-            console.warn('[ios2-web] deferred destroy failed', reason, error);
-        }
+        // Node destruction is the engine's job: the director already calls
+        // cc.Object._deferredDestroy() at the end of every frame. Forcing it
+        // at a page transition only destroys earlier than the engine decided,
+        // which is exactly how nodes still referenced by the incoming page got
+        // destroyed mid-handover. Nothing but GC is safe to trigger here.
         window.setTimeout(function () {
             try {
                 if (cc.sys && typeof cc.sys.garbageCollect === 'function') {
@@ -742,16 +740,24 @@
             if (director && typeof director.purgeDirector === 'function') {
                 director.purgeDirector();
             }
-            if (typeof manager.releaseAll === 'function') {
-                manager.releaseAll();
-            } else {
-                manager.releaseUnusedAssets();
-            }
+            // cc.assetManager.releaseAll() frees every tracked asset no matter
+            // what its reference count is. Cocos documents it as a blunt
+            // instrument for tearing a game down, and it is the direct cause of
+            // "textures vanish after switching back" whenever it is reached
+            // while anything still holds a reference.
+            //
+            // cc.assetManager.releaseUnusedAssets() is the only safe form: it
+            // walks the asset table and frees just the assets whose reference
+            // count already reached zero (unreferenced / orphaned resources).
+            // Everything still referenced by FGUI, Spine or the native bridge
+            // is kept, so a resumed page still has its textures.
+            //
+            // https://docs.cocos.com/creator/2.4/manual/zh/asset-manager/release-manager.html
+            releaseUnusedAssets('shutdown');
             console.log('[ios2-web] Cocos game instance shut down',
                 'assets=' + managedAssetCount());
         } catch (error) {
             console.warn('[ios2-web] Cocos game shutdown failed', error);
-            try { manager.releaseAll(); } catch (ignored) {}
         }
         return true;
     }

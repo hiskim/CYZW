@@ -819,21 +819,12 @@ struct MacMultiOpenManagerView: View {
                     // 数据源 = matrixEntries（运行账号 × WorkspaceItem 一一对应），
                     // 与 matrixLayout 的计数同源：渲染几张卡就按几张适配。
                     // 列宽/行高来自 MacMatrixFit：自动模式下整屏放下且严格 9:16。
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.fixed(layout.cardWidth), spacing: MacMatrixFit.spacing),
-                                       count: layout.columns),
-                        spacing: MacMatrixFit.spacing
-                    ) {
-                        ForEach(matrixEntries) { item in
-                            MacGameMatrixCell(item: item,
-                                              workspace: liveWorkspace,
-                                              width: layout.cardWidth,
-                                              headerHeight: layout.headerHeight)
-                        }
-                    }
-                    // 网格按真实占宽收紧（列宽固定，剩余空间留白）→ 在画布内水平居中；
+                    //
+                    // 注意：这里**不能**用 LazyVGrid。见 MacMatrixGrid 的说明。
+                    MacMatrixGrid(rows: matrixRows(from: matrixEntries, columns: layout.columns),
+                                  layout: layout,
+                                  workspace: liveWorkspace)
                     // minHeight 撑到可视区高度 → 实例少时垂直也居中，恰好放满时不滚动。
-                    .frame(width: layout.gridWidth, alignment: .top)
                     .frame(maxWidth: .infinity,
                            minHeight: MacMatrixCanvasMetrics.contentSize(from: viewport).height,
                            alignment: .center)
@@ -844,6 +835,20 @@ struct MacMultiOpenManagerView: View {
         .background(canvasGlass)
         .overlay { canvasGlassStroke }
         .shadow(color: .black.opacity(0.38), radius: 24, x: 0, y: 16)
+    }
+
+    /// 把实例列表切成行（每行 `columns` 个）。
+    ///
+    /// 行身份用**行号**而不是本行第一个实例 id：关掉一个账号时后面的实例会整体
+    /// 前移，若按首实例取身份，之后每一行的 id 都会变，整行格子被重建（池虽然
+    /// 保得住 WKWebView，但会白白多一次 unbind/bind）。用行号则只有真正跨行的
+    /// 那一个实例会重建，其余格子的身份原样保留。
+    private func matrixRows(from entries: [WorkspaceItem], columns: Int) -> [MacMatrixGrid.Row] {
+        guard columns > 0 else { return [] }
+        return stride(from: 0, to: entries.count, by: columns).enumerated().map { index, start in
+            let slice = Array(entries[start..<min(start + columns, entries.count)])
+            return MacMatrixGrid.Row(id: index, items: slice)
+        }
     }
 
     /// 画布玻璃面：材质模糊（03）→ 氛围光折射增压 → 压暗 → 白填充（02）。
@@ -1312,7 +1317,12 @@ private struct MacGameMatrixCell: View {
                 Circle().fill(item.host.state == .running ? Color.green : Color.orange)
                     .frame(width: density == .dense ? 5 : 7, height: density == .dense ? 5 : 7)
                 Button { Task { if item.host.state == .running { await workspace.pause(id: item.id) } else { await workspace.resume(id: item.id) } } } label: { Image(systemName: item.host.state == .paused ? "play.fill" : "pause.fill") }
-                Button { reloadKey = UUID() } label: { Image(systemName: "arrow.clockwise") }
+                // 重载要真的换一个 WebKit 会话：先让池子销毁旧的，再翻 id 让
+                // SwiftUI 重新 makeNSView（此时池里已没有这个账号，会新建）。
+                Button {
+                    MacGameInstancePool.shared.reload(accountID: item.account.id)
+                    reloadKey = UUID()
+                } label: { Image(systemName: "arrow.clockwise") }
                 Button { Task { await workspace.close(id: item.id) } } label: { Image(systemName: "xmark") }.foregroundStyle(.red)
             }
             // 卡片头部条：深色玻璃面（参考稿同款），不与氛围光抢色。
@@ -1345,6 +1355,46 @@ private struct MacGameMatrixCell: View {
         }
         // 06 外投影：黑 35% / y 12 / blur≈32——卡片浮在画布玻璃上，投影比画布轻一档
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 12)
+    }
+}
+
+/// 多开矩阵网格（**非懒加载**）。
+///
+/// 为什么不能用 `LazyVGrid`：懒加载容器只把「可视区内」的格子实例化，卡片一旦
+/// 滚出可视区（或列数变化、侧栏收放引起重算），SwiftUI 就会销毁对应的
+/// `NSViewRepresentable` → `dismantleNSView` → WKWebView 连同它的 WebGL 上下文
+/// 一起被拆掉。再滚回来就是一次全新的游戏启动，加载未完成时看到的正是
+/// 「部分 UI 贴图丢失 / Canvas 画面被裁切」。实例越多（本作多开不限数量）必现。
+///
+/// 因此这里按行 eagerly 构建：所有格子一开始就在窗口层级里，滚动只改变位置，
+/// 不销毁任何视图，渲染管线不会中断。
+private struct MacMatrixGrid: View {
+    struct Row: Identifiable {
+        /// 行号而非内容派生值——见 `matrixRows(from:columns:)` 的说明。
+        let id: Int
+        let items: [WorkspaceItem]
+    }
+
+    let rows: [Row]
+    let layout: MacMatrixLayout
+    let workspace: WorkspaceViewModel
+
+    var body: some View {
+        VStack(alignment: .center, spacing: MacMatrixFit.spacing) {
+            ForEach(rows) { row in
+                HStack(alignment: .top, spacing: MacMatrixFit.spacing) {
+                    ForEach(row.items) { item in
+                        MacGameMatrixCell(item: item,
+                                          workspace: workspace,
+                                          width: layout.cardWidth,
+                                          headerHeight: layout.headerHeight)
+                    }
+                }
+                // 末行可能不满列，左对齐；宽度锁定为网格真实占宽以便整体居中。
+                .frame(width: layout.gridWidth, alignment: .topLeading)
+            }
+        }
+        .frame(width: layout.gridWidth, alignment: .top)
     }
 }
 

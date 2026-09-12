@@ -9,19 +9,125 @@ import WebKit
 /// creates a fresh `MacWebKitGameView`, and therefore a fresh non-persistent
 /// website data store and isolated game session. The matrix is the 多开
 /// environment, so script injection respects the 多开全局门禁.
-struct MacEmbeddedGameView: NSViewRepresentable {
-    let account: Account
 
-    func makeNSView(context: Context) -> MacWebKitGameView {
-        let view = MacWebKitGameView(account: account, scriptEnvironment: .multi)
+/// Owns the `MacWebKitGameView` instances for the multi-open matrix.
+///
+/// A `WKWebView` is not a cheap view: it carries its own WebGL context, GPU
+/// backing store and a fully booted Cocos game. When the SwiftUI cell that
+/// hosts it is torn down, `dismantleNSView` used to call `stop()`, which
+/// destroyed all of that. Scrolling a card out of the matrix — or any
+/// layout/sidebar change that made SwiftUI rebuild the cell — therefore
+/// restarted the whole game, and switching back showed a half-loaded scene:
+/// missing UI textures and a canvas still sized for the previous cell.
+///
+/// The pool moves ownership of the game view out of the SwiftUI cell. A cell
+/// now only *borrows* a surface and hands it back on teardown; the real
+/// teardown happens once, when the instance is closed for good.
+///
+/// Main-thread only (same contract as `MacGameInstanceRegistry`).
+final class MacGameInstancePool {
+    static let shared = MacGameInstancePool()
+
+    private var surfaces: [String: MacWebKitGameView] = [:]
+
+    /// The live surface for `account`, created and booted on first use.
+    /// Repeated calls return the same instance, so rebuilding a cell never
+    /// restarts the game.
+    func surface(for account: Account, environment: ScriptEnvironment = .multi) -> MacWebKitGameView {
+        if let existing = surfaces[account.id] { return existing }
+        let view = MacWebKitGameView(account: account, scriptEnvironment: environment)
+        surfaces[account.id] = view
         view.start()
         return view
     }
 
-    func updateNSView(_ nsView: MacWebKitGameView, context: Context) {}
+    func existingSurface(forAccountID accountID: String) -> MacWebKitGameView? {
+        surfaces[accountID]
+    }
 
-    static func dismantleNSView(_ nsView: MacWebKitGameView, coordinator: ()) {
-        nsView.stop()
+    /// Genuine teardown: used by the reload button, where the user explicitly
+    /// wants a fresh WebKit session.
+    func reload(accountID: String) {
+        guard let view = surfaces.removeValue(forKey: accountID) else { return }
+        view.removeFromSuperview()
+        view.stop()
+    }
+
+    /// Genuine teardown: the instance is being closed.
+    func destroy(accountID: String) {
+        guard let view = surfaces.removeValue(forKey: accountID) else { return }
+        view.removeFromSuperview()
+        view.stop()
+    }
+}
+
+/// Borrows a pooled game surface and keeps it filling its own bounds.
+///
+/// Detaching (`unbind`) deliberately leaves the `WKWebView` alive in the pool;
+/// only `MacGameInstancePool.destroy` / `.reload` stop it.
+final class MacGameSurfaceHostView: NSView {
+    private var attached: MacWebKitGameView?
+
+    /// SwiftUI 在布局过程中会给出短暂的零尺寸 frame。把 0×0 直接交给
+    /// WKWebView 会让 WebKit 丢弃 layer backing store，回来时 Cocos canvas
+    /// 还停留在旧尺寸上——正是「画面被裁切」的另一种成因。零尺寸一律忽略，
+    /// 保留上一次的可用尺寸。
+    private func applyFrame(to surface: MacWebKitGameView) {
+        guard bounds.width > 0.5, bounds.height > 0.5 else { return }
+        surface.frame = bounds
+    }
+
+    override func layout() {
+        super.layout()
+        guard let attached else { return }
+        applyFrame(to: attached)
+    }
+
+    func bind(to account: Account) {
+        let surface = MacGameInstancePool.shared.surface(for: account, environment: .multi)
+        if attached !== surface {
+            attached?.removeFromSuperview()
+            attached = surface
+            addSubview(surface)
+        }
+        // 首次挂接时可能还没量到尺寸，先给一个非零的 9:16 占位，
+        // 避免 WebKit 在 0×0 状态下拆掉 backing store。
+        if surface.frame.width < 0.5 || surface.frame.height < 0.5 {
+            surface.frame = NSRect(x: 0, y: 0, width: 270, height: 480)
+        }
+        applyFrame(to: surface)
+        surface.autoresizingMask = [.width, .height]
+    }
+
+    /// Hand the surface back to the pool. The game keeps running.
+    func unbind() {
+        attached?.removeFromSuperview()
+        attached = nil
+    }
+}
+
+/// 矩阵格子：只向 `MacGameInstancePool` **借用**一块已启动的游戏画布。
+/// 格子的创建/销毁与 WebKit 实例的生死解耦，滚动和重排都不会重启游戏。
+struct MacEmbeddedGameView: NSViewRepresentable {
+    let account: Account
+
+    func makeNSView(context: Context) -> MacGameSurfaceHostView {
+        let host = MacGameSurfaceHostView()
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.black.cgColor
+        host.bind(to: account)
+        return host
+    }
+
+    func updateNSView(_ nsView: MacGameSurfaceHostView, context: Context) {
+        nsView.bind(to: account)
+    }
+
+    static func dismantleNSView(_ nsView: MacGameSurfaceHostView, coordinator: ()) {
+        // Detach only — never stop(). The WebGL context must survive the cell
+        // being rebuilt or scrolled out, otherwise switching back to the page
+        // shows a partially reloaded scene.
+        nsView.unbind()
     }
 }
 

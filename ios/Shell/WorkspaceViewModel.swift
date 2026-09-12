@@ -94,6 +94,8 @@ final class WorkspaceViewModel: ObservableObject {
 #if os(macOS)
         // 群控退位：关掉的是主窗口就停止同步，同时摘掉它的接收标记。
         MacInputSyncController.shared.retire(accountID: accountID)
+        // 真正释放 WebKit 实例：矩阵格子被复用/滚动时不能停，只有这里才算关实例。
+        MacGameInstancePool.shared.destroy(accountID: accountID)
 #endif
         if selectedID == id {
             selectedID = items.first?.id

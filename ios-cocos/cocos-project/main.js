@@ -245,13 +245,21 @@ function ios2RunNativeSoftCleanup(reason) {
     reason = reason || 'page switch';
     var before = ios2NativeMemorySnapshot();
 
-    try {
-        if (cc.Object && typeof cc.Object._deferredDestroy === 'function') {
-            cc.Object._deferredDestroy();
-        }
-    } catch (error) {
-        ios2Trace('deferred destroy failed (' + reason + '): ' + (error.stack || error.message || error));
-    }
+    // Asset and node destruction is left entirely to the engine:
+    //
+    // 1. cc.Object._deferredDestroy() is already driven by the director at the
+    //    end of every frame (Director.mainLoop). Forcing it here only shortens
+    //    the grace period for objects a page switch is still handing over to
+    //    the next page.
+    // 2. cc.assetManager.releaseAll() destroys every tracked asset regardless
+    //    of its reference count, which drops textures that FGUI/Spine and the
+    //    native bridge still hold. It is not a safe cleanup entry point.
+    // 3. cc.assetManager.releaseUnusedAssets() only frees assets whose
+    //    reference count already reached zero. It is the one safe release, but
+    //    this project's remote bundle keeps package caches outside Cocos'
+    //    ref-count ownership, so it must not run during live gameplay either.
+    //
+    // See https://docs.cocos.com/creator/2.4/manual/zh/asset-manager/release-manager.html
 
     // Do not call cc.assetManager.releaseUnusedAssets() during live gameplay.
     // The remote game keeps FGUI/Spine assets in package caches without normal
