@@ -645,11 +645,13 @@ struct MacMultiOpenManagerView: View {
                                 forcedColumns: fixedColumnCount)
     }
 
-    /// 顶部尺寸读数：无实例时不显示具体像素（此时算出来的尺寸没有意义）。
+    /// 顶部尺寸读数：只保留画面像素。模式（自动/手动）由旁边的胶囊承担，
+    /// 9:16 是 MacMatrixFit.gameAspect 写死的硬约束、无需重复——原来的
+    /// "自动 367×652 · 9:16" 在窄画布下会被 HStack 挤成单字符一列竖排，
+    /// 把控制条撑到几十 pt 高、把矩阵画布压扁。这里只留真正有信息量的那部分。
     private var sizeReadout: String {
-        let mode = isAutoSizing ? "自动" : "手动"
-        guard !matrixEntries.isEmpty else { return "\(mode) · 9:16" }
-        return "\(mode) \(Int(matrixLayout.cardWidth))×\(Int(matrixLayout.gameHeight)) · 9:16"
+        guard !matrixEntries.isEmpty else { return "" }
+        return "\(Int(matrixLayout.cardWidth))×\(Int(matrixLayout.gameHeight))"
     }
 
     /// 群控状态胶囊：反映当前是「主控驱动」还是「互相同步」；没有同步时完全不占位，
@@ -745,9 +747,15 @@ struct MacMultiOpenManagerView: View {
                 Text(sizeReadout)
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    // 防止窄画布下被 HStack 挤成单字符一列的竖排：
+                    // lineLimit(1) 禁止换行，minimumScaleFactor 在空间不够时
+                    // 缩字号到 60% 而不是溢出或换行——控制条高度保持单行，
+                    // 下方的 GeometryReader 才能拿到完整画布高度。
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                     .help(isAutoSizing
                           ? "自动适配：跟随大厅矩阵大小，单实例优先吃满高度，严格 9:16"
-                          : "手动尺寸：点“自动”交回自适应")
+                          : "手动尺寸：点「自动」交回自适应")
                 Button { stepInstanceWidth(-20) } label: {
                     Image(systemName: "minus")
                 }

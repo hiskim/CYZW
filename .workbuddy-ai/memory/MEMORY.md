@@ -12,6 +12,11 @@
   `MacMultiOpenManagerView.swift` 的 padding 与 `minHeight` 全部引用它，
   改常量即可，**不要就地写死数值**（两处口径不一致会让卡片尺寸算错）。
 - 画布贴齐窗口后不要挂外投影（会被窗口边界裁成脏边），1px 渐变描边足够。
+- 顶部控制条（`workspaceHeader` 及未来同类）里所有放进 `HStack` 的 `Text`
+  **必须** `.lineLimit(1)`，必要时加 `.minimumScaleFactor(0.6~0.8)`。
+  否则画布窄时 SwiftUI 会把 Text 拆成单字符一列竖排，把控制条撑到几十 pt
+  高，直接吃掉下方 `GeometryReader` 的可用高度（9:16 反推的画幅也跟着缩）。
+- 中文 UI 字符串里嵌套引用一律用 `「」` 或弯引号 `""`，**不要**用直引号 `"`——会与外层字符串边界冲突导致 parse 失败。
 - 卡片内游戏画面本来就贴齐卡片边缘，改利用率时不要去动 cell 内部。
 
 ## 协作约定
