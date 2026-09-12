@@ -1317,10 +1317,11 @@ private struct MacGameMatrixCell: View {
                 Circle().fill(item.host.state == .running ? Color.green : Color.orange)
                     .frame(width: density == .dense ? 5 : 7, height: density == .dense ? 5 : 7)
                 Button { Task { if item.host.state == .running { await workspace.pause(id: item.id) } else { await workspace.resume(id: item.id) } } } label: { Image(systemName: item.host.state == .paused ? "play.fill" : "pause.fill") }
-                // 重载要真的换一个 WebKit 会话：先让池子销毁旧的，再翻 id 让
-                // SwiftUI 重新 makeNSView（此时池里已没有这个账号，会新建）。
+                // 重载：让池子记录一个"下次要换新"的标记（不在此刻销毁，否则
+                // 会把 WKWebView 留在半截状态）；翻 reloadKey 让 SwiftUI 走完
+                // dismantle → makeNSView，下次 surface(for:) 再统一驱逐旧实例。
                 Button {
-                    MacGameInstancePool.shared.reload(accountID: item.account.id)
+                    MacGameInstancePool.shared.requestReload(accountID: item.account.id)
                     reloadKey = UUID()
                 } label: { Image(systemName: "arrow.clockwise") }
                 Button { Task { await workspace.close(id: item.id) } } label: { Image(systemName: "xmark") }.foregroundStyle(.red)

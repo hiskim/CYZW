@@ -20,20 +20,35 @@ import WebKit
 /// restarted the whole game, and switching back showed a half-loaded scene:
 /// missing UI textures and a canvas still sized for the previous cell.
 ///
-/// The pool moves ownership of the game view out of the SwiftUI cell. A cell
-/// now only *borrows* a surface and hands it back on teardown; the real
-/// teardown happens once, when the instance is closed for good.
+/// The pool keeps ownership of the game view, so SwiftUI can create and tear
+/// down its cell as often as it likes without the game noticing: the cell is
+/// handed the same live view every time, and `dismantleNSView` deliberately
+/// does nothing. The real teardown happens once, when the instance is closed
+/// for good or the user asks for a fresh login.
 ///
 /// Main-thread only (same contract as `MacGameInstanceRegistry`).
 final class MacGameInstancePool {
     static let shared = MacGameInstancePool()
 
     private var surfaces: [String: MacWebKitGameView] = [:]
+    /// 标记哪些账号点过"重新登录"——下一次 `surface(for:)` 拿到这个标记就会
+    /// 先把旧实例 stop 掉再返回新实例。这里**不能**立刻 stop：旧 view 还挂在
+    /// SwiftUI 旧宿主里，立刻 stop 等于在 WKWebView 还嵌在窗口层级、WKNavigation
+    /// 仍在飞的时候把它抽走，老 navigation 既收不到 didFail、也不会立刻停，
+    /// 紧接着 SwiftUI 重建宿主、新 view 的 start() 会被同窗口里的旧资源卡住。
+    /// 延迟到 SwiftUI 拆除旧宿主之后（也就是下次 bind 发生时）才 stop，
+    /// 整条生命周期就跟当初没有 pool 时的 reload 行为完全一致。
+    private var reloadPending: Set<String> = []
 
     /// The live surface for `account`, created and booted on first use.
     /// Repeated calls return the same instance, so rebuilding a cell never
-    /// restarts the game.
+    /// restarts the game — unless the user explicitly requested a reload.
     func surface(for account: Account, environment: ScriptEnvironment = .multi) -> MacWebKitGameView {
+        if reloadPending.remove(account.id) != nil,
+           let old = surfaces.removeValue(forKey: account.id) {
+            old.removeFromSuperview()
+            old.stop()
+        }
         if let existing = surfaces[account.id] { return existing }
         let view = MacWebKitGameView(account: account, scriptEnvironment: environment)
         surfaces[account.id] = view
@@ -45,12 +60,10 @@ final class MacGameInstancePool {
         surfaces[accountID]
     }
 
-    /// Genuine teardown: used by the reload button, where the user explicitly
-    /// wants a fresh WebKit session.
-    func reload(accountID: String) {
-        guard let view = surfaces.removeValue(forKey: accountID) else { return }
-        view.removeFromSuperview()
-        view.stop()
+    /// 由"重新登录"按钮调用：仅记录意图，真正的销毁推迟到 SwiftUI 拆除旧格子
+    /// 之后、下一次 `surface(for:)` 时执行。
+    func requestReload(accountID: String) {
+        reloadPending.insert(accountID)
     }
 
     /// Genuine teardown: the instance is being closed.
@@ -61,73 +74,27 @@ final class MacGameInstancePool {
     }
 }
 
-/// Borrows a pooled game surface and keeps it filling its own bounds.
+/// 矩阵格子：直接把池里的 `MacWebKitGameView` 交给 SwiftUI。
 ///
-/// Detaching (`unbind`) deliberately leaves the `WKWebView` alive in the pool;
-/// only `MacGameInstancePool.destroy` / `.reload` stop it.
-final class MacGameSurfaceHostView: NSView {
-    private var attached: MacWebKitGameView?
-
-    /// SwiftUI 在布局过程中会给出短暂的零尺寸 frame。把 0×0 直接交给
-    /// WKWebView 会让 WebKit 丢弃 layer backing store，回来时 Cocos canvas
-    /// 还停留在旧尺寸上——正是「画面被裁切」的另一种成因。零尺寸一律忽略，
-    /// 保留上一次的可用尺寸。
-    private func applyFrame(to surface: MacWebKitGameView) {
-        guard bounds.width > 0.5, bounds.height > 0.5 else { return }
-        surface.frame = bounds
-    }
-
-    override func layout() {
-        super.layout()
-        guard let attached else { return }
-        applyFrame(to: attached)
-    }
-
-    func bind(to account: Account) {
-        let surface = MacGameInstancePool.shared.surface(for: account, environment: .multi)
-        if attached !== surface {
-            attached?.removeFromSuperview()
-            attached = surface
-            addSubview(surface)
-        }
-        // 首次挂接时可能还没量到尺寸，先给一个非零的 9:16 占位，
-        // 避免 WebKit 在 0×0 状态下拆掉 backing store。
-        if surface.frame.width < 0.5 || surface.frame.height < 0.5 {
-            surface.frame = NSRect(x: 0, y: 0, width: 270, height: 480)
-        }
-        applyFrame(to: surface)
-        surface.autoresizingMask = [.width, .height]
-    }
-
-    /// Hand the surface back to the pool. The game keeps running.
-    func unbind() {
-        attached?.removeFromSuperview()
-        attached = nil
-    }
-}
-
-/// 矩阵格子：只向 `MacGameInstancePool` **借用**一块已启动的游戏画布。
-/// 格子的创建/销毁与 WebKit 实例的生死解耦，滚动和重排都不会重启游戏。
+/// 曾经在这中间套过一层 `MacGameSurfaceHostView` 做「借用」，但那层额外的
+/// layer-backed 容器既挡住了尺寸传递（Cocos 拿到 0×0 canvas），又挡住了合成
+/// （尺寸对了仍黑屏）。改回直接返回：SwiftUI 自己持有并布局游戏视图，
+/// 层级与最初能正常渲染时完全一致；保活靠 `dismantleNSView` 里什么都不做——
+/// 格子被销毁时视图只是脱离了层级，实例仍然活着，下次 `makeNSView` 直接复用。
 struct MacEmbeddedGameView: NSViewRepresentable {
     let account: Account
 
-    func makeNSView(context: Context) -> MacGameSurfaceHostView {
-        let host = MacGameSurfaceHostView()
-        host.wantsLayer = true
-        host.layer?.backgroundColor = NSColor.black.cgColor
-        host.bind(to: account)
-        return host
+    func makeNSView(context: Context) -> MacWebKitGameView {
+        MacGameInstancePool.shared.surface(for: account, environment: .multi)
     }
 
-    func updateNSView(_ nsView: MacGameSurfaceHostView, context: Context) {
-        nsView.bind(to: account)
-    }
+    func updateNSView(_ nsView: MacWebKitGameView, context: Context) {}
 
-    static func dismantleNSView(_ nsView: MacGameSurfaceHostView, coordinator: ()) {
-        // Detach only — never stop(). The WebGL context must survive the cell
-        // being rebuilt or scrolled out, otherwise switching back to the page
-        // shows a partially reloaded scene.
-        nsView.unbind()
+    static func dismantleNSView(_ nsView: MacWebKitGameView, coordinator: ()) {
+        // 不 stop、不 removeFromSuperview（SwiftUI 自己会摘）。
+        // 滚动 / 重排 / 侧栏收放导致的格子销毁不能拆掉 WebKit 实例，
+        // 否则切回来就要重新加载整局游戏。
+        // 真正的销毁只在关闭实例和「重新登录」时由池执行。
     }
 }
 
@@ -422,13 +389,21 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     /// 关闭共享开关后按 `Account.id`（= 账号文件名，跨启动稳定）各自一份。
     private var accountStorageKey: String { account.id }
 
+    /// 兜底尺寸（9:16）。Cocos 在文档 boot 阶段就读 window.innerWidth/Height
+    /// 决定 canvas 尺寸，WKWebView 一旦以 0×0 起步，它就会建一个 0×0 的
+    /// canvas 且不会自己恢复——游戏逻辑照跑，画面永远是黑的（重载尤其容易踩：
+    /// CDN 缓存全热，页面 700ms 就起来，AppKit 还没来得及做 layout）。
+    /// 所以这里绝不能从 .zero 起步。
+    private static let fallbackSize = NSSize(width: 270, height: 480)
+
     init(account: Account, scriptEnvironment: ScriptEnvironment = .single) {
         self.account = account
         self.scriptEnvironment = scriptEnvironment
-        super.init(frame: .zero)
+        super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         addSubview(webView)
+        webView.frame = bounds
 
         // Do not leave an empty white WebKit surface visible while the shared
         // CDN warm-up and account authentication are in flight.
@@ -474,6 +449,17 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
 
     override func layout() {
         super.layout()
+        webView.frame = bounds
+    }
+
+    /// AppKit 通过 autoresizing mask 改 subview 尺寸时**不会**调用 subview 的
+    /// `layout()`。矩阵格子里这一层是宿主视图直接赋 frame，走的正是那条路径，
+    /// 只靠 `layout()` 会让 WKWebView 一直停在 init 时的尺寸（重载时是 0×0）。
+    /// 这里补一道，任何尺寸变化都把 WKWebView 钉回 bounds；零尺寸一律忽略，
+    /// 避免 SwiftUI 布局过程中的瞬时 0×0 把画布清零。
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard newSize.width > 0.5, newSize.height > 0.5 else { return }
         webView.frame = bounds
     }
 
