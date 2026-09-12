@@ -7,12 +7,15 @@ import SwiftUI
 /// 画布容器与网格内容之间的固定留白（与 MacMultiOpenManagerView 的 padding 一一对应）。
 /// 抽取成常量是为了让「测量到的画布外框」与「真正能放卡片的区域」永远同口径。
 enum MacMatrixCanvasMetrics {
-    /// 画布容器左右外边距
-    static let outerHorizontal: CGFloat = 24
-    /// 画布容器底部外边距
-    static let outerBottom: CGFloat = 20
-    /// 画布容器内边距（ScrollView content 的 padding）
-    static let inner: CGFloat = 16
+    /// 画布容器左右外边距：画布 ↔ 大厅窗口边缘 = 1px。
+    /// 原来的 24px 是给氛围光留的呼吸位，但横向留白不会被 9:16 反推吃掉，
+    /// 全部变成死区——收到 1px 只为保留一道可见的边界。
+    static let outerHorizontal: CGFloat = 1
+    /// 画布容器底部外边距：画布 ↔ 大厅窗口边缘 = 1px（同上）。
+    static let outerBottom: CGFloat = 1
+    /// 画布容器内边距（ScrollView content 的 padding）：游戏窗口 ↔ 画布边缘 = 1px。
+    /// 这一层直接决定 9:16 画面的可用高，收得越狠画面越大。
+    static let inner: CGFloat = 1
     /// 外框宽 → 可用宽的差值
     static var horizontalInset: CGFloat { (outerHorizontal + inner) * 2 }
     /// 外框高 → 可用高的差值

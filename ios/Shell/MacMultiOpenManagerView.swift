@@ -834,7 +834,9 @@ struct MacMultiOpenManagerView: View {
         }
         .background(canvasGlass)
         .overlay { canvasGlassStroke }
-        .shadow(color: .black.opacity(0.38), radius: 24, x: 0, y: 16)
+        // 外投影已移除：画布外边距收到 1px 后，24pt 模糊 / y+16 的投影基本落在
+        // 窗口边界之外，会被窗口裁掉，只在边缘留一道脏边。1px 渐变描边
+        // （canvasGlassStroke）已经足够交代画布边界。
     }
 
     /// 把实例列表切成行（每行 `columns` 个）。
