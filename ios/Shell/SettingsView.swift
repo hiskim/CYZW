@@ -57,6 +57,13 @@ struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
     /// 游戏画质档位：设置面板与 WebKit 启动注入共用同一个 UserDefaults 键。
     @AppStorage(MacRenderQuality.defaultsKey) private var renderQualityRaw = MacRenderQuality.fallback.rawValue
+    /// 目标帧率：设置面板与 WebKit 启动注入共用同一个 UserDefaults 键；
+    /// 改动时除持久化外还会广播给正在运行的实例。
+    @AppStorage(MacFrameRate.defaultsKey) private var frameRateValue = MacFrameRate.fallback.rawValue
+    /// 画面左上角的实时帧率角标（实测值，用来肉眼确认设置是否生效）。
+    @AppStorage(MacFrameRateHUD.defaultsKey) private var showsFrameRateHUD = false
+    /// 自检结果文案（点「校验」后填充）。
+    @State private var frameRateVerification = ""
     #if os(macOS)
     @State private var showingClearCDNConfirmation = false
     @AppStorage(MacCDNResourceManager.automaticCachingKey) private var automaticCachingEnabled = true
@@ -74,9 +81,14 @@ struct SettingsView: View {
         MacRenderQuality(rawValue: renderQualityRaw) ?? MacRenderQuality.fallback
     }
 
+    private var frameRate: MacFrameRate {
+        MacFrameRate(rawValue: frameRateValue) ?? MacFrameRate.fallback
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                frameRateCard
                 qualityCard
 #if os(macOS)
                 cdnCard
@@ -95,6 +107,13 @@ struct SettingsView: View {
         .onChange(of: idleOnlyCachingEnabled) { _ in
             Task { await MacCDNResourceManager.shared.updateCachingSettings() }
         }
+        .onChange(of: frameRateValue) { _ in
+            // 帧率不像画质：引擎支持运行时改写主循环，改完立刻广播给所有活着的实例。
+            frameRate.applyToRunningInstances()
+        }
+        .onChange(of: showsFrameRateHUD) { _ in
+            MacFrameRate.syncHUD()
+        }
         .confirmationDialog(
             "确认清理 CDN 缓存？",
             isPresented: $showingClearCDNConfirmation,
@@ -110,7 +129,156 @@ struct SettingsView: View {
 #endif
     }
 
+    // MARK: - 帧率卡片
+
+    private var frameRateCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // 卡头：图标磁贴 + 标题 + 行尾当前帧率胶囊。
+            HStack(spacing: 10) {
+                settingsIconTile("speedometer", tint: Self.accentCyan)
+                Text("游戏帧率")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 8)
+                Text(frameRate.badgeLabel)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Self.accentCyan)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule(style: .continuous).fill(Self.accentCyan.opacity(0.18)))
+                    .overlay(Capsule(style: .continuous)
+                        .strokeBorder(Self.accentCyan.opacity(0.85), lineWidth: 1))
+            }
+
+            frameRateSegmentedCapsule
+
+            Text(frameRate.summary)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color.white.opacity(0.78))
+                .fixedSize(horizontal: false, vertical: true)
+
+            // 角标开关 + 校验按钮：前者持续可见，后者一次性回读实测帧率。
+            SettingsToggleRow(
+                title: "显示实时帧率角标",
+                caption: "画面左上角显示「游戏 FPS / 目标」，附屏幕刷新率仅作对照",
+                isOn: $showsFrameRateHUD,
+                tint: Self.glowGreen
+            )
+
+            HStack(spacing: 6) {
+                capsuleButton(title: "校验", systemImage: "checkmark.circle", tone: .accent) {
+                    verifyFrameRate()
+                }
+                if !frameRateVerification.isEmpty {
+                    Text(frameRateVerification)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+            }
+
+            frameRateNotes
+        }
+        .padding(12)
+        .settingsCardSurface(cornerRadius: 12)
+    }
+
+    /// 卡片底部两行说明：拆成独立属性，避免卡片 body 过于复杂拖垮类型检查。
+    private var frameRateNotes: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            settingsNoteRow(
+                "正在运行的实例立即生效，新实例启动时生效",
+                systemImage: "bolt.horizontal"
+            )
+            settingsNoteRow(
+                "只调游戏主循环，不修改显示器刷新率；实测最高只能跑满屏幕刷新率",
+                systemImage: "display"
+            )
+        }
+    }
+
+    private func settingsNoteRow(_ text: String, systemImage: String) -> some View {
+        Label {
+            Text(text)
+                .font(.system(size: 10.5))
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    /// 对所有存活实例做一次帧率自检：回读「实测 / 引擎目标 / 注入值」并显示。
+    /// 实测值是页面里数 1 秒 requestAnimationFrame 得到的，比读设置值可信。
+    private func verifyFrameRate() {
+        frameRateVerification = "测量中…"
+        Task { @MainActor in
+            frameRateVerification = await frameRate.verifyAndLog()
+        }
+    }
+
+    /// 与画质同款胶囊分段选择器，只是选项从三档扩到五档。
+    private var frameRateSegmentedCapsule: some View {
+        HStack(spacing: 4) {
+            ForEach(MacFrameRate.allCases) { option in
+                FrameRateOptionCapsule(
+                    option: option,
+                    isSelected: option == frameRate
+                ) {
+                    guard option != frameRate else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        frameRateValue = option.rawValue
+                    }
+                }
+            }
+        }
+        .padding(4)
+        .background(Capsule(style: .continuous).fill(Color.black.opacity(0.28)))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
     // MARK: - 画质卡片
+
+    /// 帧率档位胶囊：抽成独立 View，既隔离类型检查（七档塞进一张卡会让
+    /// SwiftUI 的类型检查超时），也方便单独调样式。
+    private struct FrameRateOptionCapsule: View {
+        let option: MacFrameRate
+        let isSelected: Bool
+        let action: () -> Void
+
+        private static let accentCyan = SettingsView.accentCyan
+
+        var body: some View {
+            Button(action: action) {
+                Text(option.label)
+                    .font(.system(size: 12, weight: isSelected ? .bold : .medium))
+                    .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.60))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(isSelected ? Self.accentCyan.opacity(0.85) : Color.white.opacity(0.05))
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Self.accentCyan : Color.white.opacity(0.12),
+                                lineWidth: 1
+                            )
+                    )
+                    .shadow(color: isSelected ? Self.accentCyan.opacity(0.35) : .clear,
+                            radius: 6, x: 0, y: 0)
+                    .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .settingsHoverHighlight(cornerRadius: 50, intensity: isSelected ? 0.04 : 0.10)
+            .accessibilityLabel(option.accessibilityLabel)
+        }
+    }
+
 
     private var qualityCard: some View {
         VStack(alignment: .leading, spacing: 12) {

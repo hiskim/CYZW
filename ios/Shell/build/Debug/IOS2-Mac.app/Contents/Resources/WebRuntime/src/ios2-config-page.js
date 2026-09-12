@@ -9,7 +9,11 @@
     var DISABLED_SURFACE = cc.color(239, 242, 246, 255);
     var QUALITY_LEVELS = ['low', 'medium', 'high'];
     var QUALITY_LABELS = { low: '低', medium: '中', high: '高' };
-    var FRAME_RATES = ['30', '45', '60'];
+    // 必须与客户端设置面板 MacFrameRate 的档位、以及 ios2-web-boot.js
+    // preferredFrameRate() 的白名单三方一致，否则旧档位会把新值挤掉：
+    // readState() 见到白名单外的值会回退到页面自己存的那个（常常是 30），
+    // 于是「设置里选 90 → 打开配置页 → 帧率被写回 30」。
+    var FRAME_RATES = ['15', '24', '30', '45', '60', '90', '120'];
     var QUALITY_SINGLE_KEY = 'ios2.renderQuality.single';
     var QUALITY_MULTI_KEY = 'ios2.renderQuality.multi';
     var INSTANCE_TARGET_KEY = 'ios2.webInstanceTarget';
@@ -113,7 +117,7 @@
         { id: 'performance', title: '画面与性能', items: [
             { key: 'singleQuality', label: '单开画质', type: 'quality', valueLabels: QUALITY_LABELS, disabledWhen: function (state) { return state.backend !== 'webkit'; }, set: function (state, value, storage) { if (!writeQuality(storage, 'setRenderQualitySingle', QUALITY_SINGLE_KEY, value, 'high')) throw new Error('single quality'); } },
             { key: 'multiQuality', label: '多开画质', type: 'quality', valueLabels: QUALITY_LABELS, disabledWhen: function (state) { return state.backend !== 'webkit'; }, set: function (state, value, storage) { if (!writeQuality(storage, 'setRenderQualityMulti', QUALITY_MULTI_KEY, value, 'medium')) throw new Error('multi quality'); } },
-            { key: 'frameRate', label: '目标帧率', type: 'select', values: FRAME_RATES, valueLabels: { '30': '30 FPS', '45': '45 FPS', '60': '60 FPS' }, set: function (state, value, storage, manager) { storageSet(storage, 'ios2.frameRate', value); manager._setNativePerformance('frameRate', Number(value)); } },
+            { key: 'frameRate', label: '目标帧率', type: 'select', values: FRAME_RATES, valueLabels: { '15': '15 FPS', '24': '24 FPS', '30': '30 FPS', '45': '45 FPS', '60': '60 FPS', '90': '90 FPS', '120': '120 FPS' }, set: function (state, value, storage, manager) { storageSet(storage, 'ios2.frameRate', value); manager._setNativePerformance('frameRate', Number(value)); } },
             { key: 'autoRestore', label: '登录后降载恢复性能', type: 'toggle', valueLabels: { true: '开', false: '关' }, set: function (state, value, storage) { storageSet(storage, 'ios2.autoRestore', value ? '1' : '0'); } }
         ] },
         { id: 'multi', title: '多开与调度', items: [

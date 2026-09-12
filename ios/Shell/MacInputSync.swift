@@ -97,6 +97,18 @@ final class MacGameInstanceRegistry {
     func view(for accountID: String) -> MacWebKitGameView? { boxes[accountID]?.view }
     func isLive(_ accountID: String) -> Bool { boxes[accountID]?.view != nil }
 
+    /// 所有存活实例的账号 ID（用于向全部实例广播设置变更，如帧率切换）。
+    /// 弱引用已经失效的条目在这里一并清掉，免得越积越多。
+    func liveAccountIDs() -> [String] {
+        var live: [String] = []
+        var dead: [String] = []
+        for (accountID, box) in boxes {
+            if box.view == nil { dead.append(accountID) } else { live.append(accountID) }
+        }
+        for accountID in dead { boxes.removeValue(forKey: accountID) }
+        return live
+    }
+
     /// 向指定实例注入 JS。实例不存在（已关闭）时静默忽略。
     @discardableResult
     func evaluate(_ script: String, accountID: String) -> Bool {
@@ -108,6 +120,20 @@ final class MacGameInstanceRegistry {
             NSLog("[ios2-macos] sync evaluate failed (%@): %@", accountID, error.localizedDescription)
         }
         return true
+    }
+
+    /// 注入异步 JS 并取回字符串结果（帧率自检用：要拿页面回传的实测帧率）。
+    /// 实例不存在 / 页面报错都返回 nil，只记一次日志，不向上抛。
+    func evaluateAsync(_ script: String, accountID: String) async -> String? {
+        guard let view = boxes[accountID]?.view else { return nil }
+        do {
+            return try await view.evaluateAsync(script)
+        } catch {
+            guard !warned.contains(accountID) else { return nil }
+            warned.insert(accountID)
+            NSLog("[ios2-macos] async evaluate failed (%@): %@", accountID, error.localizedDescription)
+            return nil
+        }
     }
 }
 

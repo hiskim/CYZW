@@ -49,7 +49,12 @@ final class MacGameInstancePool {
             old.removeFromSuperview()
             old.stop()
         }
-        if let existing = surfaces[account.id] { return existing }
+        if let existing = surfaces[account.id] {
+            // 池化实例重新挂回 SwiftUI：`start()` 不会再跑，帧率角标这类
+            // 「运行时开关」状态必须在这里补一次，否则开关开着也不会显示。
+            existing.syncFrameRateHUD()
+            return existing
+        }
         let view = MacWebKitGameView(account: account, scriptEnvironment: environment)
         surfaces[account.id] = view
         view.start()
@@ -470,6 +475,17 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         webView.evaluateJavaScript(script) { _, error in completion?(error) }
     }
 
+    /// 注入**异步** JS 并取回返回值。
+    ///
+    /// `callAsyncJavaScript` 会把脚本当 async 函数体执行并自动 await 返回的
+    /// Promise，所以帧率自检那种「采样 1 秒再回传」的脚本只能走这条通道——
+    /// 普通的 `evaluateJavaScript` 拿不到 Promise 的结果。
+    func evaluateAsync(_ script: String) async throws -> String? {
+        // WebKit 把 completion 版本 refine 成了 async 版本，这里只能用 await 形式。
+        let value = try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+        return value as? String
+    }
+
     /// 抢焦点：键盘事件只会派发给第一响应者，主窗口必须是它。
     func focusWebView() {
         guard let window = webView.window ?? window else { return }
@@ -500,6 +516,21 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                                                          manifestJSON: authentication.manifestJSON),
                                   injectionTime: .atDocumentStart, forMainFrameOnly: true)
                 )
+                // 帧率采样器：始终装上，「校验」按钮和角标都靠它读主循环计数。
+                // 跟 bootstrap 一样每次进游戏前登记（实例视图是池化复用的，
+                // 视图创建时读开关会拿到过期值）。引擎还没初始化时靠 50ms 轮询重试。
+                webView.configuration.userContentController.addUserScript(
+                    WKUserScript(source: MacFrameRateHUD.samplerScript,
+                                 injectionTime: .atDocumentStart, forMainFrameOnly: true)
+                )
+                // 帧率角标（默认关闭）：开关开着就随文档就绪装上显示层。
+                if MacFrameRateHUD.isEnabled {
+                    NSLog("[ios2-macos] frame rate HUD enabled, injecting overlay")
+                    webView.configuration.userContentController.addUserScript(
+                        WKUserScript(source: MacFrameRateHUD.overlayShowScript,
+                                     injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+                    )
+                }
                 // 注入启用中的 JS 脚本（iOS 版 _enabledScriptRecords 的语义）：
                 // 总开关关闭 → 不注入任何脚本；多开实例还要过「多开全局门禁」；
                 // 按脚本自身状态过滤（单开生效 / 单多开生效 / 禁用）。
@@ -576,6 +607,10 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
             WKUserScript(source: MacInputSyncScript.agent,
                          injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
+        // 注意：帧率采样器与角标**不在这里**登记——实例视图是池化复用的
+        // （`MacGameInstancePool`），视图可能早在开关打开之前就创建好了，
+        // 在这里读开关会拿到过期的旧值。两者统一放到 `start()` 里、
+        // 跟 bootstrap 一起在每次进入游戏前重新登记。
 
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(schemeHandler, forURLScheme: "ios2-game")
@@ -590,6 +625,10 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         let result = WKWebView(frame: .zero, configuration: configuration)
         result.navigationDelegate = self
         result.allowsBackForwardNavigationGestures = false
+        // 排查用：打开后可在页面上右键「检查元素」调出 Safari Web Inspector，
+        // 直接看到 WebRuntime 打的 `[ios2-web] target frame rate` 等日志。
+        // 默认关闭，用 `defaults write com.xyzw.ios2.webkit.macos ios2.debug.webInspector -bool true` 开启。
+        result.isInspectable = UserDefaults.standard.bool(forKey: "ios2.debug.webInspector")
         return result
     }
 
@@ -610,12 +649,16 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // 读一次，用来决定画布 backing store 的像素比，所以已运行的实例改档位
         // 后需要重新启动才生效。
         let quality = MacRenderQuality.current()
+        // 目标帧率来自设置面板（ios2.frameRate）。同样在启动时读一次，
+        // 但与画质不同，运行中的实例会被设置面板即时改写——走 MacFrameRate 的
+        // 「暂停→等待旧主循环退出→重启」路径，不走 cc.game.setFrameRate（有缺陷）。
+        let frameRate = MacFrameRate.current()
         return """
         window.__IOS2_GAME_INSTANCE__ = {
           id: \(idJSON ?? "\\\"\\\""),
           account: \(accountJSON ?? "\\\"账号\\\""),
           authResponse: \(authJSON ?? "\\\"\\\"") ,
-          frameRate: 60,
+          frameRate: \(frameRate.rawValue),
           qualitySingle: '\(quality.rawValue)',
           qualityMulti: '\(quality.rawValue)',
           // macOS matrix cells are resizable multi-open surfaces. This also
@@ -755,6 +798,22 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                   body["message"] as? String ?? "")
         case "error":
             NSLog("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
+        case "frameRate":
+            // 页面里任何 cc.game.setFrameRate 调用都会打到这里（含调用栈），
+            // 用来定位"设置 90 却被改成 30"是谁干的。
+            NSLog("[ios2-macos] frame rate write: fps=%@ stack=%@",
+                  String(describing: body["fps"] ?? "?"),
+                  String(describing: body["stack"] ?? "?"))
+        case "frameRateBlocked":
+            // 游戏 bundle 登录时会把自己的默认值（30）塞进来，与用户设定不符时拦下。
+            NSLog("[ios2-macos] frame rate blocked: 游戏要 %@ / 保持用户设定 %@",
+                  String(describing: body["fps"] ?? "?"),
+                  String(describing: body["preferred"] ?? "?"))
+        case "frameRateRestore":
+            // 登录后按 0 / 500 / 2000ms 三次把帧率拉回用户设定。
+            NSLog("[ios2-macos] frame rate restore: %@ (%@)",
+                  String(describing: body["fps"] ?? "?"),
+                  String(describing: body["reason"] ?? "?"))
         default:
             NSLog("[ios2-macos] WebKit event: %@", String(describing: body))
         }
@@ -775,7 +834,29 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // 但捕获开关是运行时状态（重载/新建实例都必须补一次）。
         MacInputSyncController.shared.refreshCapture(forAccountID: account.id)
         self.evaluateJavaScript(MacInputSyncScript.setRipple(MacInputSyncController.shared.showsRipple))
+        // 帧率角标同理：开关是运行时状态，光靠 WKUserScript 不可靠
+        // （池化实例重载 / 复用时文档已经加载过，注入时机对不上）。
+        syncFrameRateHUD()
         startStorageSync()
+    }
+
+    /// 按当前设置同步帧率角标（显示 / 隐藏）。
+    ///
+    /// 两个必须补的时机，都走 `evaluateJavaScript`（跟群控捕获开关同款，已验证有效）：
+    /// ① `didFinish`——文档加载完；② 池化实例重新挂回 SwiftUI——那种情况
+    /// `start()` 不会再跑，WKUserScript 那条路完全没有第二次机会。
+    func syncFrameRateHUD() {
+        let enabled = MacFrameRateHUD.isEnabled
+        evaluateJavaScript(enabled ? MacFrameRateHUD.overlayShowScript
+                                  : MacFrameRateHUD.overlayHideScript) { error in
+            guard let error else { return }
+            NSLog("[ios2-macos] frame rate HUD sync failed: %@", error.localizedDescription)
+        }
+        guard enabled else { return }
+        webView.evaluateJavaScript(MacFrameRateHUD.diagnosticScript) { value, error in
+            let payload = (value as? String) ?? "nil / \(error?.localizedDescription ?? "no error")"
+            NSLog("[ios2-macos] fps hud diag: %@", payload)
+        }
     }
 
     // MARK: 游戏内设置持久化

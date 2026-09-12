@@ -44,9 +44,14 @@
         panel.textContent = String(message || 'WebKit 游戏启动失败');
     }
 
+    // 帧率白名单必须与 macOS 端 `MacFrameRate` 的档位集合严格一致，
+    // 不在名单里的注入值会被丢弃并回退到 60。
+    // 注意：实际能跑多高受显示器刷新率上限约束——引擎对非 30/60 档位用
+    // `_stTimeWithRAF`（setTimeout 计时后再对齐 rAF），rAF 最快就是一次 vsync，
+    // 所以 120 档在 60Hz/100Hz 屏上实测只会到 60/100，不会更高。
     function preferredFrameRate() {
         var frameRate = Number(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.frameRate) || 60;
-        return [15, 24, 30, 45, 60].indexOf(frameRate) >= 0 ? frameRate : 60;
+        return [15, 24, 30, 45, 60, 90, 120].indexOf(frameRate) >= 0 ? frameRate : 60;
     }
 
     function renderQuality() {
