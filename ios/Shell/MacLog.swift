@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// 日志等级：数字越大越啰嗦。设置页的「日志等级」选的就是它——
 /// 选了某档 = 该档及其以上（更严重）的都打，更啰嗦的直接丢掉。
@@ -60,6 +61,18 @@ enum MacLogLevel: Int, CaseIterable, Identifiable, Comparable, Sendable {
     }
 
     var accessibilityLabel: String { "日志等级：\(label)" }
+
+    /// 映射到 `os_log` 的级别。os_log 没有 warning 档，`.default` 是它
+    /// 「比 info 重、比 error 轻」的那一档，warn 落在这里最贴近。
+    var osLogType: OSLogType {
+        switch self {
+        case .error: return .error
+        case .warn: return .default
+        case .info: return .info
+        case .debug: return .debug
+        case .verbose: return .debug
+        }
+    }
 
     /// 从持久化值读当前档位，缺失或非法值（含旧版本留下的超范围值）回退默认档。
     static func current() -> MacLogLevel {
@@ -149,11 +162,11 @@ final class MacLogSettings: @unchecked Sendable {
 }
 
 /// 带等级的日志出口。替换散落各处的裸 `NSLog`：打印前先过一遍等级，
-/// 不通过就直接返回——不拼字符串、不进 NSLog、不触发任何格式化。
+/// 不通过就直接返回——不拼字符串、不触发任何格式化。
 ///
 /// 两种签名：
-/// - `MacLog.info("纯文本")`——走 `NSLog("%@", …)`，文本里有 `%` 也不会被当格式串。
-/// - `MacLog.info("…%@…", arg)`——沿用 NSLog 的 printf 格式串。
+/// - `MacLog.info("纯文本")`——文本里有 `%` 也不会被当格式串。
+/// - `MacLog.info("…%@…", arg)`——沿用 printf 格式串。
 enum MacLog {
     static func error(_ message: String) { emit(.error, message) }
     static func warn(_ message: String) { emit(.warn, message) }
@@ -177,14 +190,27 @@ enum MacLog {
 
     // MARK: - 内部
 
+    private static let logger = Logger(subsystem: "com.xyzw.ios2", category: "Shell")
+
+    /// 走 `os_log` 而不是 `NSLog`：后者是同步系统调用，每调一次都要进内核
+    /// 写一次 unified log，在 WebKit 消息回调这种主线程高频路径上，一次点击
+    /// 几十条日志足以攒出肉眼可见的停顿。os_log 只是往缓冲区里写，
+    /// 几乎不占调用线程。
+    ///
+    /// 代价是输出内容默认被标记为 private（控制台里显示 `<private>`），
+    /// 所以这里显式标 `.public`——日志本来就是给人看的。
+    /// 另外 os_log 不再走 stderr：需要抓日志时用
+    /// `log stream --predicate 'subsystem == "com.xyzw.ios2"'`。
     private static func emit(_ level: MacLogLevel, _ message: String) {
         guard MacLogSettings.shared.allows(level) else { return }
-        withVaList([message]) { NSLogv("[\(level.tag)] %@", $0) }
+        logger.log(level: level.osLogType,
+                   "[\(level.tag, privacy: .public)] \(message, privacy: .public)")
     }
 
     private static func emit(_ level: MacLogLevel, _ format: String, _ args: [CVarArg]) {
         guard MacLogSettings.shared.allows(level) else { return }
-        withVaList(args) { NSLogv("[\(level.tag)] " + format, $0) }
+        let text = String(format: "[\(level.tag)] " + format, arguments: args)
+        logger.log(level: level.osLogType, "\(text, privacy: .public)")
     }
 }
 
@@ -260,3 +286,54 @@ enum MacLogConsoleBridge {
     """
 }
 #endif
+
+/// 主线程阻塞自检：把「卡不卡、卡多久」变成一条能直接看见的日志。
+///
+/// 做法是每 100ms 往主队列扔一个空任务，看它实际比预期晚多久被执行——
+/// 晚多少，就是主线程（或整个进程的调度）被堵了多少。卡顿类问题最难
+/// 的从来不是改，是不知道堵在哪；有这条日志就能先区分两种情况：
+/// - 点击后确实出现阻塞读数 → 堵在 App 进程主线程，按调用栈往下查；
+/// - 点击后读数正常但仍然顿 → 堵在 WebContent 自己的 JS 里，别再动原生侧。
+///
+/// 系统降档（App Nap / RunningBoard 节流）同样会体现为调度延迟，
+/// 所以这条也能用来验证 `MacAppNapGuard` 有没有起效。
+///
+/// 开销是一次空的 `asyncAfter`，可以忽略。不想看日志时把等级调到 `error`
+/// 即可，探针本身不做任何字符串拼接。
+final class MacMainThreadMonitor {
+    static let shared = MacMainThreadMonitor()
+
+    /// 50ms ≈ 三帧，肉眼已经能感觉到顿挫，再短意义不大。
+    private static let threshold: CFTimeInterval = 0.05
+    private static let interval: CFTimeInterval = 0.1
+    /// 一次长阻塞会连着触发好几轮，按秒节流避免刷屏。
+    private static let reportInterval: CFTimeInterval = 1
+
+    private var started = false
+    private var lastReportAt: CFTimeInterval = 0
+
+    private init() {}
+
+    func start() {
+        guard !started else { return }
+        started = true
+        ping()
+    }
+
+    private func ping() {
+        let scheduled = CFAbsoluteTimeGetCurrent()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.interval) { [weak self] in
+            guard let self else { return }
+            let lag = CFAbsoluteTimeGetCurrent() - scheduled - Self.interval
+            if lag >= Self.threshold { self.report(lag) }
+            self.ping()
+        }
+    }
+
+    private func report(_ lag: CFTimeInterval) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastReportAt >= Self.reportInterval else { return }
+        lastReportAt = now
+        MacLog.warn("[ios2-macos] main thread blocked for %.0f ms", lag * 1000)
+    }
+}

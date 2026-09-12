@@ -34,6 +34,32 @@ private enum LobbyWindowMetrics {
     #endif
 }
 
+/// macOS 上关掉 App Nap，避免游戏进程被系统降档。
+///
+/// WebKit 自己会去申请 RunningBoard 的 `WebKit Media Playback` 断言来防止
+/// WebContent 被挂起，但没有对应 entitlement 时申请失败——控制台里那串
+/// `Failed to acquire RBS assertion 'WebKit Media Playback'` 就是它，
+/// 于是 WebContent 完全没有防挂起保护。窗口一段时间没有操作后系统会
+/// 把整个 App（含 WebContent）降优先级，下一次点击要先等调度恢复，
+/// 表现为「点一下顿一下，隔几秒再点又顿」，且与帧率、画质、实例数都无关。
+///
+/// 在 App 侧声明一个 user-initiated 活动即可抑制 App Nap，进程内的
+/// WebContent 也跟着受益。iOS 没有这套机制，所以只在 macOS 分支启用。
+///
+/// 代价是耗电：App 会一直维持在前台优先级。若实测无效，删掉
+/// `MacAppNapGuard.begin()` 这一行即可，没有别的依赖。
+private enum MacAppNapGuard {
+    private static var token: NSObjectProtocol?
+
+    static func begin() {
+        guard token == nil else { return }
+        token = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "游戏实例运行中，避免系统降档导致操作响应变慢"
+        )
+    }
+}
+
 /// Keep coordinator state at the window boundary. WindowGroup can then create
 /// independent shell windows on macOS (and independent scenes on iPadOS).
 private struct ShellWindowRootView: View {
@@ -47,6 +73,8 @@ private struct ShellWindowRootView: View {
                 // 刷屏大户，晚一步就会漏掉一整段（也方便用 defaults write 临时改）。
                 MacLogSettings.shared.reload()
 #if os(macOS)
+                MacAppNapGuard.begin()
+                MacMainThreadMonitor.shared.start()
                 MacLog.info("[ios2-macos] log settings at launch: enabled=%@ level=%@ jsConsole=%@",
                             MacLogSettings.shared.isEnabled ? "yes" : "no",
                             MacLogSettings.shared.currentLevel.label,

@@ -96,6 +96,16 @@
     var IOS2_RUNTIME_CLEANUP_DELAY_MS = 5000;
     var IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS = 15000;
     var IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS = 2500;
+    // Automatic sampling and cleanup are OFF by default. Both run synchronously
+    // on the game's JS thread: sceneNodeProfile() walks the whole scene graph
+    // and calls cc.isValid twice per node (a 5.8k-node scene is ~12k calls),
+    // and garbageCollect() is a stop-the-world full GC. With the 2.5s sample
+    // and 15s cleanup intervals that shows up as a periodic hitch while playing
+    // — most visible right after a button press, which is why it looked like a
+    // click latency problem. Flip this to true (or call
+    // window.__ios2RuntimeMemorySnapshot / __ios2RuntimeSoftCleanup by hand)
+    // when actually hunting a memory issue.
+    var IOS2_RUNTIME_MEMORY_AUTOMATIC = false;
     var IOS2_RUNTIME_MEMORY_ROOT_LIMIT = 6;
     var IOS2_RUNTIME_MEMORY_BRANCH_DEPTH = 3;
     var IOS2_RUNTIME_MEMORY_PAGE_NAMES = {
@@ -307,7 +317,7 @@
     }
 
     function scheduleRuntimeSoftCleanup(reason, delayMs) {
-        if (!window.cc) return false;
+        if (!window.cc || !IOS2_RUNTIME_MEMORY_AUTOMATIC) return false;
         reason = reason || 'page transition';
         runtimeMemoryState.pendingCleanupReason = reason;
         if (runtimeMemoryState.cleanupTimer) {
@@ -329,7 +339,7 @@
     }
 
     function scheduleRuntimeMemorySample(reason, delayMs) {
-        if (!window.cc) return false;
+        if (!window.cc || !IOS2_RUNTIME_MEMORY_AUTOMATIC) return false;
         reason = reason || 'page transition';
         runtimeMemoryState.pendingSampleReason = reason;
         if (runtimeMemoryState.sampleTimer) return true;
@@ -365,22 +375,27 @@
             var originalLog = console.log;
             console.__ios2RuntimeMemoryHook = true;
             console.log = function () {
+                // Guarded as well: the game logs a lot, and doing two regex
+                // passes plus an arguments walk on every single line is pure
+                // overhead once sampling is off anyway.
                 try {
-                    var parts = [];
-                    for (var index = 0; index < arguments.length && index < 4; index++) {
-                        var value = arguments[index];
-                        if (typeof value === 'string' || typeof value === 'number') parts.push(String(value));
-                    }
-                    var message = parts.join(' ');
-                    var pageMatch = /^(hide|show)\s+([^\s]+)/.exec(message);
-                    if (pageMatch && isTrackedRuntimePage(pageMatch[2])) {
-                        runtimeMemoryState.switchCount++;
-                        scheduleRuntimeMemorySample(pageMatch[1] + ' ' + pageMatch[2]);
-                        if (pageMatch[1] === 'hide' && runtimeMemoryState.switchCount >= 4) {
-                            scheduleRuntimeSoftCleanup('page switches=' + runtimeMemoryState.switchCount);
+                    if (IOS2_RUNTIME_MEMORY_AUTOMATIC) {
+                        var parts = [];
+                        for (var index = 0; index < arguments.length && index < 4; index++) {
+                            var value = arguments[index];
+                            if (typeof value === 'string' || typeof value === 'number') parts.push(String(value));
                         }
-                    } else if (/\bc_battle(Pause|Resume)\b/.test(message)) {
-                        scheduleRuntimeMemorySample('battle transition');
+                        var message = parts.join(' ');
+                        var pageMatch = /^(hide|show)\s+([^\s]+)/.exec(message);
+                        if (pageMatch && isTrackedRuntimePage(pageMatch[2])) {
+                            runtimeMemoryState.switchCount++;
+                            scheduleRuntimeMemorySample(pageMatch[1] + ' ' + pageMatch[2]);
+                            if (pageMatch[1] === 'hide' && runtimeMemoryState.switchCount >= 4) {
+                                scheduleRuntimeSoftCleanup('page switches=' + runtimeMemoryState.switchCount);
+                            }
+                        } else if (/\bc_battle(Pause|Resume)\b/.test(message)) {
+                            scheduleRuntimeMemorySample('battle transition');
+                        }
                     }
                 } catch (ignored) {}
                 return originalLog.apply(this, arguments);

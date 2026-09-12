@@ -243,26 +243,29 @@ final class MacGameSettingsStore: @unchecked Sendable {
     /// `value` 为 nil 表示删除该键。
     func setValue(_ value: String?, forKey key: String, accountID: String) {
         let partitionKey = partition(for: accountID)
-        queue.sync {
-            loadIfNeeded(partitionKey)
-            var storage = mirror[partitionKey] ?? [:]
+        // 调用方是主线程上的 `userContentController` 回调，游戏里点一下按钮
+        // 就可能写几次 storage。这里原来是 `sync`，等于让主线程等一次磁盘 IO，
+        // 多开时所有实例的事件回调和渲染一起排队，表现为全体掉帧。
+        queue.async {
+            self.loadIfNeeded(partitionKey)
+            var storage = self.mirror[partitionKey] ?? [:]
             if let value {
                 storage[key] = value
             } else {
                 storage.removeValue(forKey: key)
             }
-            mirror[partitionKey] = storage
-            scheduleFlush(partitionKey)
+            self.mirror[partitionKey] = storage
+            self.scheduleFlush(partitionKey)
         }
     }
 
     /// 用页面里的全量快照替换镜像（关窗前的兜底同步）。
     func replaceAll(with storage: [String: String], accountID: String) {
         let partitionKey = partition(for: accountID)
-        queue.sync {
-            mirror[partitionKey] = storage
-            loadedAccounts.insert(partitionKey)
-            scheduleFlush(partitionKey)
+        queue.async {
+            self.mirror[partitionKey] = storage
+            self.loadedAccounts.insert(partitionKey)
+            self.scheduleFlush(partitionKey)
         }
     }
 
@@ -978,6 +981,17 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
          "hortorSDKVersion": "1.4.0", "deviceName": Host.current().localizedName ?? "Mac"]
     }
 
+    /// 纯上报类调用：游戏发出去就不管了，攒一批一起回。
+    ///
+    /// 一次点击会连着发二十来个 `report_log_post`，原来每个都单独
+    /// `evaluateJavaScript`，也就是二十次跨进程往返加二十次主线程回调，
+    /// 全挤在点击之后那一两帧里。合并之后只剩一次往返。
+    /// 登录、取 userId 这类有前后依赖的调用不参与合并，仍然立即发。
+    private static let batchableHSDKActions: Set<String> = ["report_log_post"]
+
+    private var pendingHSDKCalls: [String] = []
+    private var hsdkFlushScheduled = false
+
     private func sendHSDKMessage(action: String, extra: [String: Any], errorCode: Int) {
         let payload: [String: Any] = ["action": action, "meta": ["errCode": errorCode], "extra": extra]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
@@ -988,11 +1002,44 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
               // the quoted JS string literal needed by HSDK.onMessage.
               let messageData = try? JSONEncoder().encode(message),
               let argument = String(data: messageData, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("if(window.HSDK&&typeof window.HSDK.onMessage==='function'){window.HSDK.onMessage('sdk',\(argument));}else{throw new Error('HSDK.onMessage is unavailable while responding to \(action)');}") { _, error in
+        let call = "window.HSDK.onMessage('sdk',\(argument));"
+        guard Self.batchableHSDKActions.contains(action) else {
+            sendHSDKCalls([call], singleAction: action)
+            return
+        }
+        pendingHSDKCalls.append(call)
+        scheduleHSDKFlush()
+    }
+
+    /// 合并窗口取下一个主 RunLoop：通常不到 1ms，够把同一波点击里连续的
+    /// 上报攒到一起，又不会明显拖住游戏里等 Promise 的地方。
+    private func scheduleHSDKFlush() {
+        guard !hsdkFlushScheduled else { return }
+        hsdkFlushScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.hsdkFlushScheduled = false
+            guard !self.pendingHSDKCalls.isEmpty else { return }
+            let calls = self.pendingHSDKCalls
+            self.pendingHSDKCalls.removeAll()
+            self.sendHSDKCalls(calls, singleAction: nil)
+        }
+    }
+
+    private func sendHSDKCalls(_ calls: [String], singleAction: String?) {
+        guard !calls.isEmpty else { return }
+        let script = """
+        if(window.HSDK&&typeof window.HSDK.onMessage==='function'){\(calls.joined())}\
+        else{throw new Error('HSDK.onMessage is unavailable while responding to HSDK');}
+        """
+        webView.evaluateJavaScript(script) { _, error in
             if let error {
-                MacLog.error("[ios2-macos] HSDK response %@ failed: %@", action, error.localizedDescription)
-            } else {
+                MacLog.error("[ios2-macos] HSDK response failed (%ld call(s)): %@",
+                             calls.count, error.localizedDescription)
+            } else if let action = singleAction {
                 MacLog.debug("[ios2-macos] HSDK response sent: %@", action)
+            } else {
+                MacLog.debug("[ios2-macos] HSDK batch response sent: %ld call(s)", calls.count)
             }
         }
     }
@@ -1062,6 +1109,14 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     private let remoteBaseURL = URL(string: "https://xxz-xyzw-res.hortorgames.com")!
     private var bundleVersions: [String: String] = [:]
 
+    /// bundle 内资源的内存缓存，按绝对路径存。
+    ///
+    /// 这些文件只读不改，但每次点击都会有一批请求打进来，原来每次都
+    /// `Data(contentsOf:)` 同步读盘。命中这里之后连磁盘都不碰。
+    /// 不放进 WebKit 缓存（仍下发 `no-store`）是因为 App 升级后 bundle 内容会变
+    /// 而 URL 不变，交给 WebKit 缓存会用到旧文件。
+    private static let localDataCache = NSCache<NSString, NSData>()
+
     func setBundleVersions(_ versions: [String: String]) {
         bundleVersions = versions
         MacLog.info("[ios2-macos] live bundle versions: launcher=%@ game=%@ internal=%@",
@@ -1077,8 +1132,15 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         if let localURL = localResource(for: requestURL) {
+            let cacheKey = localURL.path as NSString
+            if let cached = Self.localDataCache.object(forKey: cacheKey) {
+                respond(urlSchemeTask, data: cached as Data, url: requestURL, cacheControl: "no-store")
+                return
+            }
             do {
-                try respond(urlSchemeTask, data: Data(contentsOf: localURL), url: requestURL)
+                let data = try Data(contentsOf: localURL)
+                Self.localDataCache.setObject(data as NSData, forKey: cacheKey)
+                respond(urlSchemeTask, data: data, url: requestURL, cacheControl: "no-store")
             } catch {
                 urlSchemeTask.didFailWithError(error)
             }
@@ -1093,7 +1155,8 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         Task { @MainActor [weak self] in
             do {
                 let data = try await MacCDNResourceManager.shared.data(for: remoteURL, source: "game")
-                self?.respond(urlSchemeTask, data: data, url: requestURL)
+                self?.respond(urlSchemeTask, data: data, url: requestURL,
+                              cacheControl: Self.remoteCacheControl(for: remoteURL))
             } catch {
                 MacLog.error("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
                 self?.fail(urlSchemeTask, code: (error as NSError).code)
@@ -1179,7 +1242,26 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         return components?.url
     }
 
-    private func respond(_ task: WKURLSchemeTask, data: Data, url: URL) {
+    /// 远程资源的缓存策略：URL 里带内容摘要的可以永久缓存，其余只能短缓存。
+    ///
+    /// 之前对所有响应一律下发 `no-store`，等于把 WebKit 的缓存整个关掉，
+    /// 于是每次点击（哪怕点的是同一个按钮）都要重新走一遍
+    /// 「WebContent → IPC → App 进程 → CDN 层 → 磁盘/网络 → IPC 回传」。
+    /// 带摘要的资源内容不会变（`4ab2db64-….5b41c.json`、
+    /// 或被 `rewriteBundleVersion` 改写过的 `index.<version>.js`），
+    /// 交给 WebKit 缓存后第二次就是纯内存命中。
+    private static func remoteCacheControl(for url: URL) -> String {
+        let parts = url.lastPathComponent.split(separator: ".")
+        if parts.count >= 3 {
+            let digest = parts[parts.count - 2]
+            if digest.count >= 4, digest.allSatisfy({ $0.isHexDigit }) {
+                return "public, max-age=31536000, immutable"
+            }
+        }
+        return "public, max-age=300"
+    }
+
+    private func respond(_ task: WKURLSchemeTask, data: Data, url: URL, cacheControl: String) {
         // Fetch/XHR only exposes `ok` and `status` when the custom scheme
         // returns an HTTP response. A plain URLResponse makes a successful
         // CDN download look like status 0 to the WebKit runtime.
@@ -1190,7 +1272,7 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
             headerFields: [
                 "Content-Type": mimeType(for: url.pathExtension),
                 "Content-Length": String(data.count),
-                "Cache-Control": "no-store"
+                "Cache-Control": cacheControl
             ]
         )!
         task.didReceive(response)
