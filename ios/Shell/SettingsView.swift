@@ -68,6 +68,12 @@ struct SettingsView: View {
     @State private var showingClearCDNConfirmation = false
     @AppStorage(MacCDNResourceManager.automaticCachingKey) private var automaticCachingEnabled = true
     @AppStorage(MacCDNResourceManager.idleOnlyCachingKey) private var idleOnlyCachingEnabled = false
+    /// 日志总开关：关掉后原生与页面日志一律不打印（连格式化都不会发生）。
+    @AppStorage(MacLogSettings.enabledDefaultsKey) private var loggingEnabled = true
+    /// 日志等级：存 rawValue，与 `MacLogLevel` 一一对应。
+    @AppStorage(MacLogSettings.levelDefaultsKey) private var logLevelRaw = MacLogLevel.fallback.rawValue
+    /// 是否把游戏页面的 console 输出回传到 Xcode 控制台（多开时最大的一块开销）。
+    @AppStorage(MacLogSettings.jsConsoleDefaultsKey) private var forwardsJSConsole = false
     #endif
 
     /// 与 iOS 版脚本页磁贴同源的成功绿（#22B170），开关统一用它。
@@ -85,6 +91,12 @@ struct SettingsView: View {
         MacFrameRate(rawValue: frameRateValue) ?? MacFrameRate.fallback
     }
 
+    #if os(macOS)
+    private var logLevel: MacLogLevel {
+        MacLogLevel(rawValue: logLevelRaw) ?? MacLogLevel.fallback
+    }
+    #endif
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -92,6 +104,7 @@ struct SettingsView: View {
                 qualityCard
 #if os(macOS)
                 cdnCard
+                logCard
 #endif
             }
             // 视口高于内容时顶部对齐（ScrollView 默认会把小内容垂直居中）。
@@ -114,6 +127,11 @@ struct SettingsView: View {
         .onChange(of: showsFrameRateHUD) { _ in
             MacFrameRate.syncHUD()
         }
+        // 日志三件套：改完立刻刷新原生侧缓存 + 广播给正在跑的实例，
+        // 不用重启游戏窗口——页面里的 console 代理会在下一次调用时读到新配置。
+        .onChange(of: loggingEnabled) { _ in applyLogSettings() }
+        .onChange(of: logLevelRaw) { _ in applyLogSettings() }
+        .onChange(of: forwardsJSConsole) { _ in applyLogSettings() }
         .confirmationDialog(
             "确认清理 CDN 缓存？",
             isPresented: $showingClearCDNConfirmation,
@@ -210,6 +228,150 @@ struct SettingsView: View {
         }
         .foregroundStyle(.secondary)
     }
+
+    // MARK: - 日志
+
+#if os(macOS)
+    /// 把「开关 / 等级 / 页面回传」三件套刷进原生缓存，并广播给活着的实例。
+    ///
+    /// 顺序不能反：先 `reload()` 让原生侧立刻按新设置过滤，再广播给页面——
+    /// 否则广播期间原生仍按旧等级打印，会出现「页面已停、控制台还在刷」的错位。
+    private func applyLogSettings() {
+        MacLogSettings.shared.reload()
+        MacLogSettings.shared.applyToRunningInstances()
+    }
+
+    private var logCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // 卡头：图标磁贴 + 标题 + 行尾当前等级胶囊（关掉时显示「关闭」）。
+            HStack(spacing: 10) {
+                settingsIconTile("terminal", tint: Self.accentCyan)
+                Text("日志")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 8)
+                logStatusCapsule
+            }
+
+            logLevelSegmentedCapsule
+                .disabled(!loggingEnabled)
+                .opacity(loggingEnabled ? 1 : 0.45)
+
+            Text(loggingEnabled ? logLevel.summary : "日志已关闭，原生与游戏页面都不会再打印任何日志。")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color.white.opacity(0.78))
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 6) {
+                SettingsToggleRow(
+                    title: "启用日志",
+                    caption: "总开关；关闭后连字符串格式化都不会发生",
+                    isOn: $loggingEnabled,
+                    tint: Self.glowGreen
+                )
+                SettingsToggleRow(
+                    title: "转发游戏控制台日志",
+                    caption: "页面每条 console 都要跨进程回传一次，多开时最大的开销来源",
+                    isOn: $forwardsJSConsole,
+                    tint: Self.glowGreen
+                )
+                .disabled(!loggingEnabled)
+                .opacity(loggingEnabled ? 1 : 0.55)
+            }
+
+            logNotes
+        }
+        .padding(12)
+        .settingsCardSurface(cornerRadius: 12)
+    }
+
+    /// 行尾状态胶囊：关 = 灰「关闭」，开 = 当前等级。
+    private var logStatusCapsule: some View {
+        Text(loggingEnabled ? logLevel.label : "关闭")
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(loggingEnabled ? Self.accentCyan : Color.white.opacity(0.55))
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule(style: .continuous)
+                .fill(loggingEnabled ? Self.accentCyan.opacity(0.18) : Color.white.opacity(0.06)))
+            .overlay(Capsule(style: .continuous)
+                .strokeBorder(loggingEnabled ? Self.accentCyan.opacity(0.85) : Color.white.opacity(0.14),
+                              lineWidth: 1))
+    }
+
+    /// 五档等级胶囊：与帧率 / 画质同款轨道，五枚等宽。
+    private var logLevelSegmentedCapsule: some View {
+        HStack(spacing: 4) {
+            ForEach(MacLogLevel.allCases) { level in
+                LogLevelOptionCapsule(level: level, isSelected: level == logLevel) {
+                    guard level != logLevel else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        logLevelRaw = level.rawValue
+                    }
+                }
+            }
+        }
+        .padding(4)
+        .background(Capsule(style: .continuous).fill(Color.black.opacity(0.28)))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
+    /// 卡片底部说明：三行，说清「什么时候生效」和「关掉到底省了什么」。
+    private var logNotes: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            settingsNoteRow("改动立即对所有运行中的实例生效，无需重启游戏窗口",
+                            systemImage: "bolt.horizontal")
+            settingsNoteRow("低于所选等级的日志在原生侧直接丢弃，不进 NSLog",
+                            systemImage: "line.3.horizontal.decrease")
+            settingsNoteRow("关掉转发后，页面 console 仍可在 Safari Web Inspector 里看到",
+                            systemImage: "safari")
+        }
+    }
+
+    /// 等级档位胶囊：抽成独立 View，与帧率档位同款做法（五档塞进卡片 body 里
+    /// 会让 SwiftUI 的类型检查变慢）。
+    private struct LogLevelOptionCapsule: View {
+        let level: MacLogLevel
+        let isSelected: Bool
+        let action: () -> Void
+
+        private static let accentCyan = SettingsView.accentCyan
+
+        // 整条修饰符链必须拆成子属性：这颗胶囊和帧率那颗是同款结构，两张卡
+        // 放一起会让 SwiftUI 的类型检查器在同一个表达式上超时（报错在 Button 上）。
+        var body: some View {
+            Button(action: action) { capsuleLabel }
+                .buttonStyle(.plain)
+                .settingsHoverHighlight(cornerRadius: 50, intensity: isSelected ? 0.04 : 0.10)
+                .accessibilityLabel(level.accessibilityLabel)
+        }
+
+        private var capsuleLabel: some View {
+            Text(level.label)
+                .font(.system(size: 11.5, weight: isSelected ? .bold : .medium))
+                .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.60))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(capsuleFill)
+                .overlay(capsuleBorder)
+                .shadow(color: isSelected ? Self.accentCyan.opacity(0.35) : .clear, radius: 6, x: 0, y: 0)
+                .contentShape(Capsule(style: .continuous))
+        }
+
+        private var capsuleFill: some View {
+            Capsule(style: .continuous)
+                .fill(isSelected ? Self.accentCyan.opacity(0.85) : Color.white.opacity(0.05))
+        }
+
+        private var capsuleBorder: some View {
+            Capsule(style: .continuous)
+                .strokeBorder(isSelected ? Self.accentCyan : Color.white.opacity(0.12), lineWidth: 1)
+        }
+    }
+#endif
 
     /// 对所有存活实例做一次帧率自检：回读「实测 / 引擎目标 / 注入值」并显示。
     /// 实测值是页面里数 1 秒 requestAnimationFrame 得到的，比读设置值可信。

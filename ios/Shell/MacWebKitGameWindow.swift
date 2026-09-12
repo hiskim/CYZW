@@ -341,7 +341,7 @@ final class MacGameSettingsStore: @unchecked Sendable {
         guard !merged.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject: merged) else { return }
         try? data.write(to: sharedURL, options: .atomic)
-        NSLog("[ios2-macos] migrated %d legacy game settings into shared.json", merged.count)
+        MacLog.info("[ios2-macos] migrated %d legacy game settings into shared.json", merged.count)
     }
 
     private func fileURL(for partition: String) -> URL {
@@ -504,9 +504,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 let manifest = try? await MacCDNResourceManager.shared.latestManifest()
                 guard !isStopped else { return }
                 loadingLabel.stringValue = "正在登录游戏…"
-                NSLog("[ios2-macos] account authentication started: %@", account.fileName)
+                MacLog.info("[ios2-macos] account authentication started: %@", account.fileName)
                 let authentication = try await MacWebKitAuth.authenticate(account: account, manifest: manifest)
-                NSLog("[ios2-macos] account authentication complete: %@", account.fileName)
+                MacLog.info("[ios2-macos] account authentication complete: %@", account.fileName)
                 await MacCDNResourceManager.shared.beginGameSession()
                 gameSessionStarted = true
                 authenticatedAccountID = authentication.accountID
@@ -525,7 +525,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 )
                 // 帧率角标（默认关闭）：开关开着就随文档就绪装上显示层。
                 if MacFrameRateHUD.isEnabled {
-                    NSLog("[ios2-macos] frame rate HUD enabled, injecting overlay")
+                    MacLog.debug("[ios2-macos] frame rate HUD enabled, injecting overlay")
                     webView.configuration.userContentController.addUserScript(
                         WKUserScript(source: MacFrameRateHUD.overlayShowScript,
                                      injectionTime: .atDocumentEnd, forMainFrameOnly: true)
@@ -538,17 +538,17 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 for record in scriptRecords {
                     guard let source = ScriptManager.shared.scriptSource(named: record.name),
                           !source.isEmpty else {
-                        NSLog("[ios2-macos] user script skipped (unreadable): %@", record.name)
+                        MacLog.warn("[ios2-macos] user script skipped (unreadable): %@", record.name)
                         continue
                     }
                     webView.configuration.userContentController.addUserScript(
                         WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
                     )
-                    NSLog("[ios2-macos] user script injected: %@ (%@)",
-                          record.name, scriptEnvironment == .single ? "single" : "multi")
+                    MacLog.info("[ios2-macos] user script injected: %@ (%@)",
+                                record.name, scriptEnvironment == .single ? "single" : "multi")
                 }
                 let entry = URL(string: "ios2-game://app/index.html?revision=macos-webkit-2")!
-                NSLog("[ios2-macos] loading WebKit game document: %@", entry.absoluteString)
+                MacLog.debug("[ios2-macos] loading WebKit game document: %@", entry.absoluteString)
                 webView.load(URLRequest(url: entry))
             } catch {
                 guard !isStopped else { return }
@@ -590,7 +590,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // ① 文档创建之前先把上次保存的游戏配置写回 localStorage。
         let restore = MacGameSettingsStore.shared.restoreScript(forAccount: accountStorageKey)
         if !restore.isEmpty {
-            NSLog("[ios2-macos] restoring persisted game settings: %@", accountStorageKey)
+            MacLog.debug("[ios2-macos] restoring persisted game settings: %@", accountStorageKey)
             contentController.addUserScript(
                 WKUserScript(source: restore, injectionTime: .atDocumentStart, forMainFrameOnly: true)
             )
@@ -654,6 +654,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // 「暂停→等待旧主循环退出→重启」路径，不走 cc.game.setFrameRate（有缺陷）。
         let frameRate = MacFrameRate.current()
         return """
+        // 日志配置必须第一个落地：后面所有的 console 调用都要读它决定要不要
+        // 回传原生（含本脚本自己打的那一条）。放晚了会漏掉启动期最吵的一段。
+        \(MacLogSettings.shared.bootstrapScript)
         window.__IOS2_GAME_INSTANCE__ = {
           id: \(idJSON ?? "\\\"\\\""),
           account: \(accountJSON ?? "\\\"账号\\\""),
@@ -747,27 +750,20 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         window.addEventListener('unhandledrejection', function(event) {
           try { window.webkit.messageHandlers.ios2Game.postMessage({type:'error', instance:window.__IOS2_GAME_INSTANCE__.id, message:String(event.reason && event.reason.stack || event.reason || 'Unhandled rejection')}); } catch (ignored) {}
         });
-        ['log','warn','error'].forEach(function(level) {
-          var original = console[level];
-          console[level] = function() {
-            var args = Array.prototype.slice.call(arguments);
-            try { window.webkit.messageHandlers.ios2Game.postMessage({type:'console', level:level, instance:window.__IOS2_GAME_INSTANCE__.id, message:args.map(function(value){ return String(value && value.stack || value); }).join(' ')}); } catch (ignored) {}
-            return original.apply(console, args);
-          };
-        });
+        \(MacLogConsoleBridge.script)
         """
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "ios2Game" else { return }
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else {
-            NSLog("[ios2-macos] WebKit event: %@", String(describing: message.body))
+            MacLog.warn("[ios2-macos] WebKit event: %@", String(describing: message.body))
             return
         }
         switch type {
         case "hsdk":
             guard let requestJSON = body["message"] as? String else {
-                NSLog("[ios2-macos] malformed HSDK event: %@", String(describing: body))
+                MacLog.error("[ios2-macos] malformed HSDK event: %@", String(describing: body))
                 return
             }
             handleHSDKRequest(requestJSON)
@@ -785,37 +781,42 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
                 MacGameSettingsStore.shared.setValue(value, forKey: key, accountID: accountStorageKey)
             }
         case "console":
-            NSLog("[ios2-macos] JS %@: %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
+            // 页面侧已经按等级滤过一道（见 MacLogConsoleBridge），这里再判一次
+            // 只是兜底：实例重载、旧页面残留都可能带着过期的配置打过来。
+            MacLog.log(MacLogLevel.level(forJSLevel: body["level"] as? String),
+                       "[ios2-macos] JS %@: %@",
+                       body["level"] as? String ?? "log",
+                       body["message"] as? String ?? "")
         case "memory":
-            NSLog("[ios2-macos] Web runtime memory (%@, %@): assets=%@ nodes=%@",
-                  body["reason"] as? String ?? "sample",
-                  body["phase"] as? String ?? "sample",
-                  String(describing: body["assets"] ?? "?"),
-                  String(describing: body["nodes"] ?? "?"))
+            MacLog.debug("[ios2-macos] Web runtime memory (%@, %@): assets=%@ nodes=%@",
+                         body["reason"] as? String ?? "sample",
+                         body["phase"] as? String ?? "sample",
+                         String(describing: body["assets"] ?? "?"),
+                         String(describing: body["nodes"] ?? "?"))
         case "graphics":
-            NSLog("[ios2-macos] WebGL %@: %@",
-                  body["event"] as? String ?? "event",
-                  body["message"] as? String ?? "")
+            MacLog.warn("[ios2-macos] WebGL %@: %@",
+                        body["event"] as? String ?? "event",
+                        body["message"] as? String ?? "")
         case "error":
-            NSLog("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
+            MacLog.error("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
         case "frameRate":
             // 页面里任何 cc.game.setFrameRate 调用都会打到这里（含调用栈），
             // 用来定位"设置 90 却被改成 30"是谁干的。
-            NSLog("[ios2-macos] frame rate write: fps=%@ stack=%@",
-                  String(describing: body["fps"] ?? "?"),
-                  String(describing: body["stack"] ?? "?"))
+            MacLog.debug("[ios2-macos] frame rate write: fps=%@ stack=%@",
+                         String(describing: body["fps"] ?? "?"),
+                         String(describing: body["stack"] ?? "?"))
         case "frameRateBlocked":
             // 游戏 bundle 登录时会把自己的默认值（30）塞进来，与用户设定不符时拦下。
-            NSLog("[ios2-macos] frame rate blocked: 游戏要 %@ / 保持用户设定 %@",
-                  String(describing: body["fps"] ?? "?"),
-                  String(describing: body["preferred"] ?? "?"))
+            MacLog.info("[ios2-macos] frame rate blocked: 游戏要 %@ / 保持用户设定 %@",
+                        String(describing: body["fps"] ?? "?"),
+                        String(describing: body["preferred"] ?? "?"))
         case "frameRateRestore":
             // 登录后按 0 / 500 / 2000ms 三次把帧率拉回用户设定。
-            NSLog("[ios2-macos] frame rate restore: %@ (%@)",
-                  String(describing: body["fps"] ?? "?"),
-                  String(describing: body["reason"] ?? "?"))
+            MacLog.debug("[ios2-macos] frame rate restore: %@ (%@)",
+                         String(describing: body["fps"] ?? "?"),
+                         String(describing: body["reason"] ?? "?"))
         default:
-            NSLog("[ios2-macos] WebKit event: %@", String(describing: body))
+            MacLog.debug("[ios2-macos] WebKit event: %@", String(describing: body))
         }
     }
 
@@ -829,7 +830,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadingOverlay.isHidden = true
-        NSLog("[ios2-macos] WebKit game document loaded")
+        MacLog.info("[ios2-macos] WebKit game document loaded")
         // 页面就绪后把「是否为主窗口」写回页面：WKUserScript 在导航时已注入代理，
         // 但捕获开关是运行时状态（重载/新建实例都必须补一次）。
         MacInputSyncController.shared.refreshCapture(forAccountID: account.id)
@@ -850,12 +851,12 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         evaluateJavaScript(enabled ? MacFrameRateHUD.overlayShowScript
                                   : MacFrameRateHUD.overlayHideScript) { error in
             guard let error else { return }
-            NSLog("[ios2-macos] frame rate HUD sync failed: %@", error.localizedDescription)
+            MacLog.warn("[ios2-macos] frame rate HUD sync failed: %@", error.localizedDescription)
         }
         guard enabled else { return }
         webView.evaluateJavaScript(MacFrameRateHUD.diagnosticScript) { value, error in
             let payload = (value as? String) ?? "nil / \(error?.localizedDescription ?? "no error")"
-            NSLog("[ios2-macos] fps hud diag: %@", payload)
+            MacLog.debug("[ios2-macos] fps hud diag: %@", payload)
         }
     }
 
@@ -920,7 +921,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
               let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let action = request["action"] as? String else { return }
         let extra = request["extra"] as? [String: Any] ?? [:]
-        NSLog("[ios2-macos] HSDK request: %@", action)
+        MacLog.debug("[ios2-macos] HSDK request: %@", action)
         let responseExtra: [String: Any]
         switch action {
         case "game-init":
@@ -963,7 +964,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
              "sdk-app-back":
             // These are event/listener registrations on iOS. Replying here
             // would invoke the listener during startup as if the event fired.
-            NSLog("[ios2-macos] HSDK listener registered: %@", action)
+            MacLog.debug("[ios2-macos] HSDK listener registered: %@", action)
             return
         default:
             responseExtra = [:]
@@ -989,9 +990,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
               let argument = String(data: messageData, encoding: .utf8) else { return }
         webView.evaluateJavaScript("if(window.HSDK&&typeof window.HSDK.onMessage==='function'){window.HSDK.onMessage('sdk',\(argument));}else{throw new Error('HSDK.onMessage is unavailable while responding to \(action)');}") { _, error in
             if let error {
-                NSLog("[ios2-macos] HSDK response %@ failed: %@", action, error.localizedDescription)
+                MacLog.error("[ios2-macos] HSDK response %@ failed: %@", action, error.localizedDescription)
             } else {
-                NSLog("[ios2-macos] HSDK response sent: %@", action)
+                MacLog.debug("[ios2-macos] HSDK response sent: %@", action)
             }
         }
     }
@@ -1063,10 +1064,10 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func setBundleVersions(_ versions: [String: String]) {
         bundleVersions = versions
-        NSLog("[ios2-macos] live bundle versions: launcher=%@ game=%@ internal=%@",
-              versions["launcher"] ?? "<missing>",
-              versions["game"] ?? "<missing>",
-              versions["internal"] ?? "<missing>")
+        MacLog.info("[ios2-macos] live bundle versions: launcher=%@ game=%@ internal=%@",
+                    versions["launcher"] ?? "<missing>",
+                    versions["game"] ?? "<missing>",
+                    versions["internal"] ?? "<missing>")
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
@@ -1088,13 +1089,13 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
             fail(urlSchemeTask, code: NSURLErrorFileDoesNotExist)
             return
         }
-        NSLog("[ios2-macos] CDN request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
+        MacLog.verbose("[ios2-macos] CDN request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
         Task { @MainActor [weak self] in
             do {
                 let data = try await MacCDNResourceManager.shared.data(for: remoteURL, source: "game")
                 self?.respond(urlSchemeTask, data: data, url: requestURL)
             } catch {
-                NSLog("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
+                MacLog.error("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
                 self?.fail(urlSchemeTask, code: (error as NSError).code)
             }
         }
@@ -1166,7 +1167,7 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
                   filenameParts[0] == "index",
                   filenameParts[2] == "js" || filenameParts[2] == "jsc" else { continue }
             components[filenameIndex] = "index.\(version).\(filenameParts[2])"
-            NSLog("[ios2-macos] bundle URL rewritten: %@ -> %@", path, components.joined(separator: "/"))
+            MacLog.verbose("[ios2-macos] bundle URL rewritten: %@ -> %@", path, components.joined(separator: "/"))
             return components.joined(separator: "/")
         }
         return path

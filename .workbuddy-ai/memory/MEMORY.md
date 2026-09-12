@@ -19,6 +19,19 @@
 - 中文 UI 字符串里嵌套引用一律用 `「」` 或弯引号 `""`，**不要**用直引号 `"`——会与外层字符串边界冲突导致 parse 失败。
 - 卡片内游戏画面本来就贴齐卡片边缘，改利用率时不要去动 cell 内部。
 
+## 日志约定
+
+- **不要再写裸 `NSLog` / `print`**，一律用 `ios/Shell/MacLog.swift` 的
+  `MacLog.error/warn/info/debug/verbose`；等级口径（verbose = 每资源一条的流水）
+  写在 `MacLogLevel` 的文档注释里，归类前先看一眼。
+- 昂贵的实参（`sha256`、拼大字符串）必须先用 `MacLog.isEnabled(.xxx)` 挡住，
+  否则关掉日志只省了打印、没省掉计算。
+- 新增 Swift 文件必须手工登记 `ios/Shell/IOS2-Mac.xcodeproj/project.pbxproj`
+  （该工程逐个列源文件：PBXBuildFile / PBXFileReference / Shell group / Sources phase），
+  否则 Xcode 里不参与编译。
+- 校验编译：`xcodebuild -project … -derivedDataPath /tmp/xxx build`
+  （不要写进仓库里的 build 目录）。
+
 ## 协作约定
 
 - 用户只保留源码改动，从 Xcode 自行运行；**不要**刷新仓库里

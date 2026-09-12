@@ -180,8 +180,8 @@ extension MacFrameRate {
         for accountID in accountIDs {
             MacGameInstanceRegistry.shared.evaluate(script, accountID: accountID)
         }
-        NSLog("[ios2-macos] frame rate HUD %@ across %d instance(s)",
-              MacFrameRateHUD.isEnabled ? "shown" : "hidden", accountIDs.count)
+        MacLog.debug("[ios2-macos] frame rate HUD %@ across %d instance(s)",
+                     MacFrameRateHUD.isEnabled ? "shown" : "hidden", accountIDs.count)
     }
 
     // MARK: - 串行化
@@ -229,18 +229,18 @@ extension MacFrameRate {
                 guard !Task.isCancelled else { return }
                 let receipt = await MacGameInstanceRegistry.shared.evaluateAsync(script, accountID: accountID)
                 guard Self.workGeneration == generation else { return }
-                NSLog("[ios2-macos] frame rate %d fps -> %@: %@", fps, accountID, receipt ?? "（无回执）")
+                MacLog.debug("[ios2-macos] frame rate %d fps -> %@: %@", fps, accountID, receipt ?? "（无回执）")
             }
             guard !Task.isCancelled, Self.workGeneration == generation else { return }
-            NSLog("[ios2-macos] frame rate %d fps applied to %d running instance(s)",
-                  fps, accountIDs.count)
+            MacLog.info("[ios2-macos] frame rate %d fps applied to %d running instance(s)",
+                        fps, accountIDs.count)
             // 刚 resume 的头几百毫秒主循环还在爬坡，立刻采样会偏低；
             // 等它稳定下来再测，否则读到的是"重启过程"而不是"稳态帧率"。
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled, Self.workGeneration == generation else { return }
             let report = await verifyInRunningInstances()
             guard Self.workGeneration == generation else { return }
-            NSLog("[ios2-macos] frame rate verify: %@", report)
+            MacLog.info("[ios2-macos] frame rate verify: %@", report)
         }
     }
 
@@ -252,7 +252,7 @@ extension MacFrameRate {
         let generation = Self.workGeneration
         let report = await verifyInRunningInstances()
         guard Self.workGeneration == generation else { return "（已被新的帧率改动取消，请重新校验）" }
-        NSLog("[ios2-macos] frame rate verify: %@", report)
+        MacLog.info("[ios2-macos] frame rate verify: %@", report)
         return report
     }
 

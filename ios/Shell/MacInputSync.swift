@@ -117,7 +117,7 @@ final class MacGameInstanceRegistry {
             guard let error else { return }
             guard let self, !self.warned.contains(accountID) else { return }
             self.warned.insert(accountID)
-            NSLog("[ios2-macos] sync evaluate failed (%@): %@", accountID, error.localizedDescription)
+            MacLog.error("[ios2-macos] sync evaluate failed (%@): %@", accountID, error.localizedDescription)
         }
         return true
     }
@@ -131,7 +131,7 @@ final class MacGameInstanceRegistry {
         } catch {
             guard !warned.contains(accountID) else { return nil }
             warned.insert(accountID)
-            NSLog("[ios2-macos] async evaluate failed (%@): %@", accountID, error.localizedDescription)
+            MacLog.error("[ios2-macos] async evaluate failed (%@): %@", accountID, error.localizedDescription)
             return nil
         }
     }

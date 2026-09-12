@@ -96,7 +96,7 @@ actor MacCDNResourceManager {
     /// Failure is deliberately non-fatal: a game window can retry the manifest
     /// request and individual CDN requests later.
     func prepareForLaunch() async -> MacCDNManifest? {
-        NSLog("[ios2-macos][cdn] launch preparation started")
+        MacLog.info("[ios2-macos][cdn] launch preparation started")
         if let preparationTask {
             return try? await preparationTask.value
         }
@@ -109,7 +109,7 @@ actor MacCDNResourceManager {
                     startFullPrefetchIfNeeded(from: manifest)
                 }
             } else {
-                NSLog("[ios2-macos][cdn] automatic caching disabled; game will cache lazily")
+                MacLog.info("[ios2-macos][cdn] automatic caching disabled; game will cache lazily")
             }
             return manifest
         }
@@ -117,9 +117,9 @@ actor MacCDNResourceManager {
         defer { preparationTask = nil }
         let manifest = try? await task.value
         if let manifest {
-            NSLog("[ios2-macos][cdn] launch preparation complete: %ld bundle versions", manifest.bundleVersions.count)
+            MacLog.info("[ios2-macos][cdn] launch preparation complete: %ld bundle versions", manifest.bundleVersions.count)
         } else {
-            NSLog("[ios2-macos][cdn] launch preparation failed; game requests will retry lazily")
+            MacLog.error("[ios2-macos][cdn] launch preparation failed; game requests will retry lazily")
         }
         return manifest
     }
@@ -133,7 +133,7 @@ actor MacCDNResourceManager {
             fullPrefetchTask?.cancel()
             fullPrefetchTask = nil
             fullPrefetchManifestKey = nil
-            NSLog("[ios2-macos][cdn] active account session started; idle prefetch paused")
+            MacLog.debug("[ios2-macos][cdn] active account session started; idle prefetch paused")
         }
     }
 
@@ -143,7 +143,7 @@ actor MacCDNResourceManager {
         guard activeGameSessions == 0, automaticCachingEnabled, shouldPrefetchWhileIdle else { return }
         if let manifest = try? await latestManifest() {
             startFullPrefetchIfNeeded(from: manifest)
-            NSLog("[ios2-macos][cdn] no active account sessions; idle prefetch resumed")
+            MacLog.debug("[ios2-macos][cdn] no active account sessions; idle prefetch resumed")
         }
     }
 
@@ -153,7 +153,7 @@ actor MacCDNResourceManager {
             fullPrefetchTask?.cancel()
             fullPrefetchTask = nil
             fullPrefetchManifestKey = nil
-            NSLog("[ios2-macos][cdn] automatic caching disabled")
+            MacLog.info("[ios2-macos][cdn] automatic caching disabled")
             return
         }
         if shouldPrefetchWhileIdle && activeGameSessions > 0 {
@@ -192,22 +192,22 @@ actor MacCDNResourceManager {
         fullPrefetchManifestKey = nil
         fullPrefetchTask?.cancel()
         fullPrefetchTask = nil
-        NSLog("[ios2-macos][cdn] cache synchronization requested")
+        MacLog.info("[ios2-macos][cdn] cache synchronization requested")
         do {
             // A manual sync must contact the CDN directly. Unlike normal game
             // startup, do not silently fall back to the persisted manifest.
             let manifest = try await Self.fetchManifest()
             try? persist(manifest: manifest)
             latestManifestValue = manifest
-            NSLog("[ios2-macos][cdn] manifest synchronized: %ld bundle versions", manifest.bundleVersions.count)
+            MacLog.debug("[ios2-macos][cdn] manifest synchronized: %ld bundle versions", manifest.bundleVersions.count)
             await prefetchCoreBundles(from: manifest)
             await prefetchAllResources(from: manifest)
             fullPrefetchManifestKey = manifest.bundleVersions.sorted { $0.key < $1.key }
                 .map { "\($0.key)=\($0.value)" }.joined(separator: "&")
-            NSLog("[ios2-macos][cdn] cache synchronization complete")
+            MacLog.info("[ios2-macos][cdn] cache synchronization complete")
             return true
         } catch {
-            NSLog("[ios2-macos][cdn] cache synchronization failed: %@", error.localizedDescription)
+            MacLog.error("[ios2-macos][cdn] cache synchronization failed: %@", error.localizedDescription)
             return false
         }
     }
@@ -231,7 +231,7 @@ actor MacCDNResourceManager {
         try? fileManager.removeItem(at: indexURL)
         try? fileManager.removeItem(at: missingURL)
         try? fileManager.removeItem(at: manifestURL)
-        NSLog("[ios2-macos][cdn] cache cleared: %@", cacheDirectory.path)
+        MacLog.info("[ios2-macos][cdn] cache cleared: %@", cacheDirectory.path)
         return cacheStatus()
     }
 
@@ -277,11 +277,11 @@ actor MacCDNResourceManager {
             do {
                 let manifest = try await Self.fetchManifest()
                 try? persist(manifest: manifest)
-                NSLog("[ios2-macos][cdn] manifest downloaded: %ld bundle versions", manifest.bundleVersions.count)
+                MacLog.debug("[ios2-macos][cdn] manifest downloaded: %ld bundle versions", manifest.bundleVersions.count)
                 return manifest
             } catch {
                 if let persisted = loadPersistedManifest() {
-                    NSLog("[ios2-macos][cdn] manifest network request failed; using persisted manifest")
+                    MacLog.warn("[ios2-macos][cdn] manifest network request failed; using persisted manifest")
                     return persisted
                 }
                 throw error
@@ -305,24 +305,29 @@ actor MacCDNResourceManager {
         let generation = cacheGeneration
         if let expiry = missingURLs[key] {
             if expiry > Date() {
-                NSLog("[ios2-macos][cdn] known missing (skip retry): %@", key)
+                MacLog.debug("[ios2-macos][cdn] known missing (skip retry): %@", key)
                 throw URLError(.fileDoesNotExist)
             }
             missingURLs[key] = nil
             persistMissingURLs()
         }
         if let cached = try cachedData(for: key) {
-            let digest = Self.sha256(cached)
-            let path = index[key]?.path ?? "<unknown>"
-            NSLog("[ios2-macos][cdn] %@ served from shared cache: %@ (%lld bytes, sha256=%@, file=%@)", source, key, Int64(cached.count), digest, path)
+            // sha256 只为了打这一行日志。缓存命中是**每个资源一次**的热路径
+            // （一个 bundle 几百个文件），开关关掉时必须连哈希一起省掉，
+            // 否则「关日志」只省了打印、没省掉比打印更贵的计算。
+            if MacLog.isEnabled(.verbose) {
+                let digest = Self.sha256(cached)
+                let path = index[key]?.path ?? "<unknown>"
+                MacLog.verbose("[ios2-macos][cdn] %@ served from shared cache: %@ (%lld bytes, sha256=%@, file=%@)", source, key, Int64(cached.count), digest, path)
+            }
             return cached
         }
         if let download = downloads[key] {
-            NSLog("[ios2-macos][cdn] waiting for shared download: %@", key)
+            MacLog.verbose("[ios2-macos][cdn] waiting for shared download: %@", key)
             return try await download.value
         }
 
-        NSLog("[ios2-macos][cdn] %@ network download started: %@", source, key)
+        MacLog.verbose("[ios2-macos][cdn] %@ network download started: %@", source, key)
         let download = Task.detached(priority: .utility) {
             var request = URLRequest(url: remoteURL)
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -342,13 +347,16 @@ actor MacCDNResourceManager {
             guard generation == cacheGeneration else { throw CancellationError() }
             try store(data: data, for: key)
             downloads[key] = nil
-            NSLog("[ios2-macos][cdn] %@ network download completed and cached: %@ (%lld bytes, sha256=%@)", source, key, Int64(data.count), Self.sha256(data))
+            // 同上：整包 sha256 只在真的要打这条日志时才算。
+            if MacLog.isEnabled(.debug) {
+                MacLog.debug("[ios2-macos][cdn] %@ network download completed and cached: %@ (%lld bytes, sha256=%@)", source, key, Int64(data.count), Self.sha256(data))
+            }
             return data
         } catch {
             if ((error as NSError).userInfo["ios2StatusCode"] as? Int) == 404 {
                 missingURLs[key] = Date().addingTimeInterval(24 * 60 * 60)
                 persistMissingURLs()
-                NSLog("[ios2-macos][cdn] recorded missing URL for 24h: %@", key)
+                MacLog.warn("[ios2-macos][cdn] recorded missing URL for 24h: %@", key)
             }
             downloads[key] = nil
             throw error
@@ -409,10 +417,10 @@ actor MacCDNResourceManager {
             for url in urls {
                 do {
                     _ = try await data(for: url)
-                    NSLog("[ios2-macos][cdn] prefetch complete: %@", url.absoluteString)
+                    MacLog.verbose("[ios2-macos][cdn] prefetch complete: %@", url.absoluteString)
                 } catch {
                     // Optional bundles are still downloaded lazily by the game.
-                    NSLog("[ios2-macos] CDN prefetch failed: %@ (%@)", url.absoluteString, error.localizedDescription)
+                    MacLog.warn("[ios2-macos] CDN prefetch failed: %@ (%@)", url.absoluteString, error.localizedDescription)
                 }
             }
         }
@@ -434,7 +442,7 @@ actor MacCDNResourceManager {
                     configs.append(config)
                 }
             } catch {
-                NSLog("[ios2-macos][cdn] bundle config failed: %@ (%@)", bundle, error.localizedDescription)
+                MacLog.error("[ios2-macos][cdn] bundle config failed: %@ (%@)", bundle, error.localizedDescription)
             }
         }
 
@@ -460,14 +468,14 @@ actor MacCDNResourceManager {
         }
 
         let total = urls.count
-        NSLog("[ios2-macos][cdn] full resource prefetch started: %ld URLs from %ld bundles", total, configs.count)
+        MacLog.info("[ios2-macos][cdn] full resource prefetch started: %ld URLs from %ld bundles", total, configs.count)
         var completed = 0
         let sortedURLs = urls.sorted()
         // Keep a small number of requests in flight so a full sync is fast
         // without opening thousands of sockets or starving the game window.
         for batchStart in stride(from: 0, to: sortedURLs.count, by: 8) {
             guard !Task.isCancelled else {
-                NSLog("[ios2-macos][cdn] full resource prefetch cancelled: %ld/%ld", completed, total)
+                MacLog.info("[ios2-macos][cdn] full resource prefetch cancelled: %ld/%ld", completed, total)
                 return
             }
             let batch = Array(sortedURLs[batchStart..<min(batchStart + 8, sortedURLs.count)])
@@ -481,7 +489,7 @@ actor MacCDNResourceManager {
                             // Some native types use an extension not represented
                             // by the compact config. They remain available
                             // through lazy WebKit loading.
-                            NSLog("[ios2-macos][cdn] resource prefetch failed: %@ (%@)", urlString, error.localizedDescription)
+                            MacLog.warn("[ios2-macos][cdn] resource prefetch failed: %@ (%@)", urlString, error.localizedDescription)
                         }
                     }
                 }
@@ -489,10 +497,10 @@ actor MacCDNResourceManager {
             }
             completed += batch.count
             if completed == total || completed % 100 < batch.count {
-                NSLog("[ios2-macos][cdn] full resource prefetch progress: %ld/%ld", completed, total)
+                MacLog.debug("[ios2-macos][cdn] full resource prefetch progress: %ld/%ld", completed, total)
             }
         }
-        NSLog("[ios2-macos][cdn] full resource prefetch complete: %ld URLs", total)
+        MacLog.info("[ios2-macos][cdn] full resource prefetch complete: %ld URLs", total)
     }
 
     /// Full pvr/bin warm-up is deliberately detached from launch readiness:
@@ -503,14 +511,14 @@ actor MacCDNResourceManager {
         let key = manifest.bundleVersions.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: "&")
         guard fullPrefetchManifestKey != key else {
-            NSLog("[ios2-macos][cdn] full resource prefetch already running or complete")
+            MacLog.debug("[ios2-macos][cdn] full resource prefetch already running or complete")
             return
         }
         fullPrefetchManifestKey = key
         fullPrefetchTask = Task { [self] in
             await prefetchAllResources(from: manifest)
         }
-        NSLog("[ios2-macos][cdn] full resource prefetch continuing in background")
+        MacLog.debug("[ios2-macos][cdn] full resource prefetch continuing in background")
     }
 
     private func parseBundleConfig(bundle: String, data: Data) -> BundleConfig? {

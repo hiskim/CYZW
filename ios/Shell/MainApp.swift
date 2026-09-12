@@ -43,7 +43,14 @@ private struct ShellWindowRootView: View {
         ShellRootView(coordinator: coordinator)
             .preferredColorScheme(.dark)
             .task {
+                // 日志设置在任何日志产生之前就要就位：CDN 预热是启动期的
+                // 刷屏大户，晚一步就会漏掉一整段（也方便用 defaults write 临时改）。
+                MacLogSettings.shared.reload()
 #if os(macOS)
+                MacLog.info("[ios2-macos] log settings at launch: enabled=%@ level=%@ jsConsole=%@",
+                            MacLogSettings.shared.isEnabled ? "yes" : "no",
+                            MacLogSettings.shared.currentLevel.label,
+                            MacLogSettings.shared.forwardsJSConsoleEnabled ? "yes" : "no")
                 _ = await MacCDNResourceManager.shared.prepareForLaunch()
 #endif
             }

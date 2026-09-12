@@ -37,6 +37,7 @@
 		A1000000000000000000001E /* MacMatrixFit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001E /* MacMatrixFit.swift */; };
 		A1000000000000000000001F /* MacInputSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001F /* MacInputSync.swift */; };
 		A10000000000000000000021 /* MacFrameRate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* MacFrameRate.swift */; };
+		A10000000000000000000022 /* MacLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000022 /* MacLog.swift */; };
 /* End PBXBuildFile section */
 
 		A10000000000000000000020 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* Assets.xcassets */; };
@@ -52,6 +53,7 @@
 		A2000000000000000000001E /* MacMatrixFit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMatrixFit.swift; sourceTree = "<group>"; };
 		A2000000000000000000001F /* MacInputSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacInputSync.swift; sourceTree = "<group>"; };
 		A20000000000000000000021 /* MacFrameRate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacFrameRate.swift; sourceTree = "<group>"; };
+		A20000000000000000000022 /* MacLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacLog.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DesignTokenLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokenLoader.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* MacWebKitGameWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWebKitGameWindow.swift; sourceTree = "<group>"; };
 		A20000000000000000000019 /* MacMultiOpenManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMultiOpenManagerView.swift; sourceTree = "<group>"; };
@@ -114,6 +116,7 @@
 				A2000000000000000000001F /* MacInputSync.swift */,
 				A20000000000000000000018 /* MacCDNResourceManager.swift */,
 				A20000000000000000000021 /* MacFrameRate.swift */,
+				A20000000000000000000022 /* MacLog.swift */,
 				A20000000000000000000007 /* MockEngineHost.swift */,
 				A20000000000000000000008 /* PluginPanelView.swift */,
 				A20000000000000000000009 /* SettingsView.swift */,
@@ -257,6 +260,7 @@
 				A1000000000000000000001F,
 				A10000000000000000000018,
 				A10000000000000000000021,
+				A10000000000000000000022,
 				A10000000000000000000007,
 				A10000000000000000000008,
 				A10000000000000000000009,

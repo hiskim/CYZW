@@ -5,10 +5,11 @@ final class LoggerPlugin: PluginProtocol {
     let id = "com.xyzw.logger"
 
     func onLoad(context: PluginContext) async throws {
-        print("[LoggerPlugin] loaded for host \(context.targetHostID.uuidString)")
+        MacLog.info("[LoggerPlugin] loaded for host %@", context.targetHostID.uuidString)
     }
 
     func onEvent(_ event: EngineEvent, hostID: UUID) async {
-        print("[LoggerPlugin] host=\(hostID.uuidString) event=\(String(describing: event))")
+        // 每个事件一条，量不小：归到 debug，平时不进控制台。
+        MacLog.debug("[LoggerPlugin] host=%@ event=%@", hostID.uuidString, String(describing: event))
     }
 }
