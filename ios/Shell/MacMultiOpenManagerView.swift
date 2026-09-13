@@ -81,6 +81,18 @@ struct MacMultiOpenManagerView: View {
         }
     }
 
+    /// 账号 ID → 分组颜色：矩阵边框与侧栏分组标签使用同一套颜色配置。
+    /// 跳过「全部」伪分组，避免它的灰色覆盖真实分组颜色。
+    private var matrixGroupColorsByAccountID: [String: Color] {
+        accounts.groups
+            .filter { $0.id != AccountGroup.allID }
+            .reduce(into: [String: Color]()) { result, group in
+                for account in group.accounts {
+                    result[account.id] = group.macSwatchColor
+                }
+            }
+    }
+
     private func isRunning(_ account: Account) -> Bool {
         liveWorkspace.items.contains { $0.account.id == account.id }
     }
@@ -170,7 +182,13 @@ struct MacMultiOpenManagerView: View {
                     .frame(width: Self.trafficLightsClearance, height: Self.topDragHeight)
             }
         }
-        .task { accounts.refresh() }
+        .task {
+            accounts.refresh()
+            sync.configureGroups(accounts.groups)
+        }
+        .onChange(of: accounts.groups) { groups in
+            sync.configureGroups(groups)
+        }
         .fileImporter(isPresented: $isPresentingImporter,
                       allowedContentTypes: [UTType(filenameExtension: "bin") ?? .data],
                       allowsMultipleSelection: true) { result in
@@ -303,15 +321,26 @@ struct MacMultiOpenManagerView: View {
     /// 过滤按钮区数据源：全部 + 自定义分组 + 未分组（隐藏分组不显示）。
     private var filterChips: [GroupFilterView.ChipData] {
         accounts.groups.filter { !$0.isHidden }.map { group in
-            let running = group.accounts.filter { isRunning($0) }.count
+            let liveMembers = group.accounts.filter { isRunning($0) }
+            let masterID = sync.masterAccountID(in: group.id)
+            let masterOptions = liveMembers.map { account in
+                GroupFilterView.MasterOption(
+                    id: account.id,
+                    title: account.nickname,
+                    isSelected: masterID == account.id
+                )
+            }
             return GroupFilterView.ChipData(
                 id: group.id,
                 title: group.groupName,
-                detail: group.accounts.isEmpty ? nil : "\(running)/\(group.accounts.count)",
+                detail: group.accounts.isEmpty ? nil : "\(liveMembers.count)/\(group.accounts.count)",
                 color: group.macSwatchColor,
                 isSelected: group.id == AccountGroup.allID
                     ? accounts.selectedGroupID == nil || accounts.selectedGroupID == AccountGroup.allID
-                    : accounts.selectedGroupID == group.id
+                    : accounts.selectedGroupID == group.id,
+                supportsSync: group.id != AccountGroup.allID,
+                syncParticipantCount: liveMembers.filter { sync.isReceiver($0.id) }.count,
+                masterOptions: masterOptions
             )
         }
     }
@@ -325,6 +354,9 @@ struct MacMultiOpenManagerView: View {
             onStartGroup: startGroupByID,
             onStopGroup: stopGroupByID,
             onAddAccount: importIntoGroup,
+            onEnableSyncGroup: { groupID in sync.enableGroup(groupID) },
+            onDisableSyncGroup: { groupID in sync.disableGroup(groupID) },
+            onSetMaster: { groupID, accountID in sync.setMaster(accountID, in: groupID) },
             // 「＋增加分组」：打开分组弹窗并直接进入新建分组模式。
             onAddGroup: {
                 groupManagementMode = .create
@@ -654,39 +686,59 @@ struct MacMultiOpenManagerView: View {
         return "\(Int(matrixLayout.cardWidth))×\(Int(matrixLayout.gameHeight))"
     }
 
-    /// 群控状态胶囊：反映当前是「主控驱动」还是「互相同步」；没有同步时完全不占位，
+    /// 当前打开实例的 ID 集合。矩阵与群控使用同一份运行实例数据源。
+    private var liveSyncAccountIDs: Set<String> {
+        Set(matrixEntries.map { $0.account.id })
+    }
+
+    private var allLiveInstancesAreSyncing: Bool {
+        !liveSyncAccountIDs.isEmpty && liveSyncAccountIDs.allSatisfy { sync.isReceiver($0) }
+    }
+
+    /// 一键开启当前打开实例的同步。路由仍由中控按账号所属分组隔离。
+    @ViewBuilder
+    private var syncActionChip: some View {
+        if !liveSyncAccountIDs.isEmpty {
+            Button {
+                if allLiveInstancesAreSyncing {
+                    sync.disableAllSync()
+                } else {
+                    sync.enableAllLiveInstances()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: allLiveInstancesAreSyncing ? "link.circle.fill" : "link.circle")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(allLiveInstancesAreSyncing ? "同步已全开" : "一键开启同步")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(allLiveInstancesAreSyncing ? Color.white : Color.cyan)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule(style: .continuous).fill(allLiveInstancesAreSyncing ? Color.cyan.opacity(0.72) : Color.cyan.opacity(0.14)))
+                .overlay(Capsule(style: .continuous).strokeBorder(Color.cyan.opacity(0.55), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .hoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help(allLiveInstancesAreSyncing
+                  ? "关闭全部分组同步"
+                  : "一键开启当前已打开的 \(liveSyncAccountIDs.count) 个实例；事件只在各自分组内同步")
+        }
+    }
+
+    /// 群控状态胶囊：反映当前分组同步摘要；没有同步时完全不占位，
     /// 标题栏高度与密度分档不受影响。
     @ViewBuilder
     private var syncStatusChip: some View {
-        switch sync.mode {
-        case .masterDriven:
-            if let masterID = sync.masterAccountID {
-                let nickname = liveWorkspace.items
-                    .first { $0.account.id == masterID }?.account.nickname ?? "未运行"
-                let followers = sync.receiverCount
-                Button { sync.setMaster(nil) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "crown.fill").font(.system(size: 9, weight: .bold))
-                        Text(followers > 0 ? "\(nickname) · \(followers) 跟随" : "\(nickname) · 无跟随")
-                            .font(.system(size: 11, weight: .semibold))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(Color.yellow)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule(style: .continuous).fill(Color.yellow.opacity(0.14)))
-                    .overlay(Capsule(style: .continuous).strokeBorder(Color.yellow.opacity(0.55), lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .hoverHighlight(cornerRadius: 50, intensity: 0.12)
-                .help("主控：\(nickname)。点击取消主控，回到互相同步模式")
-            }
-        case .mutual:
-            let count = sync.receiverCount
-            Button { sync.disableAllReceivers() } label: {
+        let activeGroups = accounts.groups.filter { group in
+            group.id != AccountGroup.allID && sync.isGroupSyncEnabled(group.id)
+        }
+        if activeGroups.count > 1 {
+            Button { sync.disableAllSync() } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "link").font(.system(size: 9, weight: .bold))
-                    Text("互相同步 · \(count) 窗口")
+                    Image(systemName: "link.circle.fill").font(.system(size: 9, weight: .bold))
+                    Text("同步 \(activeGroups.count) 组 · \(sync.receiverCount) 窗口")
                         .font(.system(size: 11, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -698,9 +750,27 @@ struct MacMultiOpenManagerView: View {
             }
             .buttonStyle(.plain)
             .hoverHighlight(cornerRadius: 50, intensity: 0.12)
-            .help("无主控：任一参与窗口的操作都会同步到其余 \(count - 1) 个窗口。点击全部关闭参与同步")
-        case .idle:
-            EmptyView()
+            .help("当前有多个分组同步，点击关闭全部分组同步")
+        } else if let group = activeGroups.first {
+            let masterID = sync.masterAccountID(in: group.id)
+            let masterName = masterID.flatMap { id in group.accounts.first { $0.id == id }?.nickname }
+            Button { sync.disableGroup(group.id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: masterName == nil ? "link.circle.fill" : "crown.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(masterName.map { "\(group.groupName) · \($0) 主控" } ?? "\(group.groupName) · \(sync.receiverCount(in: group.id)) 窗口")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(masterName == nil ? Color.cyan : Color.yellow)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule(style: .continuous).fill((masterName == nil ? Color.cyan : Color.yellow).opacity(0.14)))
+                .overlay(Capsule(style: .continuous).strokeBorder((masterName == nil ? Color.cyan : Color.yellow).opacity(0.5), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .hoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("关闭「\(group.groupName)」分组同步")
         }
     }
 
@@ -739,8 +809,12 @@ struct MacMultiOpenManagerView: View {
             }
             .buttonStyle(MacManagerButtonStyle(tint: .gray))
             .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
-            Text("多开矩阵").font(.system(size: titleSize, weight: .bold))
+            Text("多开矩阵")
+                .font(.system(size: titleSize, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .help(count > 1 ? "\(count) 个活跃实例 · 每个账号独立 WebKit 会话" : "多开矩阵")
+            syncActionChip
             syncStatusChip
             Spacer()
             HStack(spacing: 6) {
@@ -831,7 +905,8 @@ struct MacMultiOpenManagerView: View {
                     // 注意：这里**不能**用 LazyVGrid。见 MacMatrixGrid 的说明。
                     MacMatrixGrid(rows: matrixRows(from: matrixEntries, columns: layout.columns),
                                   layout: layout,
-                                  workspace: liveWorkspace)
+                                  workspace: liveWorkspace,
+                                  groupColorsByAccountID: matrixGroupColorsByAccountID)
                     // minHeight 撑到可视区高度 → 实例少时垂直也居中，恰好放满时不滚动。
                     .frame(maxWidth: .infinity,
                            minHeight: MacMatrixCanvasMetrics.contentSize(from: viewport).height,
@@ -901,6 +976,12 @@ private struct AccountDeletionRequest: Identifiable {
 ///（如「增加分组」），随流式布局一起换行。刻意保持非泛型：泛型会让
 /// `GroupFilterView.ChipData` 这类嵌套类型引用必须写泛型参数。
 struct GroupFilterView: View {
+    struct MasterOption: Identifiable {
+        let id: String
+        let title: String
+        let isSelected: Bool
+    }
+
     struct ChipData: Identifiable {
         let id: String
         let title: String
@@ -908,6 +989,9 @@ struct GroupFilterView: View {
         let detail: String?
         let color: Color
         let isSelected: Bool
+        let supportsSync: Bool
+        let syncParticipantCount: Int
+        let masterOptions: [MasterOption]
     }
 
     let chips: [ChipData]
@@ -916,6 +1000,9 @@ struct GroupFilterView: View {
     let onStartGroup: (String) -> Void
     let onStopGroup: (String) -> Void
     let onAddAccount: (String) -> Void
+    let onEnableSyncGroup: (String) -> Void
+    let onDisableSyncGroup: (String) -> Void
+    let onSetMaster: (String, String?) -> Void
     /// 非 nil 时在标签列表末尾追加「增加分组」按钮（随流式布局换行）。
     var onAddGroup: (() -> Void)? = nil
     /// 非 nil 时在「增加分组」之后追加「管理分组」按钮。
@@ -988,6 +1075,36 @@ struct GroupFilterView: View {
                 Button { onStopGroup(chip.id) } label: {
                     Label("停止此组", systemImage: "stop.fill")
                 }
+                if chip.supportsSync {
+                    Divider()
+                    Button { onEnableSyncGroup(chip.id) } label: {
+                        Label("开启此组同步", systemImage: "link.circle.fill")
+                    }
+                    Button { onDisableSyncGroup(chip.id) } label: {
+                        Label("关闭此组同步", systemImage: "link.circle")
+                    }
+                    if !chip.masterOptions.isEmpty {
+                        Menu("设置组内主控") {
+                            ForEach(chip.masterOptions) { option in
+                                Button {
+                                    onSetMaster(chip.id, option.id)
+                                } label: {
+                                    if option.isSelected {
+                                        Label(option.title, systemImage: "checkmark")
+                                    } else {
+                                        Text(option.title)
+                                    }
+                                }
+                            }
+                            Divider()
+                            Button {
+                                onSetMaster(chip.id, nil)
+                            } label: {
+                                Label("取消本组主控", systemImage: "xmark")
+                            }
+                        }
+                    }
+                }
                 Divider()
                 Button { onAddAccount(chip.id) } label: {
                     Label("添加账号到此组", systemImage: "person.crop.badge.plus")
@@ -1010,6 +1127,13 @@ private struct GroupFilterChip: View {
                     Text(detail)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .opacity(0.75)
+                }
+                if data.supportsSync && data.syncParticipantCount > 0 {
+                    Image(systemName: "link.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("\(data.syncParticipantCount)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .opacity(0.85)
                 }
             }
             .font(.system(size: 12, weight: .medium))
@@ -1253,6 +1377,76 @@ private extension AccountGroup {
     }
 }
 
+/// 主控卡片专用边框动效：同组颜色的呼吸辉光 + 沿圆角外框循环移动的流光。
+///
+/// 动画状态隔离在本视图内，避免每一帧动画都让 WKWebView 卡片主体重新计算。
+private struct MacMasterBorderEffect: View {
+    let color: Color
+    let isActive: Bool
+
+    @State private var sweepAngle: Double = 0
+    @State private var isBreathing = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        ZStack {
+            if isActive {
+                // 外层柔光：呼吸时变亮/变暗，强化「这是当前主控」的识别度。
+                shape
+                    .stroke(color.opacity(isBreathing ? 0.72 : 0.30), lineWidth: 7)
+                    .blur(radius: 5)
+
+                // 内层流光：高亮点沿卡片四周循环移动，避免只看成一条静态粗边。
+                shape
+                    .strokeBorder(
+                        AngularGradient(
+                            colors: [
+                                color.opacity(0.16),
+                                color.opacity(0.78),
+                                Color.white.opacity(0.98),
+                                color.opacity(0.78),
+                                color.opacity(0.16)
+                            ],
+                            center: .center,
+                            angle: .degrees(sweepAngle)
+                        ),
+                        lineWidth: isBreathing ? 2.5 : 1.8
+                    )
+                    .opacity(isBreathing ? 1 : 0.78)
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            updateAnimation(isActive)
+        }
+        .onChange(of: isActive) { active in
+            updateAnimation(active)
+        }
+    }
+
+    private func updateAnimation(_ active: Bool) {
+        guard active else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                sweepAngle = 0
+                isBreathing = false
+            }
+            return
+        }
+
+        // 每次从普通卡片切为主控时从固定起点开始，避免接管后停在半截光带。
+        sweepAngle = 0
+        isBreathing = false
+        withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) {
+            sweepAngle = 360
+        }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+            isBreathing = true
+        }
+    }
+}
+
 private struct MacGameMatrixCell: View {
     let item: WorkspaceItem
     @ObservedObject var workspace: WorkspaceViewModel
@@ -1261,6 +1455,8 @@ private struct MacGameMatrixCell: View {
     let width: CGFloat
     /// 顶栏高度（单开 32 / 多开单行 24 / 多开多行 20），由 MacMatrixFit 决定。
     let headerHeight: CGFloat
+    /// 所属账号分组颜色：同组实例使用同一色相，不同组按分组配置区分。
+    let groupColor: Color
     @State private var reloadKey = UUID()
     /// 游戏画面高度：由宽度严格反推（9:16），与 MacMatrixFit 的求解口径一致。
     private var gameHeight: CGFloat { width / MacMatrixFit.gameAspect }
@@ -1276,20 +1472,23 @@ private struct MacGameMatrixCell: View {
     private var iconSize: CGFloat { density == .regular ? 11 : (density == .compact ? 10 : 9) }
     private var barPadding: CGFloat { density == .regular ? 9 : (density == .compact ? 7 : 5) }
     private var barSpacing: CGFloat { density == .regular ? 7 : (density == .compact ? 6 : 4) }
-    /// 群控开关：主窗口（👑 皇冠，全局唯一）/ 接收同步（🔗 链接，每窗口独立）。
+    /// 群控开关：主控在所属分组内唯一，参与同步按窗口独立设置。
+    private var syncGroupName: String { sync.groupName(for: item.account.id) }
     private var isMaster: Bool { sync.isMaster(item.account.id) }
     private var isReceiver: Bool { sync.isReceiver(item.account.id) }
     /// 两个群控按钮的命中区（dense 档收到 12pt，把空间让给昵称）。
     private var syncHitSize: CGFloat { density == .dense ? 12 : badgeSize }
     /// 🔗 的提示文案随模式变化：无主控时它是「互相广播」的一份子，有主控时纯接收。
     private var participateHelp: String {
-        if isMaster { return "主控不需要参与同步（自己的操作不会被回灌）" }
-        switch sync.mode {
-        case .masterDriven:
-            return isReceiver ? "关闭参与同步（不再接收主控的操作）" : "开启参与同步（接收主控的操作）"
-        case .mutual, .idle:
-            return isReceiver ? "关闭参与同步（本窗口不再参与互相同步）" : "开启参与同步（与其它参与窗口互相同步）"
+        if isMaster { return "\(syncGroupName)组主控不需要参与同步（自己的操作不会被回灌）" }
+        if sync.masterAccountID(in: sync.groupID(for: item.account.id)) != nil {
+            return isReceiver
+                ? "关闭\(syncGroupName)组参与同步（不再接收主控操作）"
+                : "开启\(syncGroupName)组参与同步（接收主控操作）"
         }
+        return isReceiver
+            ? "关闭\(syncGroupName)组参与同步（本窗口不再参与互相同步）"
+            : "开启\(syncGroupName)组参与同步（与其它同组窗口互相同步）"
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -1299,8 +1498,8 @@ private struct MacGameMatrixCell: View {
                     .frame(width: badgeSize, height: badgeSize).background(.white).clipShape(Circle())
                 Text(item.account.nickname).font(.system(size: nicknameSize, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 2)
-                // 👑 主控：全局唯一。点一次登基，再点一次退位（回到互相同步模式）。
-                // 没有主控时，所有开了 🔗 的窗口互相同步。
+                // 主控：在当前账号所属分组内唯一。点击可设为本组主控或退位。
+                // 没有本组主控时，本组开了同步的窗口互相同步。
                 Button { sync.toggleMaster(item.account.id) } label: {
                     Image(systemName: isMaster ? "crown.fill" : "crown")
                         .font(.system(size: iconSize, weight: .semibold))
@@ -1310,9 +1509,9 @@ private struct MacGameMatrixCell: View {
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight(cornerRadius: 4, intensity: 0.16)
-                .help(isMaster ? "取消主控（回到互相同步模式）" : "设为主控：此后只有此窗口的操作会同步出去")
-                .accessibilityLabel(isMaster ? "取消主控" : "设为主控")
-                // 🔗 参与同步：每个窗口独立开关。既是收件人；无主控时同时也是发言人。
+                .help(isMaster ? "取消\(syncGroupName)组主控" : "设为\(syncGroupName)组主控：只有此窗口的操作会同步出去")
+                .accessibilityLabel(isMaster ? "取消\(syncGroupName)组主控" : "设为\(syncGroupName)组主控")
+                // 参与同步：每个窗口独立开关。既是收件人；无本组主控时同时也是发言人。
                 Button { sync.toggleReceiver(item.account.id) } label: {
                     Image(systemName: isReceiver ? "link.circle.fill" : "link.circle")
                         .font(.system(size: iconSize, weight: .semibold))
@@ -1350,19 +1549,23 @@ private struct MacGameMatrixCell: View {
         .frame(width: width)
         // 卡片叠在已模糊 50 档的面板上，游戏 WebView 又几乎铺满卡面，
         // 再叠一层材质只会在圆角缝隙里可见、白耗一层模糊合成——只做 02/04/05/06。
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        // 04 1px 白描边（Inside 对齐）+ 05 顶边内高光：上亮下暗渐变描边
-        .overlay {
+        .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    // 主窗口换成金色描边：一眼看出哪张卡在发号施令。
-                    LinearGradient(colors: isMaster
-                                   ? [Color.yellow.opacity(0.9), Color.orange.opacity(0.45)]
-                                   : [Color.white.opacity(0.16), Color.white.opacity(0.10)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: isMaster ? 1.6 : 1
-                )
+                .fill(groupColor.opacity(0.06))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // 04 1px 分组描边（Inside 对齐）+ 05 顶边内高光：同组同色、不同组不同色。
+        // 主控保留同组基础边框，并叠加循环流光/呼吸效果，不改用黄色外框，避免破坏分组识别。
+        .overlay {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(colors: [groupColor.opacity(0.82), groupColor.opacity(0.42)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: isMaster ? 1.8 : 1.2
+                    )
+                MacMasterBorderEffect(color: groupColor, isActive: isMaster)
+            }
         }
         // 06 外投影：黑 35% / y 12 / blur≈32——卡片浮在画布玻璃上，投影比画布轻一档
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 12)
@@ -1389,6 +1592,7 @@ private struct MacMatrixGrid: View {
     let rows: [Row]
     let layout: MacMatrixLayout
     let workspace: WorkspaceViewModel
+    let groupColorsByAccountID: [String: Color]
 
     var body: some View {
         VStack(alignment: .center, spacing: MacMatrixFit.spacing) {
@@ -1398,7 +1602,9 @@ private struct MacMatrixGrid: View {
                         MacGameMatrixCell(item: item,
                                           workspace: workspace,
                                           width: layout.cardWidth,
-                                          headerHeight: layout.headerHeight)
+                                          headerHeight: layout.headerHeight,
+                                          groupColor: groupColorsByAccountID[item.account.id]
+                                              ?? Color(red: 0.56, green: 0.56, blue: 0.60))
                     }
                 }
                 // 末行可能不满列，左对齐；宽度锁定为网格真实占宽以便整体居中。

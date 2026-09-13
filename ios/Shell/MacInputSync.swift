@@ -143,33 +143,43 @@ final class MacGameInstanceRegistry {
 enum MacSyncMode {
     /// 没人参与同步（没有主控，参与者 < 2）。
     case idle
-    /// 无主控：所有开启 🔗 的窗口**互相同步**——操作任意一个，其余参与者全部跟随。
+    /// 无主控：同一分组内开启同步的窗口互相同步。
     case mutual
-    /// 有主控：只有 👑 主控发号施令，子窗口静默。
+    /// 有主控：同一分组内只有主控发号施令，子窗口静默。
     case masterDriven
 }
 
-/// 键鼠同步（群控 / 镜像操作）的中控——**主从 + 互相同步混合模式**。
+/// 一个同步分组的运行时状态。分组成员来自账号库，参与名单只记录当前会话。
+struct MacInputSyncGroupState: Equatable {
+    let id: String
+    var masterAccountID: String?
+    var receiverAccountIDs: Set<String> = []
+}
+
+/// 键鼠同步（群控 / 镜像操作）的中控。
 ///
-/// 路由规则（本次重构的核心）：
-/// ```
-/// 有 👑 主控：  主控 → 所有开启 🔗 的窗口（主控自己不被回灌）
-///               其它窗口 → 谁也不发（子窗口静默）
-/// 无 👑 主控：  任一开启 🔗 的窗口 → 其余所有开启 🔗 的窗口（互相广播）
-///               未开启 🔗 的窗口既不发也不收
-/// ```
-/// 也就是说 🔗「参与同步」同时决定**收**和（无主控时的）**发**；
-/// 👑 一旦出现，就把「发」的权限收归主控独占。
-///
-/// 主窗口退位：关闭主控 → `retire(accountID:)` → 主控置空 → 自动回落到互相同步模式。
+/// 路由以账号库现有分组为隔离边界：每个分组拥有独立的参与名单和主控，
+/// 事件永远只在发送者所属分组内广播，不会跨 A / B / C 组串线。
 @MainActor
 final class MacInputSyncController: ObservableObject {
     static let shared = MacInputSyncController()
 
-    /// 当前主控的账号 ID（nil = 无主控，走互相同步模式）。
-    @Published private(set) var masterAccountID: String?
-    /// 开启了「参与同步」🔗 的账号 ID 集合：收件人名单，也是无主控时的发言人名单。
-    @Published private(set) var receiverAccountIDs: Set<String> = []
+    /// 分组 ID → 分组内同步状态。`AccountGroup.allID` 是展示用伪分组，不参与同步。
+    @Published private(set) var groupStates: [String: MacInputSyncGroupState] = [:]
+    /// 账号 ID → 所属同步分组 ID，由账号库分组树同步进来。
+    private var accountGroupIDs: [String: String] = [:]
+    private var groupNames: [String: String] = [:]
+
+    /// 兼容旧 UI 的聚合查询：真正的路由不会使用这两个全局聚合值。
+    var receiverAccountIDs: Set<String> {
+        groupStates.values.reduce(into: Set<String>()) { result, state in
+            result.formUnion(state.receiverAccountIDs)
+        }
+    }
+    var masterAccountID: String? {
+        groupStates.values.compactMap(\.masterAccountID).first
+    }
+    var receiverCount: Int { receiverAccountIDs.count }
 
     /// mousemove 是否同步（关掉可以省掉大量 IPC，点击/按键不受影响）。
     @Published var syncMouseMove = true
@@ -183,27 +193,115 @@ final class MacInputSyncController: ObservableObject {
     /// 按账号分别节流：互相同步模式下多个窗口可能交替发言，不能共用一把尺子。
     private var lastMoveSentAt: [String: TimeInterval] = [:]
 
-    // MARK: 查询
+    // MARK: 分组配置
 
-    func isMaster(_ accountID: String) -> Bool { masterAccountID == accountID }
-    func isReceiver(_ accountID: String) -> Bool { receiverAccountIDs.contains(accountID) }
-    var receiverCount: Int { receiverAccountIDs.count }
+    /// 将账号库当前的分组树注册到群控中控。
+    ///
+    /// `全部` 只是筛选伪分组，跳过它；未归组账号统一落到 `未分组`。
+    /// 现有参与状态和主控会按账号 ID 跟随账号移动到新分组，避免改名或调整归属后
+    /// 产生隐形串组。
+    func configureGroups(_ groups: [AccountGroup]) {
+        var nextAccountGroupIDs: [String: String] = [:]
+        var nextGroupNames: [String: String] = [:]
+        let realGroups = groups.filter { $0.id != AccountGroup.allID }
+        for group in realGroups {
+            nextGroupNames[group.id] = group.groupName
+            for account in group.accounts {
+                nextAccountGroupIDs[account.id] = group.id
+            }
+        }
+        nextGroupNames[AccountGroup.ungroupedID] = Account.defaultGroupName
 
-    /// 当前模式：有主控即 masterDriven；无主控且 ≥2 个参与者才算真的在互相同步。
+        let validGroupIDs = Set(realGroups.map(\.id)).union([AccountGroup.ungroupedID])
+        let oldReceivers = receiverAccountIDs
+        let oldMasters = groupStates.values.compactMap(\.masterAccountID)
+        var nextStates = Dictionary(uniqueKeysWithValues: validGroupIDs.map { groupID in
+            (groupID, MacInputSyncGroupState(id: groupID, masterAccountID: nil))
+        })
+
+        for accountID in oldReceivers {
+            guard let groupID = nextAccountGroupIDs[accountID] else { continue }
+            nextStates[groupID]?.receiverAccountIDs.insert(accountID)
+        }
+        for accountID in oldMasters {
+            guard let groupID = nextAccountGroupIDs[accountID] else { continue }
+            // 同一账号只能属于一个分组；如果一次批量移动造成主控冲突，保留先遇到的主控。
+            if nextStates[groupID]?.masterAccountID == nil {
+                nextStates[groupID]?.masterAccountID = accountID
+            }
+        }
+
+        accountGroupIDs = nextAccountGroupIDs
+        groupNames = nextGroupNames
+        groupStates = nextStates
+
+        // 分组变更可能改变主控/参与者角色，立即把新捕获状态写回存活页面。
+        for accountID in MacGameInstanceRegistry.shared.liveAccountIDs() {
+            pushCaptureState(to: accountID)
+        }
+    }
+
+    func groupID(for accountID: String) -> String {
+        accountGroupIDs[accountID] ?? AccountGroup.ungroupedID
+    }
+
+    func groupName(for accountID: String) -> String {
+        groupNames[groupID(for: accountID)] ?? Account.defaultGroupName
+    }
+
+    func groupName(forGroupID groupID: String) -> String {
+        groupNames[groupID] ?? Account.defaultGroupName
+    }
+
+    func masterAccountID(in groupID: String) -> String? {
+        groupStates[groupID]?.masterAccountID
+    }
+
+    func receiverCount(in groupID: String) -> Int {
+        groupStates[groupID]?.receiverAccountIDs.count ?? 0
+    }
+
+    func isGroupSyncEnabled(_ groupID: String) -> Bool {
+        receiverCount(in: groupID) > 0 || masterAccountID(in: groupID) != nil
+    }
+
+    var activeGroupCount: Int {
+        groupStates.values.filter { !$0.receiverAccountIDs.isEmpty || $0.masterAccountID != nil }.count
+    }
+
+    /// 当前全局摘要仅用于兼容旧标题栏；真正的 UI 应优先展示分组状态。
     var mode: MacSyncMode {
-        if masterAccountID != nil { return .masterDriven }
+        if groupStates.values.contains(where: { $0.masterAccountID != nil }) { return .masterDriven }
         return receiverAccountIDs.count >= 2 ? .mutual : .idle
     }
 
-    /// 该实例此刻是否应当**捕获**自己的键鼠事件。
-    /// 有主控时只有主控捕获；无主控时每个参与者都捕获（互相同步）。
-    func shouldCapture(_ accountID: String) -> Bool {
-        Self.shouldCapture(master: masterAccountID, receivers: receiverAccountIDs, account: accountID)
+    // MARK: 查询
+
+    func isMaster(_ accountID: String) -> Bool {
+        let groupID = groupID(for: accountID)
+        return groupStates[groupID]?.masterAccountID == accountID
     }
 
-    /// 该实例此刻是否**允许向外发送**事件。
+    func isReceiver(_ accountID: String) -> Bool {
+        let groupID = groupID(for: accountID)
+        return groupStates[groupID]?.receiverAccountIDs.contains(accountID) == true
+    }
+
+    /// 该实例此刻是否应当捕获自己的键鼠事件。
+    /// 有主控时只有本组主控捕获；无主控时本组参与者捕获。
+    func shouldCapture(_ accountID: String) -> Bool {
+        let state = groupStates[groupID(for: accountID)]
+        return Self.shouldCapture(master: state?.masterAccountID,
+                                  receivers: state?.receiverAccountIDs ?? [],
+                                  account: accountID)
+    }
+
+    /// 该实例此刻是否允许向外发送事件。
     func canSend(from accountID: String) -> Bool {
-        Self.canSend(master: masterAccountID, receivers: receiverAccountIDs, sender: accountID)
+        let state = groupStates[groupID(for: accountID)]
+        return Self.canSend(master: state?.masterAccountID,
+                            receivers: state?.receiverAccountIDs ?? [],
+                            sender: accountID)
     }
 
     // MARK: 路由真值表（纯函数，可脱离 WebKit 单测）
@@ -222,7 +320,7 @@ final class MacInputSyncController: ObservableObject {
         return receivers.contains(account)
     }
 
-    /// 一次事件的回放目标 = 参与名单 − 发言者自己 − 主控（主控模式下发言者即主控）。
+    /// 一次事件的回放目标 = 本分组参与名单 − 发言者自己 − 本分组主控。
     /// 不允许发言时返回空集。
     static func routingTargets(master: String?,
                                receivers: Set<String>,
@@ -236,71 +334,128 @@ final class MacInputSyncController: ObservableObject {
 
     // MARK: 主控
 
-    /// 设为主控 / 取消（全局唯一）。
+    /// 设为所属分组的主控 / 取消所属分组主控。
     func toggleMaster(_ accountID: String) {
-        setMaster(masterAccountID == accountID ? nil : accountID)
+        let groupID = groupID(for: accountID)
+        setMaster(groupStates[groupID]?.masterAccountID == accountID ? nil : accountID, in: groupID)
     }
 
+    /// 兼容旧调用：传 nil 时取消所有分组主控，传账号 ID 时设置其所属分组主控。
     func setMaster(_ accountID: String?) {
-        let previous = masterAccountID
-        masterAccountID = accountID
-        // 主控一变，整体格局就变（有主控 → 参与者停止捕获；无主控 → 参与者全部开始捕获），
-        // 所以旧主控、新主控、以及所有参与者都要重新写捕获开关。
-        var affected = receiverAccountIDs
+        guard let accountID else {
+            for groupID in Array(groupStates.keys) { setMaster(nil, in: groupID) }
+            return
+        }
+        setMaster(accountID, in: groupID(for: accountID))
+    }
+
+    func setMaster(_ accountID: String?, in groupID: String) {
+        var state = groupStates[groupID] ?? MacInputSyncGroupState(id: groupID, masterAccountID: nil)
+        let previous = state.masterAccountID
+        if let accountID {
+            guard self.groupID(for: accountID) == groupID else { return }
+            state.masterAccountID = accountID
+        } else {
+            state.masterAccountID = nil
+        }
+        groupStates[groupID] = state
+
+        // 主控一变，旧主控、新主控和本组参与者都要重新写捕获开关。
+        var affected = state.receiverAccountIDs
         if let previous { affected.insert(previous) }
         if let accountID { affected.insert(accountID) }
         for id in affected { pushCaptureState(to: id) }
         guard let accountID else { return }
         pushRipple(showsRipple, to: accountID)
-        // 键盘事件只会派发给第一响应者，设为主控时顺手把焦点抢过来。
         MacGameInstanceRegistry.shared.view(for: accountID)?.focusWebView()
     }
 
     // MARK: 参与开关
 
     func toggleReceiver(_ accountID: String) {
-        setReceiver(accountID, enabled: !receiverAccountIDs.contains(accountID))
+        setReceiver(accountID, enabled: !isReceiver(accountID))
     }
 
-    /// 每个窗口独立的「参与同步」🔗 开关：既是收件人，也是无主控时的发言人。
+    /// 每个窗口独立的「参与同步」开关：既是收件人，也是无主控时的发言人。
     func setReceiver(_ accountID: String, enabled: Bool) {
+        let groupID = groupID(for: accountID)
+        var state = groupStates[groupID] ?? MacInputSyncGroupState(id: groupID, masterAccountID: nil)
         if enabled {
-            receiverAccountIDs.insert(accountID)
+            state.receiverAccountIDs.insert(accountID)
         } else {
-            receiverAccountIDs.remove(accountID)
+            state.receiverAccountIDs.remove(accountID)
         }
-        // 无主控时参与开关直接决定自己是否捕获；有主控时非主控恒为 false，写一次也不会错。
+        groupStates[groupID] = state
         pushCaptureState(to: accountID)
     }
 
-    /// 一键关闭所有参与（顶部「互相同步」胶囊的点击动作）。
+    /// 一键开启当前已经打开的全部实例；开启后仍按各自所属分组隔离路由。
+    @discardableResult
+    func enableAllLiveInstances() -> Int {
+        let liveIDs = Set(MacGameInstanceRegistry.shared.liveAccountIDs())
+        for accountID in liveIDs { setReceiver(accountID, enabled: true) }
+        return liveIDs.count
+    }
+
+    /// 一键开启指定分组中当前已经打开的实例。
+    @discardableResult
+    func enableGroup(_ groupID: String) -> Int {
+        let liveIDs = Set(MacGameInstanceRegistry.shared.liveAccountIDs())
+            .filter { self.groupID(for: $0) == groupID }
+        for accountID in liveIDs { setReceiver(accountID, enabled: true) }
+        return liveIDs.count
+    }
+
+    /// 关闭指定分组同步，并清掉该分组的主控配置。
+    func disableGroup(_ groupID: String) {
+        guard var state = groupStates[groupID] else { return }
+        var affected = state.receiverAccountIDs
+        if let master = state.masterAccountID { affected.insert(master) }
+        state.receiverAccountIDs.removeAll()
+        state.masterAccountID = nil
+        groupStates[groupID] = state
+        for id in affected { pushCaptureState(to: id) }
+    }
+
+    /// 一键关闭所有参与（保留旧语义：只取消参与名单，不主动清主控）。
     func disableAllReceivers() {
         let ids = receiverAccountIDs
-        receiverAccountIDs.removeAll()
+        for groupID in Array(groupStates.keys) {
+            groupStates[groupID]?.receiverAccountIDs.removeAll()
+        }
         for id in ids { pushCaptureState(to: id) }
+    }
+
+    /// 一键关闭全部分组同步。
+    func disableAllSync() {
+        let groupIDs = Array(groupStates.keys)
+        for groupID in groupIDs { disableGroup(groupID) }
     }
 
     // MARK: 生命周期
 
-    /// 实例关闭：主控退位 + 摘掉参与标记。
-    /// 由账号级关闭（WorkspaceViewModel.close）调用；卡片重载只是换 WebView，
-    /// 不走这里，所以重载不会莫名其妙丢掉主控身份。
+    /// 实例关闭：从所属分组摘掉参与标记；如果它是本组主控则退位。
+    /// 卡片重载只是换 WebView，不走这里，所以重载不会丢掉主控身份。
     func retire(accountID: String) {
-        let wasMaster = masterAccountID == accountID
-        receiverAccountIDs.remove(accountID)
-        // 主控退位：置空后自动回落到互相同步模式（其余参与者重新打开捕获）。
-        if wasMaster { setMaster(nil) }
+        let groupID = groupID(for: accountID)
+        guard var state = groupStates[groupID] else { return }
+        let wasMaster = state.masterAccountID == accountID
+        state.receiverAccountIDs.remove(accountID)
+        if wasMaster { state.masterAccountID = nil }
+        groupStates[groupID] = state
+        if wasMaster {
+            for id in state.receiverAccountIDs { pushCaptureState(to: id) }
+        }
     }
 
-    /// 页面加载完成 / 实例重建后，把「是否捕获」重新写回页面
-    /// （WKUserScript 只在导航时注入，重载后必须补一次，否则脚本在但开关是关的）。
+    /// 页面加载完成 / 实例重建后，把「是否捕获」重新写回页面。
     func refreshCapture(forAccountID accountID: String) {
         pushCaptureState(to: accountID)
     }
 
     // MARK: 事件分发
 
-    /// 收到一个实例的事件 → 按当前模式决定谁能发、发给谁 → 逐个回放。
+    /// 收到一个实例的事件 → 按其所属分组决定谁能发、发给谁 → 逐个回放。
     func publish(_ event: MacInputSyncEvent, from accountID: String) {
         guard canSend(from: accountID) else { return }
         if event.isMove {
@@ -309,9 +464,10 @@ final class MacInputSyncController: ObservableObject {
             if let last = lastMoveSentAt[accountID], now - last < moveInterval { return }
             lastMoveSentAt[accountID] = now
         }
-        // 收件人 = 参与名单 − 发言者自己 − 主控（主控模式下发言者即主控，一并排除）。
-        let targets = Self.routingTargets(master: masterAccountID,
-                                          receivers: receiverAccountIDs,
+        let groupID = groupID(for: accountID)
+        let state = groupStates[groupID]
+        let targets = Self.routingTargets(master: state?.masterAccountID,
+                                          receivers: state?.receiverAccountIDs ?? [],
                                           sender: accountID)
         guard !targets.isEmpty, let literal = event.javaScriptLiteral else { return }
         let script = MacInputSyncScript.replay(literal: literal)
@@ -329,17 +485,16 @@ final class MacInputSyncController: ObservableObject {
         )
     }
 
-    /// 波纹开关：to 为 nil 时下发给所有参与同步的实例（主窗口 + 接收方）。
+    /// 波纹开关：to 为 nil 时下发给所有分组的主控和参与者。
     private func pushRipple(_ enabled: Bool, to accountID: String? = nil) {
         let script = MacInputSyncScript.setRipple(enabled)
         if let accountID {
             MacGameInstanceRegistry.shared.evaluate(script, accountID: accountID)
             return
         }
-        if let masterAccountID {
-            MacGameInstanceRegistry.shared.evaluate(script, accountID: masterAccountID)
-        }
-        for id in receiverAccountIDs {
+        var ids = receiverAccountIDs
+        ids.formUnion(groupStates.values.compactMap(\.masterAccountID))
+        for id in ids {
             MacGameInstanceRegistry.shared.evaluate(script, accountID: id)
         }
     }

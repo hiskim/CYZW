@@ -82,15 +82,19 @@ final class AccountLibraryViewModel: ObservableObject {
         definitionGroups.sorted(by: Self.isOrderedBefore)
     }
 
-    /// 右侧矩阵数据源：展平所有分组中处于运行中的账号。
+    /// 右侧矩阵数据源：按「未分组 → 自定义分组 sortOrder」展平运行中的账号。
     /// 运行状态由视图层注入（WorkspaceViewModel 中存在同 ID 实例即视为运行中）。
     ///
     /// 必须跳过「全部」伪分组：它的成员与其余分组完全重叠，直接 flatMap
     /// 会把每个运行中的账号数两遍（2 开被算成 4 开）——矩阵按 4 列适配、
     /// 实际只渲染 2 张卡，卡片尺寸偏小且高度占不满。
+    ///
+    /// 这里不直接依赖 `groups` 当前数组的偶然排列，而是显式建立稳定分组顺序；
+    /// 这样先启动 A 组、再启动 B 组时，矩阵仍按分组连续排列，不会被启动时序打散。
     func runningAccounts(isRunning: (Account) -> Bool) -> [Account] {
-        groups
-            .filter { $0.id != AccountGroup.all.id }
+        let ungrouped = groups.first(where: { $0.id == AccountGroup.ungroupedID })
+        let ordered = (ungrouped.map { [$0] } ?? []) + orderedGroups
+        return ordered
             .flatMap(\.accounts)
             .filter(isRunning)
     }
