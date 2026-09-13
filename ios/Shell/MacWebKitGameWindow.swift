@@ -155,19 +155,51 @@ enum MacWebKitGameWindowController {
 
         let controller = NSWindowController(window: window)
         windows[identifier] = controller
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: window,
-            queue: .main
-        ) { _ in
-            Task { @MainActor in
-                gameView.stop()
-                windows.removeValue(forKey: identifier)
+        // 观察器必须显式注销：`addObserver(forName:object:queue:using:)` 的 block
+        // 会被 NotificationCenter 强持有，而 block 又捕获了 window / gameView，
+        // 不注销的话窗关了整棵子图（含 WKWebView 与整局游戏）都不会被释放。
+        // token 挂在 window 自身上，随 window 一起回收，不会引入新的循环。
+        window.ios2SetWindowWillCloseObserver(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak window] _ in
+                Task { @MainActor in
+                    gameView.stop()
+                    windows.removeValue(forKey: identifier)
+                    window?.ios2RemoveWindowWillCloseObserver()
+                }
             }
-        }
+        )
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         gameView.start()
+    }
+}
+
+private final class IOS2ObserverTokenBox {
+    var token: NSObjectProtocol?
+}
+
+private enum IOS2ObserverAssociatedKey {
+    static var windowWillClose: UInt8 = 0
+}
+
+private extension NSWindow {
+    func ios2SetWindowWillCloseObserver(_ token: NSObjectProtocol) {
+        let box = IOS2ObserverTokenBox()
+        box.token = token
+        objc_setAssociatedObject(self, &IOS2ObserverAssociatedKey.windowWillClose,
+                                 box, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    func ios2RemoveWindowWillCloseObserver() {
+        guard let box = objc_getAssociatedObject(self, &IOS2ObserverAssociatedKey.windowWillClose)
+                as? IOS2ObserverTokenBox,
+              let token = box.token else { return }
+        NotificationCenter.default.removeObserver(token)
+        box.token = nil
     }
 }
 
