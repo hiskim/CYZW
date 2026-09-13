@@ -1046,6 +1046,54 @@
         });
     }
 
+    // 原生入口（main.js）取到 manifest 之后会把原始 body 挂到
+    // `cc.sys.manifestResult.rawData`，并额外导出 codeVersion / resourceVersion /
+    // battleVersion（`cc.sys.ios2ResourceVersion`）。AppController.mm 里也写明：
+    // 「battleVersion and other manifest metadata are consumed by game scripts
+    //   through cc.sys.manifestResult.rawData」。
+    // WebKit 路径原先只把 bundleVers 并进 settings，manifest 本体随即被丢掉，
+    // 远端 launcher / 活动代码拿到的版本状态是空的，只能回落到包内旧常量
+    // —— 表现为活动判定「版本不对」。这里与原生路径对齐。
+    function installManifestVersionState(manifest, bundleVers) {
+        try {
+            var rawData = manifest || {};
+            cc.sys.manifestResult = { code: 0, error: null, rawData: rawData };
+            var codeVersion = (bundleVers && bundleVers.codeVersion) || '';
+            var resourceVersion = (bundleVers && bundleVers.COMMIT_ID) || '';
+            var battleVersion = rawData.battleVersion || '';
+            cc.sys.ios2ResourceVersion = {
+                codeVersion: codeVersion,
+                resourceVersion: resourceVersion,
+                battleVersion: battleVersion
+            };
+            console.log('[ios2-web] manifest state: code=' + codeVersion +
+                ', resource=' + resourceVersion + ', battle=' + battleVersion);
+            if (!battleVersion) return;
+            // 远端代码既直接读 window.BATTLE_VERSION，也读 PlatformManager
+            // 的返回值，而包内 / 远端 bundle 里可能带着旧的兜底值。跟原生
+            // main.js 一样用 getter 钉死成清单里的值，避免被旧值覆盖。
+            var descriptor = Object.getOwnPropertyDescriptor(window, 'BATTLE_VERSION');
+            if (!descriptor || descriptor.configurable) {
+                Object.defineProperty(window, 'BATTLE_VERSION', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function () { return battleVersion; },
+                    set: function (value) {
+                        if (value !== battleVersion) {
+                            console.warn('[ios2-web] ignored stale BATTLE_VERSION=' + value +
+                                ', manifest=' + battleVersion);
+                        }
+                    }
+                });
+            } else {
+                window.BATTLE_VERSION = battleVersion;
+            }
+        } catch (error) {
+            console.warn('[ios2-web] manifest state unavailable: ' +
+                ((error && (error.stack || error.message)) || error));
+        }
+    }
+
     function boot() {
         console.log('[ios2-web] boot revision', IOS2_WEB_RUNTIME_REVISION);
         installAssetReleaseHooks();
@@ -1061,7 +1109,7 @@
         if (liveBundleVers && typeof liveBundleVers === 'object') {
             settings.bundleVers = Object.assign({}, bundledVers, liveBundleVers);
         }
-        window.BATTLE_VERSION = manifest.battleVersion || window.BATTLE_VERSION;
+        installManifestVersionState(manifest, settings.bundleVers);
         settings.platform = 'web-mobile';
         settings.server = 'ios2-game://app/cdn';
         settings.remoteBundles = settings.remoteBundles || [];
