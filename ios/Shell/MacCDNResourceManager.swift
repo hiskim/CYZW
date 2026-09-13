@@ -48,6 +48,54 @@ actor MacCDNResourceManager {
     private let manifestURL: URL
     private var index: [String: CacheRecord]
     private var missingURLs: [String: Date]
+    /// 最近一批 404 的时间戳（滑动窗口）。
+    ///
+    /// 一次 CDN 抖动会在几十秒内返回成百上千个 404。若照单全收地记进黑名单并
+    /// 落盘，接下来整个 TTL 内这些资源一律「秒失败、不发网络请求」，画面会大
+    /// 面积缺图——实测曾出现 19 分钟内写入 8171 条（其中 5105 条是 icons）。
+    /// 所以窗口内 404 超过阈值时判定为**故障**而非「资源真的不存在」，只报错、
+    /// 不记录。
+    private var recentNotFound: [Date] = []
+    /// 404 名单有改动待落盘（配合 `missingFlushTask` 做合并写）。
+    private var missingDirty = false
+    private var missingFlushTask: Task<Void, Never>?
+    /// 缓存索引有改动待落盘（配合 `indexFlushTask` 做合并写）。
+    private var indexDirty = false
+    private var indexFlushTask: Task<Void, Never>?
+    /// 滑动窗口内允许记入黑名单的 404 条数，超过即判定为故障。
+    private static let notFoundBurstLimit = 24
+    /// 404 滑动窗口长度（秒）。
+    private static let notFoundBurstWindow: TimeInterval = 60
+    /// 被认定「确实不存在」后的屏蔽时长。
+    private static let missingTTL: TimeInterval = 6 * 60 * 60
+
+    /// 已缓存资源的内容缓存，**跨实例共享**。
+    ///
+    /// `MacCDNResourceManager` 是 actor，方法串行执行；而缓存命中走的是
+    /// `Data(contentsOf:)` 同步磁盘读，读的时候一直占着 actor。多开切场景时
+    /// 请求量是「实例数 × 资源数」，这些同步读会排成一条长队，队尾的实例
+    /// 就表现为「元素加载不完」。
+    ///
+    /// 关键点：所有实例请求的是**同一批 URL**（同一个游戏），所以这里一份
+    /// 内存副本就能服务全部实例——第二次命中（含其他实例）既不碰磁盘、
+    /// 也不占 actor。来回切场景的收益尤其大，因为每次切回来都是同一批资源。
+    private static let contentCache = NSCache<NSString, NSData>()
+    /// 内容缓存上限（字节）。按成本淘汰，超过就交给 NSCache 自己丢。
+    private static let contentCacheLimit = 256 * 1024 * 1024
+
+    /// 记录一次 404，返回 true 表示当前处于 404 风暴（不应记入黑名单）。
+    private func noteNotFound() -> Bool {
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-Self.notFoundBurstWindow)
+        if recentNotFound.count > Self.notFoundBurstLimit * 4 {
+            recentNotFound = recentNotFound.filter { $0 > cutoff }
+        } else {
+            recentNotFound = recentNotFound.filter { $0 > cutoff }
+        }
+        recentNotFound.append(now)
+        return recentNotFound.count >= Self.notFoundBurstLimit
+    }
+
     private var latestManifestValue: MacCDNManifest?
     private var preparationTask: Task<MacCDNManifest, Error>?
     private var manifestTask: Task<MacCDNManifest, Error>?
@@ -71,6 +119,7 @@ actor MacCDNResourceManager {
         let applicationSupport = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? manager.urls(for: .cachesDirectory, in: .userDomainMask).first!
         self.fileManager = manager
+        Self.contentCache.totalCostLimit = Self.contentCacheLimit
         cacheDirectory = applicationSupport
             .appendingPathComponent("IOS2", isDirectory: true)
             .appendingPathComponent("CDN", isDirectory: true)
@@ -86,7 +135,14 @@ actor MacCDNResourceManager {
         }
         if let data = try? Data(contentsOf: missingURL),
            let records = try? JSONDecoder().decode([String: Date].self, from: data) {
-            missingURLs = records.filter { $0.value > Date() }
+            let live = records.filter { $0.value > Date() }
+            missingURLs = live
+            // 顺手瘦身：过期条目留在文件里只会让后续每次全量重写都更贵。
+            if live.count != records.count {
+                MacLog.info("[ios2-macos][cdn] pruning %ld expired missing URL record(s)",
+                            Int64(records.count - live.count))
+                scheduleMissingPersist()
+            }
         } else {
             missingURLs = [:]
         }
@@ -226,6 +282,7 @@ actor MacCDNResourceManager {
         latestManifestValue = nil
         index.removeAll()
         missingURLs.removeAll()
+        Self.contentCache.removeAllObjects()
 
         try? fileManager.removeItem(at: filesDirectory)
         try? fileManager.removeItem(at: indexURL)
@@ -305,13 +362,21 @@ actor MacCDNResourceManager {
         let generation = cacheGeneration
         if let expiry = missingURLs[key] {
             if expiry > Date() {
-                MacLog.debug("[ios2-macos][cdn] known missing (skip retry): %@", key)
+                // warn 而不是 debug：默认档位是 info，debug 根本不会输出，
+                // 一旦有资源被误屏蔽，控制台里一点痕迹都没有，无从排查。
+                MacLog.warn("[ios2-macos][cdn] known missing (skip retry): %@", key)
                 throw URLError(.fileDoesNotExist)
             }
             missingURLs[key] = nil
             persistMissingURLs()
         }
+        // 内存副本优先：既不用碰磁盘，也不用排 actor 的队。多开时这份副本
+        // 服务的是**所有实例**，来回切场景时基本全是命中。
+        if let hit = Self.contentCache.object(forKey: key as NSString) {
+            return hit as Data
+        }
         if let cached = try cachedData(for: key) {
+            Self.contentCache.setObject(cached as NSData, forKey: key as NSString, cost: cached.count)
             // sha256 只为了打这一行日志。缓存命中是**每个资源一次**的热路径
             // （一个 bundle 几百个文件），开关关掉时必须连哈希一起省掉，
             // 否则「关日志」只省了打印、没省掉比打印更贵的计算。
@@ -324,7 +389,9 @@ actor MacCDNResourceManager {
         }
         if let download = downloads[key] {
             MacLog.verbose("[ios2-macos][cdn] waiting for shared download: %@", key)
-            return try await download.value
+            let data = try await download.value
+            Self.contentCache.setObject(data as NSData, forKey: key as NSString, cost: data.count)
+            return data
         }
 
         MacLog.verbose("[ios2-macos][cdn] %@ network download started: %@", source, key)
@@ -346,6 +413,7 @@ actor MacCDNResourceManager {
             let data = try await download.value
             guard generation == cacheGeneration else { throw CancellationError() }
             try store(data: data, for: key)
+            Self.contentCache.setObject(data as NSData, forKey: key as NSString, cost: data.count)
             downloads[key] = nil
             // 同上：整包 sha256 只在真的要打这条日志时才算。
             if MacLog.isEnabled(.debug) {
@@ -354,9 +422,17 @@ actor MacCDNResourceManager {
             return data
         } catch {
             if ((error as NSError).userInfo["ios2StatusCode"] as? Int) == 404 {
-                missingURLs[key] = Date().addingTimeInterval(24 * 60 * 60)
-                persistMissingURLs()
-                MacLog.warn("[ios2-macos][cdn] recorded missing URL for 24h: %@", key)
+                if noteNotFound() {
+                    // 404 风暴：当作 CDN 故障处理，只报错不屏蔽。否则一次抖动
+                    // 会把上千个资源钉死一个 TTL，画面大面积缺图。
+                    MacLog.error("[ios2-macos][cdn] 404 burst (%ld in %gs), not blacklisting: %@",
+                                 Int64(recentNotFound.count), Self.notFoundBurstWindow, key)
+                } else {
+                    missingURLs[key] = Date().addingTimeInterval(Self.missingTTL)
+                    persistMissingURLs()
+                    MacLog.warn("[ios2-macos][cdn] recorded missing URL for %gh: %@",
+                                Self.missingTTL / 3600, key)
+                }
             }
             downloads[key] = nil
             throw error
@@ -611,8 +687,30 @@ actor MacCDNResourceManager {
         let fileURL = filesDirectory.appendingPathComponent(relativePath)
         try data.write(to: fileURL, options: .atomic)
         index[key] = CacheRecord(path: relativePath, byteCount: data.count, storedAt: Date())
-        let indexData = try JSONEncoder().encode(index)
-        try indexData.write(to: indexURL, options: .atomic)
+        // 索引落盘是**全量重写**（无增量格式），实测已长到 6.2MB。若每缓存一个
+        // 资源就编码 + 原子写一次，多开批量预热时等于持续重写几 MB 文件，
+        // 既吃 CPU 也吃磁盘 I/O。改成标脏 + 合并写。
+        scheduleIndexPersist()
+    }
+
+    private static let indexPersistDelay: Duration = .seconds(5)
+
+    private func scheduleIndexPersist() {
+        indexDirty = true
+        guard indexFlushTask == nil else { return }
+        indexFlushTask = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: MacCDNResourceManager.indexPersistDelay)
+            await self?.flushIndex()
+        }
+    }
+
+    private func flushIndex() {
+        indexFlushTask = nil
+        guard indexDirty else { return }
+        indexDirty = false
+        guard let data = try? JSONEncoder().encode(index) else { return }
+        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try? data.write(to: indexURL, options: .atomic)
     }
 
     private static func sha256(_ data: Data) -> String {
@@ -625,7 +723,24 @@ actor MacCDNResourceManager {
         try data.write(to: manifestURL, options: .atomic)
     }
 
-    private func persistMissingURLs() {
+    /// 404 名单的落盘是**全量重写**（没有增量格式）。文件曾膨胀到 1.1MB /
+    /// 8171 条，风暴期每来一个 404 就整个重写一次，等于持续往磁盘灌数 GB。
+    /// 所以写入一律合并：先标脏，最多每 `missingPersistDelay` 落一次。
+    private static let missingPersistDelay: Duration = .seconds(5)
+
+    private func scheduleMissingPersist() {
+        missingDirty = true
+        guard missingFlushTask == nil else { return }
+        missingFlushTask = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: MacCDNResourceManager.missingPersistDelay)
+            await self?.flushMissingURLs()
+        }
+    }
+
+    private func flushMissingURLs() {
+        missingFlushTask = nil
+        guard missingDirty else { return }
+        missingDirty = false
         guard !missingURLs.isEmpty else {
             try? fileManager.removeItem(at: missingURL)
             return
@@ -634,6 +749,10 @@ actor MacCDNResourceManager {
         if let data = try? JSONEncoder().encode(missingURLs) {
             try? data.write(to: missingURL, options: .atomic)
         }
+    }
+
+    private func persistMissingURLs() {
+        scheduleMissingPersist()
     }
 
     private func loadPersistedManifest() -> MacCDNManifest? {

@@ -1877,6 +1877,7 @@
                     console.log('[ios2-web] pixel ratio',
                         'device=' + devicePixelRatio,
                         'quality=' + quality,
+                        'instances=' + ((window.__IOS2_GAME_INSTANCE__ || {}).instanceCount || 1),
                         'selected=' + webPixelRatio,
                         'retina=' + cc.view.isRetinaEnabled());
                     cc.director.loadScene(settings.launchScene, function (sceneError) {

@@ -5,6 +5,10 @@ import Foundation
 import SwiftUI
 import WebKit
 
+/// 主线程慢调用探针阈值（秒）。看门狗只报「主线程卡了 N ms」不报来源，卡顿
+/// 又淹在一堆 RBS 噪音里，只能自己在嫌疑点埋点。定位完可整体删掉。
+private let ios2SlowMainWorkThreshold: CFTimeInterval = 0.03
+
 /// SwiftUI bridge used by the macOS multi-open matrix. Each representable
 /// creates a fresh `MacWebKitGameView`, and therefore a fresh non-persistent
 /// website data store and isolated game session. The matrix is the 多开
@@ -64,6 +68,10 @@ final class MacGameInstancePool {
     func existingSurface(forAccountID accountID: String) -> MacWebKitGameView? {
         surfaces[accountID]
     }
+
+    /// 池中存活的实例数。多开矩阵用它决定渲染像素比——画布 backing store 是
+    /// **每个实例各一份**，总开销随开号数线性上涨，不降档就会把 GPU 撑爆。
+    var liveCount: Int { surfaces.count }
 
     /// 由"重新登录"按钮调用：仅记录意图，真正的销毁推迟到 SwiftUI 拆除旧格子
     /// 之后、下一次 `surface(for:)` 时执行。
@@ -656,6 +664,8 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // 但与画质不同，运行中的实例会被设置面板即时改写——走 MacFrameRate 的
         // 「暂停→等待旧主循环退出→重启」路径，不走 cc.game.setFrameRate（有缺陷）。
         let frameRate = MacFrameRate.current()
+        // 多开时把实例数告诉页面：WebRuntime 据此压低渲染像素比。独立窗口恒为 1。
+        let instanceCount = scriptEnvironment == .multi ? MacGameInstancePool.shared.liveCount : 1
         return """
         // 日志配置必须第一个落地：后面所有的 console 调用都要读它决定要不要
         // 回传原生（含本脚本自己打的那一条）。放晚了会漏掉启动期最吵的一段。
@@ -670,6 +680,7 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
           // macOS matrix cells are resizable multi-open surfaces. This also
           // enables the web bootstrap's EXACT_FIT policy to avoid side bars.
           multiOpen: true,
+          instanceCount: \(instanceCount),
           startupMode: 'serial',
           scripts: [],
           manifest: \(manifestValue),
@@ -758,6 +769,14 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+            if ms >= ios2SlowMainWorkThreshold * 1000 {
+                let kind = (message.body as? [String: Any])?["type"] as? String ?? "?"
+                MacLog.warn("[ios2-macos] slow main work: script message '%@' took %.0f ms", kind, ms)
+            }
+        }
         guard message.name == "ios2Game" else { return }
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else {
             MacLog.warn("[ios2-macos] WebKit event: %@", String(describing: message.body))
@@ -842,6 +861,60 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         // （池化实例重载 / 复用时文档已经加载过，注入时机对不上）。
         syncFrameRateHUD()
         startStorageSync()
+        applyAudioPolicy()
+    }
+
+    // MARK: 多开静音
+
+    /// 多开时是否静音（默认开）。
+    ///
+    /// N 个实例同时播放 = N 路音频解码 + N 个 'WebKit Media Playback' 进程断言
+    /// 请求（那条断言我们拿不到 entitlement，注定失败）。实测 14 开时声音卡顿、
+    /// 内容加载也会被拖住。多开场景下没人能同时听十几路，默认静掉。
+    static let muteInMultiOpenDefaultsKey = "ios2.audio.muteInMultiOpen"
+
+    private func applyAudioPolicy() {
+        guard scriptEnvironment == .multi else { return }
+        let defaults = UserDefaults.standard
+        let muted = defaults.object(forKey: Self.muteInMultiOpenDefaultsKey) as? Bool ?? true
+        let script = """
+        (function () {
+          var muted = \(muted ? "true" : "false");
+          var volume = muted ? 0 : 1;
+          var tries = 0;
+          function apply() {
+            try {
+              if (!(window.cc && cc.audioEngine)) return false;
+              if (muted) {
+                // 光设 0 不够：游戏后续会自己调回来，所以静音时把 setter 顶掉。
+                if (!cc.audioEngine.__ios2Muted) {
+                  cc.audioEngine.__ios2OrigSetMusic = cc.audioEngine.setMusicVolume;
+                  cc.audioEngine.__ios2OrigSetEffects = cc.audioEngine.setEffectsVolume;
+                  cc.audioEngine.__ios2Muted = true;
+                }
+                cc.audioEngine.__ios2OrigSetMusic.call(cc.audioEngine, 0);
+                cc.audioEngine.__ios2OrigSetEffects.call(cc.audioEngine, 0);
+                cc.audioEngine.setMusicVolume = function () {};
+                cc.audioEngine.setEffectsVolume = function () {};
+              } else if (cc.audioEngine.__ios2Muted) {
+                cc.audioEngine.__ios2Muted = false;
+                cc.audioEngine.setMusicVolume = cc.audioEngine.__ios2OrigSetMusic;
+                cc.audioEngine.setEffectsVolume = cc.audioEngine.__ios2OrigSetEffects;
+                cc.audioEngine.setMusicVolume(volume);
+                cc.audioEngine.setEffectsVolume(volume);
+              }
+              return true;
+            } catch (error) { return false; }
+          }
+          // cc.audioEngine 要等 Cocos 起来才有，这里轮询等一下。
+          if (!apply()) {
+            var timer = setInterval(function () {
+              if (apply() || ++tries > 60) clearInterval(timer);
+            }, 250);
+          }
+        })();
+        """
+        evaluateJavaScript(script)
     }
 
     /// 按当前设置同步帧率角标（显示 / 隐藏）。
@@ -1152,19 +1225,58 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         MacLog.verbose("[ios2-macos] CDN request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
+        let token = ObjectIdentifier(urlSchemeTask as AnyObject)
+        // 先扫一遍有没有悬挂的任务。urlSchemeTask **永远不会被完成**的话，
+        // 页面里那个资源就永久挂起——表现正是「某个实例随机丢元素」，而且概率性
+        // 单实例失败说明不是全局资源问题，就是这种静默丢失。
+        reportStalePendingTasks()
+        pending[token] = (requestURL.absoluteString, Date())
         Task { @MainActor [weak self] in
             do {
                 let data = try await MacCDNResourceManager.shared.data(for: remoteURL, source: "game")
-                self?.respond(urlSchemeTask, data: data, url: requestURL,
-                              cacheControl: Self.remoteCacheControl(for: remoteURL))
+                self?.pending[token] = nil
+                guard let self else {
+                    // handler 已随游戏视图释放。以前这里是 `self?.respond(...)`
+                    // 静默丢弃，任务永远完不成；改成明确报错，好定位。
+                    MacLog.error("[ios2-macos] scheme handler released, response dropped: %@",
+                                 requestURL.absoluteString)
+                    return
+                }
+                self.respond(urlSchemeTask, data: data, url: requestURL,
+                             cacheControl: Self.remoteCacheControl(for: remoteURL))
             } catch {
+                self?.pending[token] = nil
                 MacLog.error("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
-                self?.fail(urlSchemeTask, code: (error as NSError).code)
+                guard let self else {
+                    MacLog.error("[ios2-macos] scheme handler released, failure dropped: %@",
+                                 requestURL.absoluteString)
+                    return
+                }
+                self.fail(urlSchemeTask, code: (error as NSError).code)
             }
         }
     }
 
+    /// 进行中的 urlSchemeTask（主线程访问）。
+    private var pending: [ObjectIdentifier: (url: String, startedAt: Date)] = [:]
+    /// 悬挂阈值：超过这么久还没被完成的请求，几乎不可能再被完成了。
+    private static let pendingStaleAfter: TimeInterval = 20
+    private var lastStaleReportAt: Date = .distantPast
+
+    private func reportStalePendingTasks() {
+        let now = Date()
+        guard now.timeIntervalSince(lastStaleReportAt) > 10 else { return }
+        lastStaleReportAt = now
+        for (_, entry) in pending where now.timeIntervalSince(entry.startedAt) >= Self.pendingStaleAfter {
+            MacLog.error("[ios2-macos] scheme task never completed (%.0fs): %@",
+                         now.timeIntervalSince(entry.startedAt), entry.url)
+        }
+    }
+
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        // 必须摘掉：这是 WebKit 主动取消（导航变化 / 页面重载），不是悬挂。
+        // 不清掉的话看门狗会把正常取消误报成「请求永远没完成」。
+        pending[ObjectIdentifier(urlSchemeTask as AnyObject)] = nil
         // The shared actor may still finish a request for another window.
         // WebKit ignores callbacks for a stopped scheme task, so no per-window
         // cancellation or cache bookkeeping is needed here.
@@ -1262,6 +1374,14 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private func respond(_ task: WKURLSchemeTask, data: Data, url: URL, cacheControl: String) {
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+            if ms >= ios2SlowMainWorkThreshold * 1000 {
+                MacLog.warn("[ios2-macos] slow main work: scheme respond %@ (%ld B) took %.0f ms",
+                            url.lastPathComponent, Int64(data.count), ms)
+            }
+        }
         // Fetch/XHR only exposes `ok` and `status` when the custom scheme
         // returns an HTTP response. A plain URLResponse makes a successful
         // CDN download look like status 0 to the WebKit runtime.
