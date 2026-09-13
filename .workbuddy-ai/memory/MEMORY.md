@@ -1,5 +1,26 @@
 # CYZW 项目长期记忆
 
+## 客户端版本号（4 处硬编码，改版要一起动）
+
+- `ios/Shell/MacCDNResourceManager.swift` 的 `manifestVersion`（拉清单的 version 参数）
+- `ios/Shell/MacWebKitGameWindow.swift` HSDK `game-init` 回包的 `gameVersion`
+- `ios-cocos/cocos-project/jsb-adapter/game-defines.js` 的 `GAME_VERSION` / `CODE_VERSION` / `RESOURCE_MANIFEST_VERSION`
+- `ios-cocos/.../ios/AppController.mm` 的 `kIOS2GameVersion`
+- 服务端 `POST https://xxz-xyzw.hortorgames.com/login/manifest?platform=hortor&version=<v>`
+  按**白名单**返回代码包，不在名单里就没有 bundleVers（2026-09 实测：0.28~0.33、0.35 有值，
+  0.34/0.36+ 为空；0.33.0-ios → codeVersion 2.45.3，是最新一档）。换版本前先用这条命令探一遍。
+
+## 原生路径 vs WebKit 路径的版本状态（活动/功能开关的常见坑）
+
+- 原生入口 `cocos-project/main.js` 拿到 manifest 后会落地
+  `cc.sys.manifestResult.rawData`、`cc.sys.ios2ResourceVersion{codeVersion,resourceVersion,battleVersion}`，
+  并用 getter 锁死 `window.BATTLE_VERSION`；远端 launcher 与活动代码正是从这些全局读版本元数据。
+- WebKit 入口 `cocos-project/src/ios2-web-boot.js` 必须同步做到同样三件事
+  （已补 `installManifestVersionState`）。以后在这两个入口加「manifest 派生状态」时，**两边都要加**，
+  否则只有 macOS 端出现「版本不对 / 功能不开放」。
+- Xcode 的 "Copy WebRuntime" 构建阶段把 `cocos-project/src`、`assets`、`jsb-adapter/game-defines.js`
+  拷进 app，改这些源码需要重新构建才生效。
+
 ## 多开矩阵布局（用户明确的设计约束）
 
 - **单实例游戏窗口必须严格保持 9:16**。禁止用横向填充、裁切上下留白、
