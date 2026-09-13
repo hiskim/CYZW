@@ -120,6 +120,9 @@ actor MacCDNResourceManager {
             ?? manager.urls(for: .cachesDirectory, in: .userDomainMask).first!
         self.fileManager = manager
         Self.contentCache.totalCostLimit = Self.contentCacheLimit
+        // 条目上限同样要设：只按字节算成本时，几张 1.4MB 的活动页 PVR 就能把
+        // 上千个小图标挤出去，而多开时图标正是每个场景都要重读的那批。
+        Self.contentCache.countLimit = 8192
         cacheDirectory = applicationSupport
             .appendingPathComponent("IOS2", isDirectory: true)
             .appendingPathComponent("CDN", isDirectory: true)
@@ -375,7 +378,7 @@ actor MacCDNResourceManager {
         if let hit = Self.contentCache.object(forKey: key as NSString) {
             return hit as Data
         }
-        if let cached = try cachedData(for: key) {
+        if let cached = await cachedData(for: key) {
             Self.contentCache.setObject(cached as NSData, forKey: key as NSString, cost: cached.count)
             // sha256 只为了打这一行日志。缓存命中是**每个资源一次**的热路径
             // （一个 bundle 几百个文件），开关关掉时必须连哈希一起省掉，
@@ -395,10 +398,20 @@ actor MacCDNResourceManager {
         }
 
         MacLog.verbose("[ios2-macos][cdn] %@ network download started: %@", source, key)
-        let download = Task.detached(priority: .utility) {
+        // 游戏内的请求不能按后台预取对待。
+        //
+        // 优先级：`.utility` 是给「不急的活」用的，系统会把它排在用户等待的
+        // 工作之后。多开时十来个实例同时在拉资源，这类任务很容易被饿死——
+        // 而它卡住的不是一个实例，是所有 `await downloads[key]` 在等它的实例。
+        //
+        // 超时：90s 对预取没问题，但对游戏内请求太长了。一个资源卡住 90s，
+        // 画面上这一块就空了 90s，而 Cocos 那边配了 `maxRetryCount: 4`——
+        // 早点失败让它重试，第二次基本都能命中原生缓存，比干等划算得多。
+        let interactive = (source == "game")
+        let download = Task.detached(priority: interactive ? .userInitiated : .utility) {
             var request = URLRequest(url: remoteURL)
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            request.timeoutInterval = 90
+            request.timeoutInterval = interactive ? 30 : 90
             request.setValue("*/*", forHTTPHeaderField: "Accept")
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
@@ -662,16 +675,34 @@ actor MacCDNResourceManager {
         return String(uuid.prefix(8)) + "-" + String(uuid.dropFirst(8).prefix(4)) + "-" + String(uuid.dropFirst(12).prefix(4)) + "-" + String(uuid.dropFirst(16).prefix(4)) + "-" + String(uuid.dropFirst(20))
     }
 
-    private func cachedData(for key: String) throws -> Data? {
+    /// 命中的磁盘副本（**异步**）。
+    ///
+    /// 必须是 async：磁盘读不能占着 actor 的串行上下文。多开时请求量是
+    /// 「实例数 × 资源数」，10 个实例同时切场景就是几千次读盘；每次都在
+    /// actor 里同步 `Data(contentsOf:)`，这些读会排成一条长队，队尾实例的
+    /// 回调要等前面几百次 I/O 全部走完——它的资源就「到得特别晚」，
+    /// 晚到跨过场景切换的装配窗口，画面元素就缺了。而且实例是随机的：
+    /// 谁排在队尾谁倒霉，跟资源本身没关系。
+    private func cachedData(for key: String) async -> Data? {
         guard let record = index[key] else { return nil }
         let fileURL = filesDirectory.appendingPathComponent(record.path).standardizedFileURL
         let prefix = filesDirectory.standardizedFileURL.path + "/"
-        guard fileURL.path.hasPrefix(prefix), fileManager.fileExists(atPath: fileURL.path) else {
+        guard fileURL.path.hasPrefix(prefix) else {
             index[key] = nil
             return nil
         }
-        let data = try Data(contentsOf: fileURL)
-        guard data.count == record.byteCount else {
+        let byteCount = record.byteCount
+        // 存在性检查 + 读盘一起放到后台：这一步本身也是一次 stat 系统调用，
+        // 放在 actor 里同样会阻塞后面所有实例。
+        let result = await Task.detached(priority: .utility) { () -> Data? in
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+            return try? Data(contentsOf: fileURL)
+        }.value
+        guard let data = result else {
+            index[key] = nil
+            return nil
+        }
+        guard data.count == byteCount else {
             index[key] = nil
             try? fileManager.removeItem(at: fileURL)
             return nil

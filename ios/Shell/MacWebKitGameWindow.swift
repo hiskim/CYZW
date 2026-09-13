@@ -79,7 +79,7 @@ final class MacGameInstancePool {
         }
         let view = MacWebKitGameView(account: account, scriptEnvironment: environment)
         surfaces[account.id] = view
-        view.start()
+        enqueueStartup(view)
         return view
     }
 
@@ -91,10 +91,25 @@ final class MacGameInstancePool {
     /// **每个实例各一份**，总开销随开号数线性上涨，不降档就会把 GPU 撑爆。
     var liveCount: Int { surfaces.count }
 
-    /// 由"重新登录"按钮调用：仅记录意图，真正的销毁推迟到 SwiftUI 拆除旧格子
-    /// 之后、下一次 `surface(for:)` 时执行。
-    func requestReload(accountID: String) {
-        reloadPending.insert(accountID)
+    /// 每个账号的**自动**渲染兜底重载次数。
+    ///
+    /// 必须记在池里而不是视图里：每次重载都会换一个新的 `MacWebKitGameView`，
+    /// 视图内的计数会随之归零，于是「最多自动重载 N 次」这条闸门形同虚设，
+    /// 遇到持续性故障时就会变成无限重启循环。
+    private var automaticRenderReloads: [String: Int] = [:]
+
+    func automaticRenderReloadCount(forAccountID accountID: String) -> Int {
+        automaticRenderReloads[accountID] ?? 0
+    }
+
+    /// 记一次自动重载。**只累加，不清零**（清零会让闸门失效）。
+    func noteAutomaticRenderReload(forAccountID accountID: String) {
+        automaticRenderReloads[accountID, default: 0] += 1
+    }
+
+    /// 生命周期重新开始（用户手动重载、实例关闭）：计数归零。
+    func resetAutomaticRenderReloads(forAccountID accountID: String) {
+        automaticRenderReloads[accountID] = nil
     }
 
     /// Genuine teardown: the instance is being closed.
@@ -104,9 +119,90 @@ final class MacGameInstancePool {
     func destroy(accountID: String) {
         destroyPending.insert(accountID)
         reloadPending.remove(accountID)
+        resetAutomaticRenderReloads(forAccountID: accountID)
+        cancelPendingStartup(accountID: accountID)
         guard let view = surfaces.removeValue(forKey: accountID) else { return }
         view.removeFromSuperview()
         view.stop()
+    }
+
+    /// 用户主动点的「重新登录」：生命周期重来，自动重载闸门一起归零。
+    func requestReload(accountID: String) {
+        resetAutomaticRenderReloads(forAccountID: accountID)
+        cancelPendingStartup(accountID: accountID)
+        reloadPending.insert(accountID)
+    }
+
+    // MARK: 启动并发闸门
+
+    /// 同时进入启动流程的实例上限。
+    ///
+    /// 一个实例启动要做的事：拉 16.6MB 的 game bundle、解析几百张 PVR、把纹理
+    /// 逐张上传 GPU。而 scheme handler 的回传全在主线程、CDN actor 是串行队列。
+    /// N 个实例同时启动会瞬间把主线程和 GPU 进程打满，队尾那几个实例的资源
+    /// 回调排在几百条请求后面——画面上就是「随机几个实例元素不全」。
+    ///
+    /// 限制并发后每个实例都能拿到完整的 I/O 与 GPU 时间片。取 2 而不是 1：
+    /// 完全串行会让 14 开慢到无法接受，2 路既能压下峰值又不至于排队太久。
+    private static let concurrentStartupLimit = 2
+    /// 一个启动槽位的最长占用时间。ready 迟迟不来（加载失败等）也不能把
+    /// 后面的实例永久堵死。
+    private static let startupSlotTimeout: TimeInterval = 90
+
+    private var startupQueue: [MacWebKitGameView] = []
+    private var startingAccounts: Set<String> = []
+    private var startupTimeouts: [String: DispatchWorkItem] = [:]
+
+    func enqueueStartup(_ view: MacWebKitGameView) {
+        startupQueue.append(view)
+        pumpStartupQueue()
+    }
+
+    /// 页面报告启动沉降完成（`type: 'ready'`），释放槽位给下一个实例。
+    func noteInstanceReady(accountID: String) {
+        guard startingAccounts.remove(accountID) != nil else { return }
+        startupTimeouts.removeValue(forKey: accountID)?.cancel()
+        MacLog.info("[ios2-macos] startup slot released: %@ (queued=%ld)",
+                    accountID, Int64(startupQueue.count))
+        pumpStartupQueue()
+    }
+
+    /// 实例被关闭 / 重载：不管它现在是在排队还是在启动，一律撤下。
+    func cancelPendingStartup(accountID: String) {
+        startupQueue.removeAll { $0.startupAccountID == accountID }
+        startingAccounts.remove(accountID)
+        startupTimeouts.removeValue(forKey: accountID)?.cancel()
+    }
+
+    private func pumpStartupQueue() {
+        guard !startupQueue.isEmpty else { return }
+        var released = 0
+        while startingAccounts.count < Self.concurrentStartupLimit, !startupQueue.isEmpty {
+            let view = startupQueue.removeFirst()
+            let accountID = view.startupAccountID
+            startingAccounts.insert(accountID)
+            released += 1
+            MacLog.info("[ios2-macos] startup slot acquired: %@ (active=%ld, queued=%ld)",
+                        accountID, Int64(startingAccounts.count), Int64(startupQueue.count))
+            scheduleStartupTimeout(accountID)
+            view.start()
+        }
+        if released == 0, !startupQueue.isEmpty {
+            MacLog.debug("[ios2-macos] startup slots busy, %ld instance(s) waiting",
+                         Int64(startupQueue.count))
+        }
+    }
+
+    private func scheduleStartupTimeout(_ accountID: String) {
+        startupTimeouts[accountID]?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            MacLog.warn("[ios2-macos] startup slot timed out after %.0fs: %@",
+                        Self.startupSlotTimeout, accountID)
+            self.noteInstanceReady(accountID: accountID)
+        }
+        startupTimeouts[accountID] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.startupSlotTimeout, execute: work)
     }
 }
 
@@ -456,6 +552,31 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     private var storageSyncTask: Task<Void, Never>?
     private var isStopped = false
 
+    // MARK: 渲染完整性
+
+    /// 渲染健康账本，配合 WebRuntime 的 `render` 自检上报。
+    ///
+    /// Cocos 对「画不出来」是静默跳过的，画面缺块不会有任何 JS 错误。
+    /// 所以只能靠引擎侧的定期自检告诉我们「现在有几个节点画不出来」，
+    /// 由原生判断是不是真的坏了、要不要兜底重载。
+    private struct RenderHealth {
+        /// 连续报告「有缺失」的采样次数（WebRuntime 每 12s 一次）。
+        var badSamples = 0
+        /// 已自动重载的次数，用于防止无限重启循环。
+        var autoReloads = 0
+    }
+
+    private var renderHealth = RenderHealth()
+
+    /// 连续多少个采样周期仍报缺失，才认定「不是加载中，是真的坏了」。
+    /// 12s × 3 = 36s：足够排除切场景时的大批资源在途，又不至于让用户盯着残缺画面太久。
+    private static let renderIntegrityBadSampleLimit = 3
+    /// 单个实例最多自动重载几次。超过就只报警不再动，避免重启循环。
+    private static let renderIntegrityAutoReloadLimit = 2
+
+    /// 渲染完整性兜底重载通知。`object` 为 nil，`userInfo` 带 `accountID` 与 `reason`。
+    static let renderIntegrityReloadNotification = Notification.Name("MacWebKitGameView.renderIntegrityReload")
+
     /// 游戏内设置的存储分区：默认所有账号共用一份（"shared"），
     /// 关闭共享开关后按 `Account.id`（= 账号文件名，跨启动稳定）各自一份。
     private var accountStorageKey: String { account.id }
@@ -551,6 +672,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         let value = try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
         return value as? String
     }
+
+    /// 启动队列记账用的稳定标识（= 账号文件名 ID，跨重载稳定）。
+    var startupAccountID: String { account.id }
 
     /// 抢焦点：键盘事件只会派发给第一响应者，主窗口必须是它。
     func focusWebView() {
@@ -877,6 +1001,23 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
             MacLog.warn("[ios2-macos] WebGL %@: %@",
                         body["event"] as? String ?? "event",
                         body["message"] as? String ?? "")
+        case "ready":
+            // 页面启动沉降完成（场景已加载、资源不再变动）：释放启动槽位。
+            // 多开时靠这个把「N 个实例同时抢 I/O 和 GPU」变成排队通过。
+            let stable = (body["stable"] as? Bool) ?? true
+            let elapsed = body["elapsedMs"] as? Int ?? 0
+            MacLog.info("[ios2-macos] instance ready: assets=%@ pending=%@ elapsed=%ldms stable=%@",
+                        String(describing: body["assets"] ?? "?"),
+                        String(describing: body["pendingDownloads"] ?? "?"),
+                        Int64(elapsed), stable ? "yes" : "no")
+            MacGameInstancePool.shared.noteInstanceReady(accountID: account.id)
+        case "render":
+            handleRenderIntegrity(body)
+        case "webgl-fatal":
+            // 上下文丢了且没恢复。Cocos 2.4 的 gfx 后端没有任何重建路径，
+            // 局部补纹理救不回 program / buffer / VAO，只能整页重载。
+            MacLog.error("[ios2-macos] WebGL context unrecoverable, reloading instance")
+            requestRenderIntegrityReload(reason: "webgl context lost")
         case "error":
             MacLog.error("[ios2-macos] JS error: %@", body["message"] as? String ?? "Unknown error")
         case "frameRate":
@@ -901,10 +1042,14 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation?, withError error: Error) {
+        // 导航失败就等不到页面的 ready 了，必须手动放掉启动槽位，
+        // 否则后面的实例要白等满 90s 超时。
+        MacGameInstancePool.shared.noteInstanceReady(accountID: account.id)
         showNavigationError(error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation?, withError error: Error) {
+        MacGameInstancePool.shared.noteInstanceReady(accountID: account.id)
         showNavigationError(error)
     }
 
@@ -992,6 +1137,73 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
             let payload = (value as? String) ?? "nil / \(error?.localizedDescription ?? "no error")"
             MacLog.debug("[ios2-macos] fps hud diag: %@", payload)
         }
+    }
+
+    // MARK: 渲染完整性兜底
+
+    /// 处理 WebRuntime 的渲染完整性自检上报。
+    ///
+    /// 上报口径见 `ios2-web-boot.js` 的 `collectRenderIntegrity()`：只统计
+    /// 「在层级里激活 + 自身可见 + 挂了 spriteFrame」的组件里纹理仍未 loaded 的，
+    /// 也就是**画面上真的缺的那一块**，不是切场景时的在途噪音。
+    private func handleRenderIntegrity(_ body: [String: Any]) {
+        let missingTexture = body["missingTexture"] as? Int ?? 0
+        let missingMaterial = body["missingMaterial"] as? Int ?? 0
+        let missing = missingTexture + missingMaterial
+        let visible = body["visible"] as? Int ?? 0
+        let reason = body["reason"] as? String ?? "unknown"
+
+        guard missing > 0 else {
+            if renderHealth.badSamples > 0 {
+                MacLog.info("[ios2-macos] render integrity recovered after %ld degraded sample(s)",
+                            Int64(renderHealth.badSamples))
+            }
+            renderHealth.badSamples = 0
+            return
+        }
+        // 上下文已丢的场景交给 webgl-fatal 单独兜底，这里不重复触发。
+        guard (body["contextLost"] as? Bool) != true else {
+            MacLog.warn("[ios2-macos] render integrity degraded while WebGL context is lost; deferring to webgl-fatal")
+            return
+        }
+
+        renderHealth.badSamples += 1
+        MacLog.warn("[ios2-macos] render integrity degraded (%@): missing=%ld/%ld texture=%ld material=%ld samples=%@",
+                    reason,
+                    Int64(missing), Int64(visible),
+                    Int64(missingTexture), Int64(missingMaterial),
+                    body["samples"] as? String ?? "")
+        guard renderHealth.badSamples >= Self.renderIntegrityBadSampleLimit else {
+            MacLog.info("[ios2-macos] render integrity: %ld/%ld degraded sample(s), waiting for self recovery",
+                        Int64(renderHealth.badSamples), Int64(Self.renderIntegrityBadSampleLimit))
+            return
+        }
+        requestRenderIntegrityReload(reason: "missing \(missing)/\(visible) after \(renderHealth.badSamples) samples")
+    }
+
+    /// 触发一次兜底重载：整页重新登录。
+    ///
+    /// 这不是「重试」，而是承认局部状态已经不可信。Cocos 的渲染管线没有自愈
+    /// 路径：纹理补上也不会自动重算 render data（assembler 那一帧早已提前
+    /// return），而如果缺失发生在资源装配阶段，连补纹理都补不回来。
+    /// 重新拉起一局是最省事、也最可靠的兜底。
+    private func requestRenderIntegrityReload(reason: String) {
+        guard !isStopped else { return }
+        let pool = MacGameInstancePool.shared
+        let used = pool.automaticRenderReloadCount(forAccountID: account.id)
+        guard used < Self.renderIntegrityAutoReloadLimit else {
+            MacLog.error("[ios2-macos] render integrity still failing after %ld auto reload(s), stop retrying: %@",
+                         Int64(used), reason)
+            return
+        }
+        pool.noteAutomaticRenderReload(forAccountID: account.id)
+        renderHealth.badSamples = 0
+        renderHealth.autoReloads = used + 1
+        MacLog.warn("[ios2-macos] auto reloading instance (%ld/%ld): %@",
+                    Int64(used + 1), Int64(Self.renderIntegrityAutoReloadLimit), reason)
+        NotificationCenter.default.post(name: Self.renderIntegrityReloadNotification,
+                                        object: nil,
+                                        userInfo: ["accountID": account.id, "reason": reason])
     }
 
     // MARK: 游戏内设置持久化
@@ -1236,6 +1448,52 @@ private enum MacWebKitAuth {
     }
 }
 
+/// WKURLSchemeHandler 是 UI actor；`WKURLSchemeTask.didReceiveData` 也必须从主 actor
+/// 发起。多开时如果 10 个 WebContent 同时完成一批资源，主线程会连续执行十几次
+/// 大 Data 的 WebKit IPC，主 RunLoop 一次被堵 260~494ms，正好覆盖 Cocos 的
+/// 场景切换与纹理装配窗口：某个实例的某张贴图晚到，就会被 assembler 静默跳过。
+///
+/// 不能把回调粗暴移到后台线程：WebKit 的 WKURLSchemeHandler 协议本身标了
+/// `WK_SWIFT_UI_ACTOR`，而且 stop/response 必须在同一生命周期序列里处理。
+/// 正确做法是保留主 actor 回调，但把跨实例的数据投递设为全局小闸门，避免
+/// N 个实例在同一个 RunLoop turn 里一起灌数据。槽位在实际 didFinish 后释放，
+/// 因此它限制的是真正的 WebKit IPC 压力，不是网络并发。
+@MainActor
+private final class MacGameResourceDeliveryGate {
+    static let shared = MacGameResourceDeliveryGate()
+
+    /// 两个大数据回传足够保持吞吐，又不会让十个实例同时压主线程。
+    private static let maxConcurrentDeliveries = 2
+    /// 在一批大数据回传之间留一个很短的 RunLoop 缝隙，让 SwiftUI、WebContent
+    /// 消息和 Cocos 的 rAF 有机会被调度；不是 sleep 主线程，Task.sleep 会让出 actor。
+    private static let interDeliveryGapNanoseconds: UInt64 = 2_000_000
+
+    private var activeDeliveries = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if activeDeliveries < Self.maxConcurrentDeliveries {
+            activeDeliveries += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            activeDeliveries = max(0, activeDeliveries - 1)
+            return
+        }
+        let continuation = waiters.removeFirst()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.interDeliveryGapNanoseconds)
+            continuation.resume()
+        }
+    }
+}
+
 private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     private let remoteBaseURL = URL(string: "https://xxz-xyzw-res.hortorgames.com")!
     private var bundleVersions: [String: String] = [:]
@@ -1256,6 +1514,26 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
                     versions["internal"] ?? "<missing>")
     }
 
+    /// 把数据投递给 WebKit。方法本身不做任何磁盘读，只负责在主 actor 上经过
+    /// 全局闸门后调用 `didReceive`，避免多个实例的响应在一个 RunLoop turn 里挤在一起。
+    private func enqueueDelivery(_ task: WKURLSchemeTask,
+                                 data: Data,
+                                 url: URL,
+                                 cacheControl: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await MacGameResourceDeliveryGate.shared.acquire()
+            defer { MacGameResourceDeliveryGate.shared.release() }
+            guard !self.isTaskKnownStopped(task) else { return }
+            self.respond(task, data: data, url: url, cacheControl: cacheControl)
+        }
+    }
+
+    private func isTaskKnownStopped(_ task: WKURLSchemeTask) -> Bool {
+        let token = ObjectIdentifier(task as AnyObject)
+        return stoppedTasks.contains(token) || abandonedTasks.contains(token)
+    }
+
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let token = ObjectIdentifier(urlSchemeTask as AnyObject)
         guard stoppedTasks.remove(token) == nil else {
@@ -1272,15 +1550,23 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         if let localURL = localResource(for: requestURL) {
             let cacheKey = localURL.path as NSString
             if let cached = Self.localDataCache.object(forKey: cacheKey) {
-                respond(urlSchemeTask, data: cached as Data, url: requestURL, cacheControl: "no-store")
+                enqueueDelivery(urlSchemeTask, data: cached as Data, url: requestURL, cacheControl: "no-store")
                 return
             }
-            do {
-                let data = try Data(contentsOf: localURL)
-                Self.localDataCache.setObject(data as NSData, forKey: cacheKey)
-                respond(urlSchemeTask, data: data, url: requestURL, cacheControl: "no-store")
-            } catch {
-                fail(urlSchemeTask, code: (error as NSError).code)
+            // 本地 runtime 首次读取可能是 4MB 的 cocos2d.js；不能在 UI actor 里
+            // `Data(contentsOf:)`，否则首个实例加载本地脚本时就能把主线程卡住。
+            Task { @MainActor [weak self] in
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try Data(contentsOf: localURL) }
+                }.value
+                guard let self else { return }
+                switch result {
+                case .success(let data):
+                    Self.localDataCache.setObject(data as NSData, forKey: cacheKey)
+                    self.enqueueDelivery(urlSchemeTask, data: data, url: requestURL, cacheControl: "no-store")
+                case .failure(let error):
+                    self.fail(urlSchemeTask, code: (error as NSError).code)
+                }
             }
             return
         }
@@ -1293,7 +1579,8 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         // 先扫一遍有没有悬挂的任务。urlSchemeTask **永远不会被完成**的话，
         // 页面里那个资源就永久挂起——表现正是「某个实例随机丢元素」，而且概率性
         // 单实例失败说明不是全局资源问题，就是这种静默丢失。
-        reportStalePendingTasks()
+        // 超时的一律主动报错收尾，交给 Cocos 的重试，而不是让它永远挂着。
+        enforcePendingTimeouts()
         pending[token] = (requestURL.absoluteString, Date())
         Task { @MainActor [weak self] in
             do {
@@ -1305,8 +1592,8 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
                                  requestURL.absoluteString)
                     return
                 }
-                self.respond(urlSchemeTask, data: data, url: requestURL,
-                             cacheControl: Self.remoteCacheControl(for: remoteURL))
+                self.enqueueDelivery(urlSchemeTask, data: data, url: requestURL,
+                                     cacheControl: Self.remoteCacheControl(for: remoteURL))
             } catch {
                 guard let self else {
                     MacLog.debug("[ios2-macos] scheme handler released, failure dropped: %@",
@@ -1334,7 +1621,13 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     /// 那时主文档请求还没发出，一刀切会把主文档也拦掉，页面直接白屏。
     private var stoppedTasks: Set<ObjectIdentifier> = []
     /// 集合上限：WebKit 不会主动通知任务结束，只能靠容量兜底防无限增长。
-    private static let stoppedTasksLimit = 256
+    ///
+    /// 不能设小。`stopAll()` 时会把当前**所有**在途任务并进来，多开场景下
+    /// 一次一键关分组就能轻松超过几百条（14 个实例 × 每个上百个在途资源）。
+    /// 一旦触发 `removeAll()`，那些还没回传的任务就失去抑制，迟到的 continuation
+    /// 会打在 stopped 的任务上 → `This task has already been stopped` 崩溃。
+    /// 一条 ObjectIdentifier 只有 8 字节，8192 条也才 64KB，完全付得起。
+    private static let stoppedTasksLimit = 8192
 
     /// 宿主实例停止：在途任务正常报错收尾，之后凡是 WebKit 已停止的任务一律静默丢弃。
     func stopAll() {
@@ -1353,23 +1646,50 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         stoppedTasks.formUnion(tasks.keys)
         pending.removeAll()
         tasks.removeAll()
+        abandonedTasks.removeAll(keepingCapacity: true)
         // 之后 WebKit 会为这些任务补发 stop；`stoppedTasks` 负责拦下迟到的回调。
     }
 
     /// task 对象引用：task 协议本身拿不到身份外的强引用，回传结束前必须自己持有。
     private var tasks: [ObjectIdentifier: WKURLSchemeTask] = [:]
 
-    /// 悬挂阈值：超过这么久还没被完成的请求，几乎不可能再被完成了。
+    /// 已被主动报错收尾的任务。迟到的真实响应必须丢弃，否则会在一个已经
+    /// finish 过的 task 上二次回调，WebKit 直接抛异常。
+    private var abandonedTasks: Set<ObjectIdentifier> = []
+    /// 只看不治的告警阈值：超过这么久还没完成，先在日志里留痕。
     private static let pendingStaleAfter: TimeInterval = 20
+    /// 主动放弃阈值。
+    ///
+    /// `urlSchemeTask` 一旦永远不被完成，页面里那个资源就**永久挂起**：Cocos
+    /// 的 assembler 会一直 `if (!texture.loaded) return;` 跳过对应节点，画面上
+    /// 就是随机缺一块，既不报错也不会重试——这是「概率性单实例丢元素」最贴合
+    /// 的签名。
+    ///
+    /// 所以到点就主动 `didFailWithError`，把「永久挂起」降级成「一次失败」：
+    /// Cocos 的 downloader 配了 `maxRetryCount: 4`，会自己重发，第二次基本都
+    /// 能命中原生 CDN 缓存。
+    ///
+    /// 阈值取 45s 是因为 game bundle 单包 16.6MB，冷启动 + 落盘确实可能要几十秒，
+    /// 砍太短会把正常的大包请求也误杀掉。
+    private static let pendingAbandonAfter: TimeInterval = 45
     private var lastStaleReportAt: Date = .distantPast
 
-    private func reportStalePendingTasks() {
+    private func enforcePendingTimeouts() {
         let now = Date()
         guard now.timeIntervalSince(lastStaleReportAt) > 10 else { return }
         lastStaleReportAt = now
-        for (_, entry) in pending where now.timeIntervalSince(entry.startedAt) >= Self.pendingStaleAfter {
-            MacLog.error("[ios2-macos] scheme task never completed (%.0fs): %@",
-                         now.timeIntervalSince(entry.startedAt), entry.url)
+        for (token, entry) in pending {
+            let age = now.timeIntervalSince(entry.startedAt)
+            guard age >= Self.pendingAbandonAfter else {
+                if age >= Self.pendingStaleAfter {
+                    MacLog.warn("[ios2-macos] scheme task still pending (%.0fs): %@", age, entry.url)
+                }
+                continue
+            }
+            guard let task = tasks[token] else { continue }
+            MacLog.error("[ios2-macos] scheme task abandoned after %.0fs: %@", age, entry.url)
+            abandonedTasks.insert(token)
+            fail(task, code: NSURLErrorTimedOut)
         }
     }
 
@@ -1483,6 +1803,15 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         // 其余一律照常回传——按实例粒度一刀切会把还没被停止的任务（首次导航的
         // 主文档就在此列）一起拦掉，页面直接白屏。
         let token = ObjectIdentifier(task as AnyObject)
+        // 已经主动超时收尾过的任务：真实数据现在才到，但页面早就按失败处理了。
+        // 再回调一次会在已 finish 的 task 上二次提交，WebKit 直接抛异常。
+        guard !abandonedTasks.contains(token) else {
+            MacLog.debug("[ios2-macos] scheme response dropped for abandoned task: %@", url.absoluteString)
+            abandonedTasks.remove(token)
+            tasks[token] = nil
+            pending[token] = nil
+            return
+        }
         guard !stoppedTasks.contains(token) else {
             MacLog.debug("[ios2-macos] scheme response suppressed after stop: %@", url.absoluteString)
             stoppedTasks.remove(token)

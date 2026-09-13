@@ -722,6 +722,9 @@
                 'pendingDownloads=' + message.pendingDownloads,
                 'elapsedMs=' + message.elapsedMs,
                 'stable=' + message.stable);
+            // 启动沉降完成 = 该到的资源都到了。从这一刻起，场景里还有画不出来的
+            // 节点就是真的「缺块」，不再是加载中。自检看门狗在这里接管。
+            installRenderIntegrityWatchdog();
         }
 
         function check() {
@@ -791,14 +794,174 @@
         // The instance can resume with the same scene and resource graph.
     }
 
+    // 场景切换期间的资源释放闸门 —— 「来回切几次后某个场景元素不全」的根因。
+    //
+    // Cocos 的资源释放是**引用计数驱动**的：`Asset.decRef()` 一旦把计数减到 0，
+    // 就会 `tryRelease()` 进去，下一帧 `_free()` 真正 `destroy()` —— 纹理的 GL
+    // 句柄一起删掉，而且会**递归释放它的依赖**（见引擎 release-manager 的
+    // `_free`：`o.decRef(!1), m._free(o, !1)`）。
+    //
+    // 引用计数是**全局共享**的，不认场景归属。所以：
+    //   切走 A → A 的依赖 decRef → 公共图标 / 图集 / FairyGUI 包的计数掉到 0
+    //   → 下一帧被 destroy → B 随后加载时拿到一个已销毁的 asset
+    //   → Sprite 的纹理 isValid 为 false → assembler 静默跳过 → 画面少一块
+    //
+    // 时序上它天然是竞态：切走得早一点就撞上，晚一点就没事，所以「来回切几
+    // 次」才会概率复现，而且是随机缺不同的块。
+    //
+    // 之前只门控了 `releaseUnusedAssets()` 这一个出口，引用计数这条自动释放
+    // 路径完全没堵，所以问题反复出现。
+    var sceneTransitionState = {
+        releaseBlockedUntil: 0,
+        /// 闸门开启的起点，用来算总时长上限。
+        armedAt: 0,
+        blocked: 0,
+        transitions: 0,
+        /// 被拦下的释放请求。不是丢弃，是**延后**——见 flushDeferredReleases。
+        deferred: []
+    };
+    /// 切换窗口长度。要盖住「旧场景销毁 → 新场景资源异步加载完成」整段，
+    /// 切场景往往跟几批 bundle 加载，给 5s 比较稳。
+    var IOS2_SCENE_TRANSITION_GUARD_MS = 5000;
+    /// 闸门期内每拦到一次释放就往后顺延的时长：还有释放请求涌进来，说明
+    /// 切换与随之而来的加载仍在进行，不能急着放行。
+    var IOS2_SCENE_RELEASE_EXTEND_MS = 1500;
+    /// 闸门总时长上限。多开时资源回来得慢（共享 CDN 队列 + 主线程排队），
+    /// 顺延可能一直续下去，这里兜个底，避免资源永远不被回收。
+    var IOS2_SCENE_RELEASE_MAX_MS = 30000;
+    /// 延后队列上限，防止整包卸载时无限堆积。
+    var IOS2_SCENE_RELEASE_QUEUE_LIMIT = 4096;
+
+    function markSceneTransition(reason) {
+        sceneTransitionState.transitions++;
+        sceneTransitionState.armedAt = Date.now();
+        sceneTransitionState.releaseBlockedUntil = Date.now() + IOS2_SCENE_TRANSITION_GUARD_MS;
+        console.log('[ios2-web] scene transition armed (' + reason + ')',
+            'transitions=' + sceneTransitionState.transitions);
+    }
+
+    // 闸门关闭后再补执行被拦下的释放。
+    //
+    // 这里**不能**简单地丢掉被拦截的释放请求，否则这些资源永远不会被回收。
+    // 延后执行是安全的：引擎的 `_free()` 在非强制模式下会先看 `refCount`，
+    // 若新场景已经重新引用了这个资源（refCount > 0），它会跳过销毁 ——
+    // 这正好是我们要的语义：切换期间误判的释放，会在窗口结束时自动作废。
+    function flushDeferredReleases() {
+        var releaseManager = window.cc && cc.assetManager && cc.assetManager._releaseManager;
+        if (!releaseManager || !releaseManager.__ios2OriginalTryRelease) return;
+        var queued = sceneTransitionState.deferred;
+        sceneTransitionState.deferred = [];
+        if (!queued.length) return;
+        var freed = 0;
+        for (var index = 0; index < queued.length; index++) {
+            var asset = queued[index];
+            try {
+                // refCount 已恢复的会被引擎自己跳过，无需在这里判断。
+                releaseManager.__ios2OriginalTryRelease.call(releaseManager, asset);
+                freed++;
+            } catch (error) {
+                console.warn('[ios2-web] deferred release failed', error);
+            }
+        }
+        console.log('[ios2-web] deferred asset releases flushed',
+            'queued=' + queued.length, 'passed=' + freed);
+    }
+
+    function installAssetReleaseGate() {
+        var manager = window.cc && window.cc.assetManager;
+        var releaseManager = manager && manager._releaseManager;
+        if (!releaseManager || releaseManager.__ios2ReleaseGateInstalled) return;
+        if (typeof releaseManager.tryRelease !== 'function') return;
+        releaseManager.__ios2ReleaseGateInstalled = true;
+        var original = releaseManager.tryRelease;
+        releaseManager.__ios2OriginalTryRelease = original;
+        releaseManager.tryRelease = function (asset, force) {
+            // 显式强制释放（releaseAsset(asset, true) 这类）与实例真正关闭，
+            // 都保持原样不拦——那是明确的销毁意图。
+            if (force || assetReleaseState.shuttingDown) {
+                return original.apply(this, arguments);
+            }
+            var now = Date.now();
+            // 闸门期内但队列已经过长：说明这次切换释放面极大（整包卸载），
+            // 再囤下去只会白占内存，直接放行交给引擎原逻辑。
+            if (now < sceneTransitionState.releaseBlockedUntil &&
+                sceneTransitionState.deferred.length < IOS2_SCENE_RELEASE_QUEUE_LIMIT) {
+                sceneTransitionState.blocked++;
+                sceneTransitionState.deferred.push(asset);
+                // 顺延，但不超过总上限。
+                if (sceneTransitionState.armedAt) {
+                    sceneTransitionState.releaseBlockedUntil = Math.min(
+                        Math.max(sceneTransitionState.releaseBlockedUntil,
+                            now + IOS2_SCENE_RELEASE_EXTEND_MS),
+                        sceneTransitionState.armedAt + IOS2_SCENE_RELEASE_MAX_MS);
+                }
+                if (sceneTransitionState.blocked <= 3 || sceneTransitionState.blocked % 200 === 0) {
+                    console.log('[ios2-web] deferred asset release during scene transition',
+                        sceneTransitionState.blocked,
+                        asset && (asset._name || asset.nativeUrl || asset.uuid));
+                }
+                return;
+            }
+            return original.apply(this, arguments);
+        };
+        console.log('[ios2-web] asset release gate installed');
+    }
+
+    // 等闸门真正关闭再收尾：先补执行被拦下的释放，再验一次渲染完整性。
+    // 这时还画不出来的节点就是真缺块，不是「资源还在路上」。
+    //
+    // 防重入标记必须在函数外：写在函数里的话每次调用都重新置 false，
+    // 连续两次切场景会起两条并行的检查链，flush 和自检都会重复跑。
+    var postTransitionCheckScheduled = false;
+
+    function schedulePostTransitionCheck() {
+        function check() {
+            if (Date.now() < sceneTransitionState.releaseBlockedUntil) {
+                // 闸门被顺延了（多开时资源回来得慢，切换期间还有释放请求在涌入）。
+                window.setTimeout(check, 1000);
+                return;
+            }
+            postTransitionCheckScheduled = false;
+            flushDeferredReleases();
+            reportRenderIntegrity('scene transition');
+        }
+        if (postTransitionCheckScheduled) return;
+        postTransitionCheckScheduled = true;
+        var delay = Math.max(500, sceneTransitionState.releaseBlockedUntil - Date.now() + 500);
+        window.setTimeout(check, delay);
+    }
+
     function installDirectorAssetReleaseHook() {
         var director = window.cc && window.cc.director;
         var Director = window.cc && window.cc.Director;
-        if (!director || !Director || !Director.EVENT_AFTER_SCENE_LAUNCH ||
-            director.__ios2AssetReleaseHookInstalled) return;
+        if (!director || !Director || director.__ios2AssetReleaseHookInstalled) return;
         director.__ios2AssetReleaseHookInstalled = true;
-        // Scene transitions are not destruction boundaries. Assets loaded by
-        // the outgoing scene may still be shared by UI and future scenes.
+        installAssetReleaseGate();
+
+        // 场景切换的入口不止一个，三处一起武装：loadScene / runScene /
+        // preloadScene 覆盖代码调用，BEFORE/AFTER_SCENE_LAUNCH 覆盖引擎内部
+        // 与常驻节点路径。
+        ['loadScene', 'runScene', 'preloadScene'].forEach(function (name) {
+            if (typeof director[name] !== 'function') return;
+            var original = director[name];
+            director[name] = function () {
+                markSceneTransition(name);
+                return original.apply(this, arguments);
+            };
+        });
+        if (typeof director.on === 'function') {
+            if (Director.EVENT_BEFORE_SCENE_LAUNCH) {
+                director.on(Director.EVENT_BEFORE_SCENE_LAUNCH, function () {
+                    markSceneTransition('before scene launch');
+                });
+            }
+            if (Director.EVENT_AFTER_SCENE_LAUNCH) {
+                director.on(Director.EVENT_AFTER_SCENE_LAUNCH, function () {
+                    markSceneTransition('after scene launch');
+                    schedulePostTransitionCheck();
+                });
+            }
+        }
     }
 
     function decryptJSC(data, keyText) {
@@ -1381,8 +1544,33 @@
         };
     }
 
+    // `gl.getExtension()` 是一次到 GPU 进程的同步往返。纹理上传是热路径（一个
+    // 场景几百张 PVR），每次都查一遍既慢，又会在 GPU 进程繁忙时偶发返回 null
+    // ——返回 null 就抛错，抛错就等于这张贴图永久不画（引擎不报错，只是不画）。
+    // 缓存到 gl 对象上；上下文丢失时由 resetASTCExtensionCache() 主动作废。
+    var astcExtensionCache = { gl: null, value: undefined };
+
+    function astcExtensionFor(gl) {
+        if (astcExtensionCache.gl !== gl || astcExtensionCache.value === undefined) {
+            astcExtensionCache.gl = gl;
+            astcExtensionCache.value = gl.getExtension('WEBGL_compressed_texture_astc') || null;
+        }
+        return astcExtensionCache.value;
+    }
+
+    function resetASTCExtensionCache() {
+        astcExtensionCache.gl = null;
+        astcExtensionCache.value = undefined;
+    }
+
     function isRecoverableASTCPVRTexture(texture) {
-        if (!texture || !texture.loaded || !texture.__ios2ASTCPVRRecovery) return false;
+        // 注意：这里**不能**要求 texture.loaded。
+        //
+        // loaded 为 false 恰恰是最需要救的那批：它们首次上传就失败了
+        // （device 未就绪 / context 已丢失 / 扩展查询落空），引擎因此永远
+        // 跳过渲染，画面上就是「少一块」。原来的判定把它们全排除了，
+        // 恢复机制只救得回「曾经画出来过」的纹理。
+        if (!texture || !texture.__ios2ASTCPVRRecovery) return false;
         try {
             if (window.cc && cc.isValid && !cc.isValid(texture)) return false;
         } catch (ignored) {
@@ -1409,9 +1597,10 @@
         var gl = device && device._gl;
         if (!renderer || !device || !gl) throw new Error('WebGL device is unavailable');
         if (typeof gl.isContextLost === 'function' && gl.isContextLost()) {
+            resetASTCExtensionCache();
             throw new Error('WebGL context is lost');
         }
-        var extension = gl.getExtension('WEBGL_compressed_texture_astc');
+        var extension = astcExtensionFor(gl);
         if (!extension) throw new Error('ASTC WebGL extension is unavailable');
 
         var previous = textureAsset._texture;
@@ -1463,6 +1652,28 @@
         textureAsset._packable = false;
         textureAsset.loaded = true;
         textureAsset.emit('load');
+    }
+
+    // 上传失败统计。「元素画不出来」在 Cocos 里没有任何错误输出——assembler
+    // 只是 `if (!texture.loaded) return;` 跳过这个节点。所以这里必须自己记账，
+    // 否则线上表现为「某个实例随机缺几块 UI」，日志里一条痕迹都没有。
+    var textureUploadState = { failed: 0, succeeded: 0, reported: [] };
+
+    function noteTextureUploadSuccess() {
+        textureUploadState.succeeded++;
+    }
+
+    function noteTextureUploadFailure(textureAsset, error) {
+        textureUploadState.failed++;
+        var url = textureAsset && (textureAsset._nativeUrl || textureAsset.nativeUrl) || '<unknown>';
+        if (textureUploadState.reported.length < 8) {
+            textureUploadState.reported.push(url.split('/').pop() + ': ' +
+                (error && (error.message || error) || 'unknown'));
+        }
+        postWebGraphicsLog('texture-upload-failed',
+            'PVR upload failed, texture will not render (url=' + url.split('/').pop() +
+            ', error=' + (error && (error.message || error) || 'unknown') + ')',
+            { url: url, total: textureUploadState.failed });
     }
 
     function rememberASTCPVRRecoverySource(textureAsset, data) {
@@ -1605,6 +1816,177 @@
         });
     }
 
+    // ------------------------------------------------------------------
+    // 渲染完整性自检
+    //
+    // Cocos 里没有「渲染失败」这个概念。一个节点画不出来时，assembler 只是
+    // `if (!texture.loaded) return;` 静默跳过 —— 不抛错、不告警、不重试。
+    // 所以「画面元素不全」无法通过错误日志发现，只能主动遍历场景树去问：
+    // 有多少**本该画出来**的节点，此刻其实画不出来？
+    //
+    // 判定「本该画」的四条（全部成立才计入分母）：
+    //   ① 节点在层级里激活（activeInHierarchy）
+    //   ② 节点自身可见（opacity > 0）
+    //   ③ 挂载了带 spriteFrame 的渲染组件
+    //   ④ 该组件的纹理已 loaded —— 这一条不成立，就是画面上缺的那一块
+    // ------------------------------------------------------------------
+    var renderIntegrityState = {
+        installed: false,
+        timer: null,
+        samples: 0,
+        badSamples: 0
+    };
+
+    function collectRenderIntegrity() {
+        var result = { visible: 0, missingTexture: 0, missingMaterial: 0, samples: [] };
+        var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+        if (!scene) return result;
+        var stack = [scene];
+        while (stack.length) {
+            var node = stack.pop();
+            if (!node) continue;
+            var children = node._children || [];
+            for (var index = 0; index < children.length; index++) stack.push(children[index]);
+            if (node.activeInHierarchy === false || node.active === false) continue;
+            if (typeof node.opacity === 'number' && node.opacity <= 0) continue;
+            var components = node._components || [];
+            for (var cursor = 0; cursor < components.length; cursor++) {
+                var component = components[cursor];
+                var frame = component && component.spriteFrame;
+                if (!frame || typeof frame.getTexture !== 'function') continue;
+                result.visible++;
+                var texture = frame.getTexture();
+                if (!texture || texture.loaded === false) {
+                    result.missingTexture++;
+                    if (result.samples.length < 6) {
+                        var label = (texture && (texture._nativeUrl || texture.nativeUrl)) || node.name || '?';
+                        result.samples.push(String(label).split('/').pop());
+                    }
+                } else if (component._materials && component._materials.length === 0) {
+                    // 纹理在、材质没了：通常发生在上下文/device 重建之后。
+                    result.missingMaterial++;
+                }
+            }
+        }
+        return result;
+    }
+
+    // 纹理**后到**时 assembler 不会自己重算：它那一帧已经因为
+    // `!texture.loaded` 提前 return 了，之后没有新的脏标记就再也不进来。
+    // 所以补完纹理必须手动把整棵树标脏，否则贴图补上了、画面还是缺的。
+    function markSceneRenderDataDirty() {
+        try {
+            var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+            var Flow = window.cc && cc.RenderFlow;
+            if (!scene || !Flow) return;
+            var flag = Flow.FLAG_UPDATE_RENDER_DATA || Flow.FLAG_RENDER || 0;
+            if (!flag) return;
+            var stack = [scene];
+            while (stack.length) {
+                var node = stack.pop();
+                if (!node) continue;
+                node._renderFlag |= flag;
+                var children = node._children || [];
+                for (var index = 0; index < children.length; index++) stack.push(children[index]);
+            }
+        } catch (ignored) {}
+    }
+
+    function reportRenderIntegrity(reason) {
+        var snapshot = collectRenderIntegrity();
+        var missing = snapshot.missingTexture + snapshot.missingMaterial;
+        renderIntegrityState.samples++;
+        if (missing > 0) renderIntegrityState.badSamples++;
+        else renderIntegrityState.badSamples = 0;
+
+        var device = window.cc && cc.renderer && cc.renderer.device;
+        var gl = device && device._gl;
+        var contextLost = !!(gl && typeof gl.isContextLost === 'function' && gl.isContextLost());
+
+        var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ios2Game;
+        if (handler && typeof handler.postMessage === 'function' &&
+            (missing > 0 || reason === 'manual')) {
+            try {
+                handler.postMessage({
+                    type: 'render',
+                    instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                    reason: reason,
+                    visible: snapshot.visible,
+                    missingTexture: snapshot.missingTexture,
+                    missingMaterial: snapshot.missingMaterial,
+                    contextLost: contextLost,
+                    samples: snapshot.samples.join(',')
+                });
+            } catch (ignored) {}
+        }
+        // 正常时别刷：10 个实例 × 每 12 秒一条，日志会被自检自己淹掉。
+        // 只在真的缺块时打，正常采样走上面的 render 消息（原生侧按等级过滤）。
+        if (missing > 0) {
+            console.warn('[ios2-web] render integrity degraded', reason,
+                'visible=' + snapshot.visible,
+                'missingTexture=' + snapshot.missingTexture,
+                'missingMaterial=' + snapshot.missingMaterial,
+                'samples=' + snapshot.samples.join(','));
+        }
+        // 上下文已经丢了就别瞎补：那种情况只能整页重载（见下方 webgl-fatal）。
+        if (missing > 0 && !contextLost) {
+            scheduleASTCPVRRecovery('render integrity: ' + missing + ' unrenderable');
+            markSceneRenderDataDirty();
+        }
+        return snapshot;
+    }
+
+    function installRenderIntegrityWatchdog() {
+        if (renderIntegrityState.installed) return;
+        renderIntegrityState.installed = true;
+        var intervalMs = 12000;
+        function scheduleNext() {
+            renderIntegrityState.timer = window.setTimeout(function () {
+                reportRenderIntegrity('watchdog');
+                scheduleNext();
+            }, intervalMs);
+        }
+        // 首次采样要晚：刚 launch 完的一两秒里大批资源还在路上，那是正常的
+        // 「加载中」，不是「缺块」，早采只会误报。
+        window.setTimeout(function () {
+            reportRenderIntegrity('startup');
+            scheduleNext();
+        }, 4000);
+    }
+    window.__ios2RenderIntegrityCheck = function () {
+        return reportRenderIntegrity('manual');
+    };
+
+    // 上下文丢失后的兜底：给 WebKit 一点时间自己恢复，恢复不了就报
+    // `webgl-fatal` 让原生重载实例。留这个窗口是因为 macOS 上上下文丢失
+    // 有时只是 GPU 进程短暂重启，restored 事件会晚几百毫秒到。
+    var contextLostFallback = { timer: null, waitMs: 3000 };
+
+    function clearContextLostFallback() {
+        if (contextLostFallback.timer) {
+            window.clearTimeout(contextLostFallback.timer);
+            contextLostFallback.timer = null;
+        }
+    }
+
+    function scheduleContextLostFallback() {
+        if (contextLostFallback.timer) return;
+        contextLostFallback.timer = window.setTimeout(function () {
+            contextLostFallback.timer = null;
+            if (!astcPVRRecoveryState.contextLost) return;
+            var handler = window.webkit && window.webkit.messageHandlers &&
+                window.webkit.messageHandlers.ios2Game;
+            if (!handler || typeof handler.postMessage !== 'function') return;
+            try {
+                handler.postMessage({
+                    type: 'webgl-fatal',
+                    instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                    reason: 'context lost without restore'
+                });
+            } catch (ignored) {}
+        }, contextLostFallback.waitMs);
+    }
+
     function installWebGLContextRecovery() {
         var state = astcPVRRecoveryState;
         var canvas = window.cc && cc.game && cc.game.canvas || document.getElementById('GameCanvas');
@@ -1615,13 +1997,21 @@
             if (event && typeof event.preventDefault === 'function') event.preventDefault();
             state.contextLost = true;
             state.rerunRequested = true;
+            resetASTCExtensionCache();
             var status = event && event.statusMessage || 'unknown';
             postWebGraphicsLog('webgl-context-lost', 'WebGL context lost (status=' + status + ')', {
                 status: status
             });
+            // Cocos 2.4 的 gfx 后端**不支持**上下文恢复：program、buffer、VAO、
+            // framebuffer 全部失效，而引擎没有任何重建路径。PVR 恢复只能把贴图
+            // 内容补回去，补不回渲染管线 —— 画面必然残缺。所以这里不做无谓的
+            // 局部修复，直接通知原生整页重载（重新登录），这是唯一可靠出路。
+            scheduleContextLostFallback();
         }, false);
         canvas.addEventListener('webglcontextrestored', function () {
             state.contextLost = false;
+            resetASTCExtensionCache();
+            clearContextLostFallback();
             postWebGraphicsLog('webgl-context-restored', 'WebGL context restored');
             scheduleASTCPVRRecovery('webgl context restored');
         }, false);
@@ -1629,6 +2019,9 @@
             var status = event && event.statusMessage || 'unknown';
             postWebGraphicsLog('webgl-context-creation-error',
                 'WebGL context creation error (status=' + status + ')', { status: status });
+            // 创建失败不是「丢失」，等不到 restored 事件，但有可能是可恢复的
+            // 资源竞争（WebKit 的 maxActiveContexts 驱逐）。给一次兜底机会。
+            scheduleContextLostFallback();
         }, false);
         if (window.document && typeof document.addEventListener === 'function') {
             document.addEventListener('visibilitychange', function () {
@@ -1722,8 +2115,19 @@
                     descriptor.set.call(this, data);
                     return;
                 }
-                uploadASTCPVRTexture(this, data);
+                // 先登记来源，再上传：上传失败时恢复队列需要靠这条记录
+                // 重新 fetch 并重试（否则这张贴图就永远停在 loaded=false）。
                 rememberASTCPVRRecoverySource(this, data);
+                try {
+                    uploadASTCPVRTexture(this, data);
+                    noteTextureUploadSuccess();
+                } catch (error) {
+                    // 绝不向上抛：抛出会被 Cocos 的 deserialize 当成整包解析失败，
+                    // 连带同一批资源一起废掉，比「缺一块」严重得多。
+                    // 改为记账 + 排进恢复队列，等 device / 上下文回来后自动补齐。
+                    noteTextureUploadFailure(this, error);
+                    scheduleASTCPVRRecovery('texture upload failed');
+                }
                 // The uploader stores dimensions only. Drop the temporary
                 // parser view promptly so the source ArrayBuffer can be GCed.
                 data._data = null;
@@ -1885,6 +2289,10 @@
                     installASTCTextureSupport();
                     console.log('[ios2-web] WebKit PVR parser restored after engine init');
                     installDirectorAssetReleaseHook();
+                    // 兜底：自检看门狗正常由启动沉降（sendReady）接手。万一沉降
+                    // 因故没上报（页面卡在加载中等），这里 20s 后也必须把它拉起来，
+                    // 否则「元素不全」又回到无人观测的状态。
+                    window.setTimeout(installRenderIntegrityWatchdog, 20000);
                     var device = cc.renderer && cc.renderer.device;
                     var gl = device && device._gl;
                     var pvrtc = device && device.ext('WEBGL_compressed_texture_pvrtc');

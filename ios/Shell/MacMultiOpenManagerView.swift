@@ -1569,6 +1569,16 @@ private struct MacGameMatrixCell: View {
         }
         // 06 外投影：黑 35% / y 12 / blur≈32——卡片浮在画布玻璃上，投影比画布轻一档
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 12)
+        // 渲染完整性兜底：WebRuntime 报「有节点画不出来」且持续不恢复时，
+        // 引擎侧已无自愈路径，由这里翻 reloadKey 走一次完整的重新登录。
+        // 走的是和手动「重新登录」完全相同的链路，不再引入第二种生命周期。
+        .onReceive(NotificationCenter.default.publisher(
+            for: MacWebKitGameView.renderIntegrityReloadNotification)) { notification in
+            guard let accountID = notification.userInfo?["accountID"] as? String,
+                  accountID == item.account.id else { return }
+            MacGameInstancePool.shared.requestReload(accountID: item.account.id)
+            reloadKey = UUID()
+        }
     }
 }
 
