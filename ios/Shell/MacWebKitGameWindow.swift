@@ -43,11 +43,29 @@ final class MacGameInstancePool {
     /// 延迟到 SwiftUI 拆除旧宿主之后（也就是下次 bind 发生时）才 stop，
     /// 整条生命周期就跟当初没有 pool 时的 reload 行为完全一致。
     private var reloadPending: Set<String> = []
+    /// 已被关闭、但实例还没创建出来的账号。
+    ///
+    /// 实例是懒创建的：`close` 只按 accountID 调 `destroy`，而 `MacWebKitGameView`
+    /// 要等 SwiftUI 下一帧 `makeNSView` 才真正建立。一键关分组 / 关闭全部时
+    /// destroy 常常跑在创建之前，此时 `surfaces` 里根本没有东西，`destroy` 直接
+    /// return——随后拉起的实例就再也没人关：WKWebView、WebGL 上下文、整局游戏
+    /// 全部泄漏，卡片也永远留在矩阵里（若视图还没被摘掉）。
+    /// 所以 destroy 的意图必须落盘，等创建时再补上。
+    private var destroyPending: Set<String> = []
 
     /// The live surface for `account`, created and booted on first use.
     /// Repeated calls return the same instance, so rebuilding a cell never
     /// restarts the game — unless the user explicitly requested a reload.
     func surface(for account: Account, environment: ScriptEnvironment = .multi) -> MacWebKitGameView {
+        // 关实例的请求可能早于本次创建（见 `destroyPending`）；这里补一次拆除，
+        // 保证「关了就一定不会留下活着的实例」。此时视图还没挂进层级，
+        // removeFromSuperview 是空操作，不影响生命周期。
+        if destroyPending.remove(account.id) != nil {
+            if let doomed = surfaces.removeValue(forKey: account.id) {
+                doomed.removeFromSuperview()
+                doomed.stop()
+            }
+        }
         if reloadPending.remove(account.id) != nil,
            let old = surfaces.removeValue(forKey: account.id) {
             old.removeFromSuperview()
@@ -80,7 +98,12 @@ final class MacGameInstancePool {
     }
 
     /// Genuine teardown: the instance is being closed.
+    ///
+    /// 实例可能还没被创建出来（懒创建 + 关闭与启动同帧），所以先记下意图，
+    /// 由 `surface(for:)` 在创建时补做拆除，避免留下永不被关的孤儿实例。
     func destroy(accountID: String) {
+        destroyPending.insert(accountID)
+        reloadPending.remove(accountID)
         guard let view = surfaces.removeValue(forKey: accountID) else { return }
         view.removeFromSuperview()
         view.stop()
