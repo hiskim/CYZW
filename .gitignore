@@ -1,2 +1,5 @@
 .DS_Store
-ios/Shell/IOS2-Mac.xcodeproj/project.xcworkspace/xcuserdata/gg.xcuserdatad/UserInterfaceState.xcuserstate
+
+# Xcode 用户态数据（窗口布局、断点、查找历史等）——纯本地、高频变动，不入库
+xcuserdata/
+*.xcuserstate
