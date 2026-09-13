@@ -19,6 +19,22 @@
 - 中文 UI 字符串里嵌套引用一律用 `「」` 或弯引号 `""`，**不要**用直引号 `"`——会与外层字符串边界冲突导致 parse 失败。
 - 卡片内游戏画面本来就贴齐卡片边缘，改利用率时不要去动 cell 内部。
 
+## WKURLSchemeHandler 生命周期（踩过两次坑）
+
+- 任务停止后回传（`didReceive`/`didFinish`/`didFailWithError`）会抛
+  `NSInternalInconsistencyException: This task has already been stopped`。
+- 抑制必须按**任务粒度**：只吞 `webView(_:stop:)` 明确通知过的 task
+  （`stoppedTasks: Set<ObjectIdentifier>`）。**绝不能**按实例粒度一刀切
+  （`stopAll()` 设个 `isStopped` 就全丢）——`stop()` 可能早于导航发生
+  （deinit / 池驱逐），那时主文档请求会被一起拦掉，表现为「全部实例白屏、无法登录」。
+- `stopAll()` 的顺序：先对仍在 pending 的任务 `didFailWithError` 收尾（不收尾＝资源永久挂起），
+  再把剩余 token 并入 `stoppedTasks`，最后才 `stopLoading()`。
+- 日志里大片的 `com.apple.linkd.autoShortcut` / `pboard` / `launchservicesd` /
+  `coreservicesd` / `AudioComponentRegistrar` 报错是 WebContent 沙盒噪音，与业务崩溃无关，别被带偏。
+- `MacWebKitGameView.stop()` 的调用面很广（关实例、池驱逐、deinit），可能早于导航发生。
+  任何「停止后就不回传」的逻辑都要能容忍这一点，否则会把首次导航的主文档一起干掉。
+  排错时可在 stop / deinit / stopAll 打 `Thread.callStackSymbols`（debug 档）定位调用方。
+
 ## 日志约定
 
 - **不要再写裸 `NSLog` / `print`**，一律用 `ios/Shell/MacLog.swift` 的
@@ -38,3 +54,7 @@
   `ios/Shell/build/Debug/IOS2-Mac.app` 的构建产物（会把 dylib / Assets.car /
   _CodeSignature 等未跟踪文件带进仓库，旧快照曾因此整包回退）。
 - Commit 风格：`type(mac): 一句话摘要` + 空行 + 分点详述根因与修法。
+- `.gitignore` 已用 `xcuserdata/` + `*.xcuserstate` 覆盖 Xcode 用户态数据
+  （2026-09-13 起，并对已入库的 `UserInterfaceState.xcuserstate` 做了
+  `git rm --cached`）。以后再出现 xcuserstate 变动，是本地索引残留，
+  直接 `git rm --cached <path>` 即可，不要改回具体路径的忽略规则。

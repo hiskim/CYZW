@@ -586,6 +586,9 @@ final class MacWebKitGameView: NSView, WKNavigationDelegate, WKScriptMessageHand
         startupTask = nil
         storageSyncTask?.cancel()
         storageSyncTask = nil
+        // 关闭前的 scheme 任务收尾：仍在途的任务正常报错结束，之后凡是 WebKit
+        // 已停止的任务一律静默丢弃（见 MacGameSchemeHandler.stopAll）。
+        schemeHandler.stopAll()
         webView.stopLoading()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "ios2Game")
         if gameSessionStarted {
@@ -1199,6 +1202,13 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let token = ObjectIdentifier(urlSchemeTask as AnyObject)
+        guard stoppedTasks.remove(token) == nil else {
+            // 极小的窗口：WebKit 先 stop 又为同一对象发 start。任务已作废，撒手。
+            MacLog.debug("[ios2-macos] scheme start ignored for stopped task")
+            return
+        }
+        tasks[token] = urlSchemeTask
         guard let requestURL = urlSchemeTask.request.url else {
             fail(urlSchemeTask, code: NSURLErrorBadURL)
             return
@@ -1215,7 +1225,7 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
                 Self.localDataCache.setObject(data as NSData, forKey: cacheKey)
                 respond(urlSchemeTask, data: data, url: requestURL, cacheControl: "no-store")
             } catch {
-                urlSchemeTask.didFailWithError(error)
+                fail(urlSchemeTask, code: (error as NSError).code)
             }
             return
         }
@@ -1225,7 +1235,6 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         MacLog.verbose("[ios2-macos] CDN request: %@ -> %@", requestURL.absoluteString, remoteURL.absoluteString)
-        let token = ObjectIdentifier(urlSchemeTask as AnyObject)
         // 先扫一遍有没有悬挂的任务。urlSchemeTask **永远不会被完成**的话，
         // 页面里那个资源就永久挂起——表现正是「某个实例随机丢元素」，而且概率性
         // 单实例失败说明不是全局资源问题，就是这种静默丢失。
@@ -1234,24 +1243,24 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
         Task { @MainActor [weak self] in
             do {
                 let data = try await MacCDNResourceManager.shared.data(for: remoteURL, source: "game")
-                self?.pending[token] = nil
                 guard let self else {
-                    // handler 已随游戏视图释放。以前这里是 `self?.respond(...)`
-                    // 静默丢弃，任务永远完不成；改成明确报错，好定位。
-                    MacLog.error("[ios2-macos] scheme handler released, response dropped: %@",
+                    // handler 已随游戏视图释放。不能再碰 WKURLSchemeTask：它的生命周期
+                    // 已经由 WebKit 接管，释放 handler 时对应任务也通常已经被取消。
+                    MacLog.debug("[ios2-macos] scheme handler released, response dropped: %@",
                                  requestURL.absoluteString)
                     return
                 }
                 self.respond(urlSchemeTask, data: data, url: requestURL,
                              cacheControl: Self.remoteCacheControl(for: remoteURL))
             } catch {
-                self?.pending[token] = nil
-                MacLog.error("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
                 guard let self else {
-                    MacLog.error("[ios2-macos] scheme handler released, failure dropped: %@",
+                    MacLog.debug("[ios2-macos] scheme handler released, failure dropped: %@",
                                  requestURL.absoluteString)
                     return
                 }
+                // 同样不能对已被 stop 的任务调用 didFailWithError；
+                // `fail` 内部会按 `stoppedTasks` 判断，命中就静默丢弃。
+                MacLog.error("[ios2-macos] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
                 self.fail(urlSchemeTask, code: (error as NSError).code)
             }
         }
@@ -1259,6 +1268,42 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// 进行中的 urlSchemeTask（主线程访问）。
     private var pending: [ObjectIdentifier: (url: String, startedAt: Date)] = [:]
+    /// WebKit **明确通知过** `webView(_:stop:)` 的任务。
+    ///
+    /// 只有这些任务的回调必须被吞掉：WebKit 侧已经把它们置为 stopped，再
+    /// `didReceive`/`didFinish`/`didFailWithError` 就会抛
+    /// NSInternalInconsistencyException: This task has already been stopped。
+    ///
+    /// 反过来说，**没**进过这个集合的任务一律照常回传。按实例粒度一刀切丢弃
+    /// 是错的：`stop()` 可能在导航真正开始前就被调用（比如某个视图的 deinit），
+    /// 那时主文档请求还没发出，一刀切会把主文档也拦掉，页面直接白屏。
+    private var stoppedTasks: Set<ObjectIdentifier> = []
+    /// 集合上限：WebKit 不会主动通知任务结束，只能靠容量兜底防无限增长。
+    private static let stoppedTasksLimit = 256
+
+    /// 宿主实例停止：在途任务正常报错收尾，之后凡是 WebKit 已停止的任务一律静默丢弃。
+    func stopAll() {
+        for (token, entry) in pending {
+            guard let task = tasks[token] else { continue }
+            // 这些任务 WebKit 还没停止，正常报错收尾即可（不回传 = 资源永久挂起）。
+            task.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled,
+                                          userInfo: [NSLocalizedDescriptionKey: entry.url]))
+        }
+        // 上面没能在 pending 里找到、但还挂在 tasks 上的（比如 URL 非法这类
+        // 没登记就等着报错的），紧接着的 `stopLoading()` 一定会把它们停掉，
+        // 所以也按「已停止」处理，避免迟到的回调打在 stopped 的任务上。
+        if stoppedTasks.count + tasks.count > Self.stoppedTasksLimit {
+            stoppedTasks.removeAll(keepingCapacity: true)
+        }
+        stoppedTasks.formUnion(tasks.keys)
+        pending.removeAll()
+        tasks.removeAll()
+        // 之后 WebKit 会为这些任务补发 stop；`stoppedTasks` 负责拦下迟到的回调。
+    }
+
+    /// task 对象引用：task 协议本身拿不到身份外的强引用，回传结束前必须自己持有。
+    private var tasks: [ObjectIdentifier: WKURLSchemeTask] = [:]
+
     /// 悬挂阈值：超过这么久还没被完成的请求，几乎不可能再被完成了。
     private static let pendingStaleAfter: TimeInterval = 20
     private var lastStaleReportAt: Date = .distantPast
@@ -1274,9 +1319,14 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        let token = ObjectIdentifier(urlSchemeTask as AnyObject)
+        // 之后任何针对它的回调都必须吞掉，否则抛 This task has already been stopped。
+        if stoppedTasks.count >= Self.stoppedTasksLimit { stoppedTasks.removeAll(keepingCapacity: true) }
+        stoppedTasks.insert(token)
         // 必须摘掉：这是 WebKit 主动取消（导航变化 / 页面重载），不是悬挂。
         // 不清掉的话看门狗会把正常取消误报成「请求永远没完成」。
-        pending[ObjectIdentifier(urlSchemeTask as AnyObject)] = nil
+        pending[token] = nil
+        tasks[token] = nil
         // The shared actor may still finish a request for another window.
         // WebKit ignores callbacks for a stopped scheme task, so no per-window
         // cancellation or cache bookkeeping is needed here.
@@ -1374,6 +1424,19 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private func respond(_ task: WKURLSchemeTask, data: Data, url: URL, cacheControl: String) {
+        // 闸门：只对 WebKit 明确 stop 过的任务（见 `stoppedTasks`）停发回调，
+        // 其余一律照常回传——按实例粒度一刀切会把还没被停止的任务（首次导航的
+        // 主文档就在此列）一起拦掉，页面直接白屏。
+        let token = ObjectIdentifier(task as AnyObject)
+        guard !stoppedTasks.contains(token) else {
+            MacLog.debug("[ios2-macos] scheme response suppressed after stop: %@", url.absoluteString)
+            stoppedTasks.remove(token)
+            tasks[token] = nil
+            pending[token] = nil
+            return
+        }
+        tasks[token] = nil
+        pending[token] = nil
         let startedAt = CFAbsoluteTimeGetCurrent()
         defer {
             let ms = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
@@ -1401,6 +1464,26 @@ private final class MacGameSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private func fail(_ task: WKURLSchemeTask, code: Int) {
+        // 与 `respond` 同一道闸门：对已停止的任务调 didFailWithError 一样会抛
+        // This task has already been stopped。
+        //
+        // 注意：即使之前没登记过（比如 `start` 里 URL 非法的分支），也要先补登记
+        // 再走闸门——否则 `stopAll()` 遍历不到它，这个请求就永远没人收尾，
+        // 页面里对应的资源会一直挂着。
+        let token = ObjectIdentifier(task as AnyObject)
+        if tasks[token] == nil {
+            tasks[token] = task
+            pending[token] = (task.request.url?.absoluteString ?? "<unknown>", Date())
+        }
+        guard !stoppedTasks.contains(token) else {
+            MacLog.debug("[ios2-macos] scheme failure suppressed after stop (code %ld)", Int64(code))
+            stoppedTasks.remove(token)
+            tasks[token] = nil
+            pending[token] = nil
+            return
+        }
+        tasks[token] = nil
+        pending[token] = nil
         task.didFailWithError(NSError(domain: NSURLErrorDomain, code: code))
     }
 
