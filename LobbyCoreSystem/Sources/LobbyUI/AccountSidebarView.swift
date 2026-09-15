@@ -111,10 +111,7 @@ struct AccountSidebarView: View {
                 Capsule(style: .continuous)
                     .fill(isSelected ? Color.cyan.opacity(0.28) : Color.white.opacity(0.05))
             )
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(isSelected ? Color.cyan.opacity(0.7) : Color.white.opacity(0.10), lineWidth: 1)
-            )
+
         }
         .buttonStyle(.plain)
         .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.10)
@@ -180,15 +177,25 @@ struct AccountSidebarView: View {
         .lobbyGlassCard(cornerRadius: 12, fillOpacity: 0.04, material: nil)
     }
 
+    /// 原生 List + .onMove：macOS 下行自带拖拽重排（无需编辑模式）。
+    /// 行背景/分隔线/内边距全部清零，保留卡片玻璃观感。
     private var accountList: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                ForEach(filteredAccounts) { account in
-                    AccountSidebarCard(session: session, account: account)
-                }
+        List {
+            ForEach(filteredAccounts) { account in
+                AccountSidebarCard(session: session,
+                                   account: account,
+                                   groupContextID: selectedGroupID ?? AccountGroup.allID)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
-            .padding(.vertical, 2)
+            .onMove { source, destination in
+                session.moveAccounts(inGroupID: selectedGroupID ?? AccountGroup.allID,
+                                     from: source, to: destination)
+            }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     private func showImportPanel() {
@@ -332,10 +339,12 @@ struct GroupEditorSheet: View {
     }
 }
 
-/// 侧栏账号卡片（含分组着色与「移动到分组」菜单）。
+/// 侧栏账号卡片（含分组着色、「移动到分组」菜单与原生拖拽排序）。
 struct AccountSidebarCard: View {
     @ObservedObject var session: LobbySessionModel
     let account: GameAccount
+    /// 拖拽排序的分组上下文（当前筛选视图的分组 ID，「全部」= allID）。
+    let groupContextID: String
 
     private var isRunning: Bool { session.isRunning(account) }
     private var isFocused: Bool { session.focusedAccountID == account.id }

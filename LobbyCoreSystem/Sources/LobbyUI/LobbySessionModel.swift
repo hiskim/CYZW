@@ -30,6 +30,8 @@ public final class LobbySessionModel: ObservableObject {
     @Published public private(set) var assignments: [String: String] = [:]
     /// 伪分组展开状态。
     @Published public var expansions: [String: Bool] = [:]
+    /// 分组内账号拖拽排序表：分组 ID → 有序账号 ID 列表（缺席 = 库扫描序）。
+    @Published public private(set) var accountOrders: [String: [String]] = [:]
 
     /// 待确认删除的分组是否连成员一起删（确认框选项）。
     @Published public var deleteGroupMembers = false
@@ -53,6 +55,7 @@ public final class LobbySessionModel: ObservableObject {
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()
         expansions = groupStore.loadExpansions()
+        accountOrders = groupStore.loadOrders()
     }
 
     /// 分组定义排序：sortOrder 优先，再按名称本地化比较（与上一代口径一致）。
@@ -89,20 +92,43 @@ public final class LobbySessionModel: ObservableObject {
         groupName(forGroupID: groupID(forAccountID: accountID))
     }
 
-    /// 分组内的账号（按定义序稳定排序；未分组 = 未指派或指派失效的账号）。
+    /// 分组内的账号（先按归属过滤，再应用拖拽排序表；未排序的保持库扫描序）。
     public func accounts(inGroupID groupID: String) -> [GameAccount] {
+        let members: [GameAccount]
         switch groupID {
         case AccountGroup.allID:
-            return accounts
+            members = accounts
         case AccountGroup.ungroupedID:
             let validGroupIDs = Set(groupDefinitions.map(\.id))
-            return accounts.filter { accountID in
-                let assigned = assignments[accountID.id]
+            members = accounts.filter { account in
+                let assigned = assignments[account.id]
                 return assigned == nil || !validGroupIDs.contains(assigned!)
             }
         default:
-            return accounts.filter { assignments[$0.id] == groupID }
+            members = accounts.filter { assignments[$0.id] == groupID }
         }
+        return AccountOrder.apply(members, order: accountOrders[groupID] ?? [])
+    }
+
+    // MARK: - 拖拽排序（List + .onMove，原生列表重排）
+
+    /// List.onMove 语义：把 `source` 行移动到 `destination` 位置（同一分组内）。
+    /// 与上一代 moveAccounts(in:from:to:) 的口径一致；排序表持久化到 groups.json。
+    public func moveAccounts(inGroupID groupID: String,
+                             from source: IndexSet, to destination: Int) {
+        var ordered = accounts(inGroupID: groupID).map(\.id)
+        guard !ordered.isEmpty else { return }
+        ordered.move(fromOffsets: source, toOffset: destination)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            accountOrders[groupID] = ordered
+        }
+        persistGroups()
+    }
+
+    /// 删除账号后清理排序表中的残留项。
+    private func removeOrderEntries(for deletedIDs: [String]) {
+        let removed = Set(deletedIDs)
+        accountOrders = accountOrders.mapValues { $0.filter { !removed.contains($0) } }
     }
 
     /// 伪分组 / 自定义分组的展开状态。
@@ -200,6 +226,7 @@ public final class LobbySessionModel: ObservableObject {
         if focusedAccountID != nil, !runningAccountIDs.contains(focusedAccountID!) {
             focus(runningAccountIDs.first)
         }
+        removeOrderEntries(for: members.map(\.id))
         persistGroups()
         refresh()
     }
@@ -222,7 +249,8 @@ public final class LobbySessionModel: ObservableObject {
         for group in groupDefinitions {
             allExpansions[group.id] = group.isExpanded
         }
-        groupStore.save(definitions: groupDefinitions, assignments: assignments, expansions: allExpansions)
+        groupStore.save(definitions: groupDefinitions, assignments: assignments,
+                        expansions: allExpansions, orders: accountOrders)
         sync.configureGroups(definitions: groupDefinitions, assignments: assignments)
     }
 
@@ -275,6 +303,8 @@ public final class LobbySessionModel: ObservableObject {
             try bins.deleteBin(named: account.fileName)
             assignments.removeValue(forKey: account.id)
             sync.retire(accountID: account.id)
+            removeOrderEntries(for: [account.id])
+            persistGroups()
         } catch {
             statusMessage = "删除失败：\(error.localizedDescription)"
         }

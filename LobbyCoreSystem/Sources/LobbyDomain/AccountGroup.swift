@@ -46,6 +46,24 @@ public struct AccountGroup: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+/// 分组内成员排序规则（纯函数，便于无头单测）。
+/// 表内账号按 rank 排；缺席的保持相对顺序追加在表内账号之后
+/// ——与上一代 accounts(in:) 的口径一致。
+public enum AccountOrder {
+    public static func apply(_ members: [GameAccount], order: [String]) -> [GameAccount] {
+        guard !order.isEmpty else { return members }
+        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        return members.sorted { lhs, rhs in
+            switch (rank[lhs.id], rank[rhs.id]) {
+            case let (left?, right?): return left < right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return false
+            }
+        }
+    }
+}
+
 /// 分组色板名 → 固定 RGB（UI 层再映射为 Color）。与上一代 macSwatchColor 同源。
 public enum GroupSwatch {
     public static func rgb(for colorName: String) -> (Double, Double, Double) {

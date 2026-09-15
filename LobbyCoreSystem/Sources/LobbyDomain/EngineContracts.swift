@@ -82,8 +82,11 @@ public protocol GroupStoring: Sendable {
     func loadAssignments() -> [String: String]
     /// 伪分组展开状态。
     func loadExpansions() -> [String: Bool]
+    /// 分组内账号拖拽排序表：分组 ID → 有序账号 ID 列表。
+    func loadOrders() -> [String: [String]]
     /// 全量保存。
-    func save(definitions: [AccountGroup], assignments: [String: String], expansions: [String: Bool])
+    func save(definitions: [AccountGroup], assignments: [String: String],
+              expansions: [String: Bool], orders: [String: [String]])
 }
 
 /// 认证错误。

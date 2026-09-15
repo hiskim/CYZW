@@ -13,6 +13,8 @@ public final class AccountGroupStore: GroupStoring, @unchecked Sendable {
         var assignments: [String: String] = [:]
         /// 伪分组展开状态（自定义分组的展开状态随定义持久化）。
         var expansions: [String: Bool] = [:]
+        /// 分组内账号拖拽排序表：分组 ID → 有序账号 ID 列表。
+        var orders: [String: [String]] = [:]
     }
 
     private let fileURL: URL
@@ -37,11 +39,17 @@ public final class AccountGroupStore: GroupStoring, @unchecked Sendable {
         queue.sync { load().expansions }
     }
 
-    public func save(definitions: [AccountGroup], assignments: [String: String], expansions: [String: Bool]) {
+    public func loadOrders() -> [String: [String]] {
+        queue.sync { load().orders }
+    }
+
+    public func save(definitions: [AccountGroup], assignments: [String: String],
+                     expansions: [String: Bool], orders: [String: [String]]) {
         queue.async { [fileURL] in
             let document = Document(groups: definitions.filter { !$0.isSynthetic },
                                     assignments: assignments,
-                                    expansions: expansions)
+                                    expansions: expansions,
+                                    orders: orders)
             guard let data = try? JSONEncoder().encode(document) else { return }
             try? data.write(to: fileURL, options: .atomic)
         }
