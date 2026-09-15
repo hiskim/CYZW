@@ -43,7 +43,10 @@ struct MatrixStageView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            syncStatusPill
+            HStack(spacing: 6) {
+                syncActionChip
+                syncStatusChip
+            }
         }
         .background(
             GeometryReader { proxy in
@@ -107,34 +110,99 @@ struct MatrixStageView: View {
         dragSnapshot = nil
     }
 
-    // MARK: - 群控状态胶囊（三态）
+    // MARK: - 群控控制条（一键同步 chip + 分组感知状态 chip，对齐旧版语义）
 
+    /// 当前运行实例的 ID 集合（矩阵与群控共用同一份运行实例数据源）。
+    private var liveSyncAccountIDs: [String] {
+        session.runningAccountIDs
+    }
+
+    private var allLiveInstancesAreSyncing: Bool {
+        !liveSyncAccountIDs.isEmpty && liveSyncAccountIDs.allSatisfy { sync.isReceiver($0) }
+    }
+
+    /// 一键开启当前已打开实例的同步（路由仍由中控按账号所属分组隔离）；
+    /// 全开状态下点击 = 关闭全部分组同步。
     @ViewBuilder
-    private var syncStatusPill: some View {
-        switch sync.mode {
-        case .masterDriven:
+    private var syncActionChip: some View {
+        if !liveSyncAccountIDs.isEmpty {
             Button {
-                sync.resignAllMasters()
+                if allLiveInstancesAreSyncing {
+                    sync.disableAllSync()
+                } else {
+                    sync.enableAllLiveInstances()
+                }
             } label: {
-                LobbyStatusCapsule(text: "主控 · \(sync.receiverCount) 跟随",
-                                   tint: .yellow, isSelected: true)
+                HStack(spacing: 4) {
+                    Image(systemName: allLiveInstancesAreSyncing ? "link.circle.fill" : "link.circle")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(allLiveInstancesAreSyncing ? "同步已全开" : "一键开启同步")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(allLiveInstancesAreSyncing ? Color.white : Color.cyan)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule(style: .continuous)
+                    .fill(allLiveInstancesAreSyncing ? Color.cyan.opacity(0.72) : Color.cyan.opacity(0.14)))
+                .overlay(Capsule(style: .continuous)
+                    .strokeBorder(Color.cyan.opacity(0.55), lineWidth: 1))
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
-            .help("点击取消全部主控（回到互相同步 / 空闲）")
-        case .mutual:
-            Button {
-                sync.disableAllReceivers()
-            } label: {
-                LobbyStatusCapsule(text: "互相同步 · \(sync.receiverCount) 窗口",
-                                   tint: .cyan, isSelected: true)
-            }
-            .buttonStyle(.plain)
-            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
-            .help("点击关闭全部参与同步")
-        case .idle:
-            EmptyView()
+            .help(allLiveInstancesAreSyncing
+                  ? "关闭全部分组同步"
+                  : "一键开启当前已打开的 \(liveSyncAccountIDs.count) 个实例；事件只在各自分组内同步")
         }
+    }
+
+    /// 分组同步摘要：多组同步 → 「同步 N 组 · M 窗口」（点击全关）；
+    /// 单组 → 「组名 · 主控名 主控」（金）或「组名 · N 窗口」（青，点击关该组）；
+    /// 无同步 → 不占位。
+    @ViewBuilder
+    private var syncStatusChip: some View {
+        let activeGroups = session.groupDefinitions.filter { sync.isGroupSyncEnabled($0.id) }
+        if activeGroups.count > 1 {
+            Button {
+                sync.disableAllSync()
+            } label: {
+                statusChipLabel(icon: "link.circle.fill",
+                                text: "同步 \(activeGroups.count) 组 · \(sync.receiverCount) 窗口",
+                                tint: .cyan)
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("当前有多个分组同步，点击关闭全部分组同步")
+        } else if let group = activeGroups.first {
+            let masterID = sync.masterAccountID(in: group.id)
+            let masterName = masterID.flatMap { id in session.accounts.first { $0.id == id }?.nickname }
+            Button {
+                sync.disableGroup(group.id)
+            } label: {
+                statusChipLabel(
+                    icon: masterName == nil ? "link.circle.fill" : "crown.fill",
+                    text: masterName.map { "\(group.groupName) · \($0) 主控" }
+                        ?? "\(group.groupName) · \(sync.receiverCount(in: group.id)) 窗口",
+                    tint: masterName == nil ? .cyan : .yellow)
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("关闭「\(group.groupName)」分组同步")
+        }
+    }
+
+    private func statusChipLabel(icon: String, text: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 9, weight: .bold))
+            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(Capsule(style: .continuous).fill(tint.opacity(0.14)))
+        .overlay(Capsule(style: .continuous).strokeBorder(tint.opacity(0.5), lineWidth: 1))
     }
 
     // MARK: - 画布

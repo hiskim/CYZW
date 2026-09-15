@@ -457,6 +457,20 @@ public final class InputSyncController: ObservableObject {
         return liveIDs.count
     }
 
+    /// 一键开启当前已打开实例的同步。路由仍由中控按账号所属分组隔离。
+    @discardableResult
+    public func enableAllLiveInstances() -> Int {
+        let liveIDs = Set(registry.liveAccountIDs())
+        for accountID in liveIDs { setReceiver(accountID, enabled: true) }
+        return liveIDs.count
+    }
+
+    /// 一键关闭全部分组同步（参与名单 + 主控一起清）。
+    public func disableAllSync() {
+        let groupIDs = Array(groupStates.keys)
+        for groupID in groupIDs { disableGroup(groupID) }
+    }
+
     /// 关闭指定分组同步，并清掉该分组的主控配置。
     public func disableGroup(_ groupID: String) {
         guard var state = groupStates[groupID] else { return }

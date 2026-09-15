@@ -8,10 +8,17 @@ import LobbyEngine
 /// 分组 CRUD（重命名/改色/排序/删除，删除可选连成员一起删）。
 struct AccountSidebarView: View {
     @ObservedObject var session: LobbySessionModel
+    /// 群控中控：分组 chip 的同步状态指示随它刷新。
+    @ObservedObject private var sync: InputSyncController
     /// 侧栏筛选选中分组；nil = 全部。
     @State private var selectedGroupID: String?
     /// 分组编辑弹窗（create = 新建；edit(group) = 编辑既有分组）。
     @State private var draft: GroupDraft?
+
+    init(session: LobbySessionModel) {
+        _session = ObservedObject(wrappedValue: session)
+        _sync = ObservedObject(wrappedValue: session.sync)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -103,6 +110,12 @@ struct AccountSidebarView: View {
                     .frame(width: 7, height: 7)
                 Text(group.groupName)
                     .font(.system(size: 11, weight: .semibold))
+                // 分组同步中：青色链接角标（点击分组右键可关闭组内同步）。
+                if !group.isSynthetic, sync.isGroupSyncEnabled(group.id) {
+                    Image(systemName: "link.circle.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.cyan)
+                }
             }
             .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.72))
             .padding(.horizontal, 9)
