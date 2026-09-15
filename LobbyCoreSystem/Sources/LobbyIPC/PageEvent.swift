@@ -1,4 +1,5 @@
 import Foundation
+import LobbyDomain
 
 // MARK: - 页面 → 原生事件契约（强类型解码）
 //
@@ -60,6 +61,8 @@ public enum PageEvent: Sendable {
     case graphics(event: String, message: String)
     /// 页面里的帧率写入（调试定位用）。
     case frameRateWrite(fps: String, stack: String)
+    /// 键鼠同步：捕获器上报的中性输入事件（仅参与同步的实例会上报）。
+    case input(InputSyncEvent)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -105,6 +108,9 @@ public enum PageEvent: Sendable {
         case "frameRate":
             return .frameRateWrite(fps: stringified(body["fps"]),
                                    stack: stringified(body["stack"]))
+        case "input":
+            guard let event = InputSyncEvent.decode(from: body) else { return .unknown(type: type) }
+            return .input(event)
         default:
             return .unknown(type: type)
         }

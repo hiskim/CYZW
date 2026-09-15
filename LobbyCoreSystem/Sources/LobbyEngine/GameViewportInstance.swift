@@ -37,6 +37,8 @@ public final class GameViewportInstance: NSView {
 
     /// 所属实例池（生命周期与启动闸门）。
     public weak var pool: GameInstancePool?
+    /// 键鼠同步中控（事件上报入口 + 捕获开关写回）。
+    public weak var sync: InputSyncController?
 
     private let authenticator: GameAuthenticating
     private let resources: ResourceProviding
@@ -63,12 +65,14 @@ public final class GameViewportInstance: NSView {
                 environment: InstanceEnvironment,
                 authenticator: GameAuthenticating,
                 resources: ResourceProviding,
-                settingsMirror: GameSettingsMirror) {
+                settingsMirror: GameSettingsMirror,
+                sync: InputSyncController? = nil) {
         self.account = account
         self.environment = environment
         self.authenticator = authenticator
         self.resources = resources
         self.settingsMirror = settingsMirror
+        self.sync = sync
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -76,6 +80,8 @@ public final class GameViewportInstance: NSView {
         addSubview(webView)
         webView.frame = bounds
         buildLoadingOverlay()
+        // 登记到群控注册表：中控只认账号 ID，实例的 JS 注入全靠它寻址。
+        sync?.registry.register(self, accountID: account.id)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -155,11 +161,18 @@ public final class GameViewportInstance: NSView {
         schemeHandler.stopAll()
         webView.stopLoading()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: LobbyConfiguration.webChannelName)
+        // 从群控注册表摘除（identity 校验：重载卡片时新实例已登记，不能误删）。
+        sync?.registry.unregister(self, accountID: account.id)
         if gameSessionStarted {
             gameSessionStarted = false
             let resources = self.resources
             Task { await resources.endGameSession() }
         }
+    }
+
+    /// 群控中控向本实例页面注入 JS（回放事件 / 切捕获开关 / 波纹开关）。
+    public func evaluateBridgeScript(_ script: String, completion: ((Error?) -> Void)? = nil) {
+        webView.evaluateJavaScript(script) { _, error in completion?(error) }
     }
 
     /// 用户主动「重新登录」。
@@ -286,6 +299,13 @@ public final class GameViewportInstance: NSView {
         // ② 之后每一次写入都实时同步到原生镜像，关窗 / 崩溃都不丢配置。
         contentController.addUserScript(
             WKUserScript(source: GameSettingsMirror.mirrorScript,
+                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        // ③ 键鼠同步代理：捕获器 + 回放器 + 波纹特效层。每个实例都装，
+        // 谁是主控 / 谁参与同步由 InputSyncController 用 setCapture(on) 切换
+        // （WKUserScript 只能在导航时注入，运行时无法追加，所以必须预先装好）。
+        contentController.addUserScript(
+            WKUserScript(source: InputSyncScript.agent,
                          injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
@@ -426,6 +446,9 @@ public final class GameViewportInstance: NSView {
             LobbyLog.warn("[instance] WebGL %@: %@", event, message)
         case .frameRateWrite(let fps, let stack):
             LobbyLog.debug("[instance] frame rate write: fps=%@ stack=%@", fps, stack)
+        case .input(let event):
+            // 键鼠同步：本实例只有被允许发言时中控才会路由（中控会再校验一次）。
+            sync?.publish(event, from: account.id)
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
         }
@@ -551,6 +574,9 @@ extension GameViewportInstance: WKNavigationDelegate {
         loadingOverlay.isHidden = true
         LobbyLog.info("[instance] game document loaded")
         startStorageSync()
+        // 页面就绪后把「是否捕获 / 波纹开关」写回页面：WKUserScript 在导航时已注入
+        // 代理，但捕获开关是运行时状态（重载/新建实例都必须补一次）。
+        sync?.refreshCapture(forAccountID: account.id)
         // 就绪后先按「非焦点」降帧静音；焦点仲裁由会话模型在 ready 后统一重放。
         applyEnergyPolicy(isFocused: false)
     }

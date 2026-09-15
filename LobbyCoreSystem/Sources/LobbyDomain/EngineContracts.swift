@@ -74,6 +74,18 @@ public protocol GameAuthenticating: Sendable {
     func authenticate(account: GameAccount, manifest: ResourceManifest?) async throws -> AuthResult
 }
 
+/// 分组持久化协议（实现：LobbyStorage.AccountGroupStore）。
+public protocol GroupStoring: Sendable {
+    /// 自定义分组定义（不含伪分组）。
+    func loadDefinitions() -> [AccountGroup]
+    /// 账号 ID → 分组 ID 归属表。
+    func loadAssignments() -> [String: String]
+    /// 伪分组展开状态。
+    func loadExpansions() -> [String: Bool]
+    /// 全量保存。
+    func save(definitions: [AccountGroup], assignments: [String: String], expansions: [String: Bool])
+}
+
 /// 认证错误。
 public enum AuthenticationError: LocalizedError, Sendable {
     case missingBinFile

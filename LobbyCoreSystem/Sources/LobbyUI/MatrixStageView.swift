@@ -2,14 +2,21 @@ import SwiftUI
 import LobbyDomain
 import LobbyEngine
 
-/// 多开矩阵舞台：画布测量 → 求解器算尺寸 → LazyVGrid 摆卡片。
+/// 多开矩阵舞台：画布测量 → 求解器算尺寸 → 网格摆卡片 + 群控状态胶囊。
 ///
 /// 数据源红线：适配计数与 ForEach 渲染必须共用 `session.matrixAccounts`——
 /// 任何一边多算 / 漏算，卡片尺寸都会错。
 struct MatrixStageView: View {
     @ObservedObject var session: LobbySessionModel
+    /// 群控中控：状态胶囊（主控驱动 / 互相同步 / idle）直接观察它。
+    @ObservedObject private var sync: InputSyncController
     /// 画布可视区尺寸（自动适配的输入；首帧为 0，随后立即被真实尺寸覆盖）。
     @State private var canvasViewport: CGSize = .zero
+
+    init(session: LobbySessionModel) {
+        self.session = session
+        _sync = ObservedObject(wrappedValue: session.sync)
+    }
 
     var body: some View {
         let entries = session.matrixAccounts
@@ -21,6 +28,9 @@ struct MatrixStageView: View {
                 emptyState
             }
         }
+        .overlay(alignment: .topTrailing) {
+            syncStatusPill
+        }
         .background(
             GeometryReader { proxy in
                 Color.clear
@@ -31,19 +41,59 @@ struct MatrixStageView: View {
             }
         )
         .confirmationDialog(
-            "删除账号",
+            "删除分组「\(session.groupDeletionCandidate?.groupName ?? "")」",
             isPresented: Binding(
-                get: { session.deletionCandidate != nil },
-                set: { if !$0 { session.deletionCandidate = nil } }
+                get: { session.groupDeletionCandidate != nil },
+                set: { if !$0 { session.groupDeletionCandidate = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除「\(session.deletionCandidate?.nickname ?? "")」", role: .destructive) {
-                session.confirmDelete()
+            Button("删除分组并删除组内账号文件", role: .destructive) {
+                session.deleteGroupMembers = true
+                if let group = session.groupDeletionCandidate {
+                    session.deleteGroup(id: group.id, deletingMembers: true)
+                }
+                session.groupDeletionCandidate = nil
             }
-            Button("取消", role: .cancel) { session.deletionCandidate = nil }
+            Button("仅删除分组（成员移入未分组）", role: .destructive) {
+                if let group = session.groupDeletionCandidate {
+                    session.deleteGroup(id: group.id, deletingMembers: false)
+                }
+                session.groupDeletionCandidate = nil
+            }
+            Button("取消", role: .cancel) { session.groupDeletionCandidate = nil }
         } message: {
-            Text("凭据文件将被永久删除，且不可恢复。若该账号正在运行，实例会先被关闭。")
+            Text("删除分组并删除成员会永久删除组内全部账号的凭据文件，且不可恢复。")
+        }
+    }
+
+    // MARK: - 群控状态胶囊（三态）
+
+    @ViewBuilder
+    private var syncStatusPill: some View {
+        switch sync.mode {
+        case .masterDriven:
+            Button {
+                sync.resignAllMasters()
+            } label: {
+                LobbyStatusCapsule(text: "主控 · \(sync.receiverCount) 跟随",
+                                   tint: .yellow, isSelected: true)
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("点击取消全部主控（回到互相同步 / 空闲）")
+        case .mutual:
+            Button {
+                sync.disableAllReceivers()
+            } label: {
+                LobbyStatusCapsule(text: "互相同步 · \(sync.receiverCount) 窗口",
+                                   tint: .cyan, isSelected: true)
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("点击关闭全部参与同步")
+        case .idle:
+            EmptyView()
         }
     }
 
@@ -88,14 +138,46 @@ struct MatrixStageView: View {
     }
 }
 
-/// 矩阵卡片：顶栏（昵称 / 重载 / 关闭）+ 严格 9:16 游戏画面 + 焦点描边。
+/// 矩阵卡片：顶栏（序号 / 昵称 / 👑 主控 / 🔗 参与同步 / 重载 / 关闭）
+/// + 严格 9:16 游戏画面 + 分组着色描边（主控加流光）。
 struct ViewportCardView: View {
     @ObservedObject var session: LobbySessionModel
+    /// 群控中控：👑 / 🔗 两个开关都落在它身上。
+    @ObservedObject private var sync: InputSyncController
     let account: GameAccount
     let layout: MatrixLayout
     let slotIndex: Int
 
+    init(session: LobbySessionModel, account: GameAccount, layout: MatrixLayout, slotIndex: Int) {
+        self.session = session
+        self.account = account
+        self.layout = layout
+        self.slotIndex = slotIndex
+        _sync = ObservedObject(wrappedValue: session.sync)
+    }
+
     private var isFocused: Bool { session.focusedAccountID == account.id }
+    private var isMaster: Bool { sync.isMaster(account.id) }
+    private var isReceiver: Bool { sync.isReceiver(account.id) }
+    private var swatch: (Double, Double, Double) {
+        GroupSwatch.rgb(for: session.groupColorName(forAccountID: account.id))
+    }
+    private var groupColor: Color {
+        Color(red: swatch.0, green: swatch.1, blue: swatch.2)
+    }
+    /// 🔗 的提示文案随模式变化：无主控时它是「互相广播」的一份子，有主控时纯接收。
+    private var participateHelp: String {
+        let groupName = session.groupName(forAccountID: account.id)
+        if isMaster { return "取消\(groupName)组主控" }
+        if sync.masterAccountID(in: sync.groupID(for: account.id)) != nil {
+            return isReceiver
+                ? "关闭\(groupName)组参与同步（不再接收主控操作）"
+                : "开启\(groupName)组参与同步（接收主控操作）"
+        }
+        return isReceiver
+            ? "关闭\(groupName)组参与同步（本窗口不再参与互相同步）"
+            : "开启\(groupName)组参与同步（与其它同组窗口互相同步）"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -103,36 +185,77 @@ struct ViewportCardView: View {
             gameSurface
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
+        .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(isFocused ? Color.yellow.opacity(0.85) : Color.white.opacity(0.10),
-                              lineWidth: isFocused ? 1.5 : 1)
+                .fill(groupColor.opacity(0.06))
         )
+        .overlay {
+            ZStack {
+                // 分组着色描边：同组同色、不同组不同色；主控加粗。
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(colors: [groupColor.opacity(0.82), groupColor.opacity(0.42)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: isMaster ? 1.8 : 1.2
+                    )
+                LobbyMasterBorderEffect(color: groupColor, isActive: isMaster)
+            }
+        }
         .shadow(color: isFocused ? Color.yellow.opacity(0.22) : .black.opacity(0.4),
                 radius: isFocused ? 14 : 10, y: 4)
     }
 
     private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(isFocused ? .yellow : .secondary)
+        HStack(spacing: 5) {
+            Text("\(slotIndex + 1)")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(.black)
+                .frame(width: 14, height: 14)
+                .background(.white)
+                .clipShape(Circle())
             Text(account.nickname)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-            Spacer(minLength: 4)
+            Spacer(minLength: 3)
+            // 主控：在所属分组内唯一。点击设为本组主控或退位。
+            // 没有本组主控时，本组开了同步的窗口互相同步。
+            Button {
+                sync.toggleMaster(account.id)
+            } label: {
+                Image(systemName: isMaster ? "crown.fill" : "crown")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(isMaster ? Color.yellow : Color.white.opacity(0.5))
+                    .frame(width: 13, height: 13)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 4, intensity: 0.16)
+            .help(isMaster ? "取消本组主控" : "设为本组主控：只有此窗口的操作会同步出去")
+            // 参与同步：每个窗口独立开关。既是收件人；无本组主控时同时也是发言人。
+            Button {
+                sync.toggleReceiver(account.id)
+            } label: {
+                Image(systemName: isReceiver ? "link.circle.fill" : "link.circle")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(isReceiver ? Color.cyan : Color.white.opacity(0.45))
+                    .frame(width: 13, height: 13)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 4, intensity: 0.16)
+            .help(participateHelp)
             Button {
                 session.reload(account)
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 18, height: 18)
+                    .frame(width: 16, height: 16)
                     .background(Circle().fill(Color.white.opacity(0.10)))
             }
             .buttonStyle(.plain)
-            .lobbyHoverHighlight(cornerRadius: 9, intensity: 0.14)
+            .lobbyHoverHighlight(cornerRadius: 8, intensity: 0.14)
             .help("重新登录")
             Button {
                 session.close(account)
@@ -140,14 +263,14 @@ struct ViewportCardView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 18, height: 18)
+                    .frame(width: 16, height: 16)
                     .background(Circle().fill(Color.white.opacity(0.10)))
             }
             .buttonStyle(.plain)
-            .lobbyHoverHighlight(cornerRadius: 9, intensity: 0.14)
+            .lobbyHoverHighlight(cornerRadius: 8, intensity: 0.14)
             .help("关闭实例")
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 7)
         .frame(height: layout.headerHeight)
         .background(Color.black.opacity(0.55))
     }
@@ -182,5 +305,65 @@ struct GameSurfaceRepresentable: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
         // 不 stop、不 removeFromSuperview（SwiftUI 自己会摘）。
+    }
+}
+
+/// 主控卡片专用边框动效：同组颜色的呼吸辉光 + 沿圆角外框循环移动的流光。
+/// 动画状态隔离在本视图内，避免每一帧动画都让 WKWebView 卡片主体重新计算。
+struct LobbyMasterBorderEffect: View {
+    let color: Color
+    let isActive: Bool
+
+    @State private var sweepAngle: Double = 0
+    @State private var isBreathing = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        ZStack {
+            if isActive {
+                // 外层柔光：呼吸时变亮/变暗，强化「这是当前主控」的识别度。
+                shape
+                    .stroke(color.opacity(isBreathing ? 0.72 : 0.30), lineWidth: 6)
+                    .blur(radius: 5)
+                // 内层流光：高亮点沿卡片四周循环移动。
+                shape
+                    .strokeBorder(
+                        AngularGradient(
+                            colors: [color.opacity(0.16), color.opacity(0.78),
+                                     Color.white.opacity(0.98), color.opacity(0.78),
+                                     color.opacity(0.16)],
+                            center: .center,
+                            angle: .degrees(sweepAngle)
+                        ),
+                        lineWidth: isBreathing ? 2.4 : 1.6
+                    )
+                    .opacity(isBreathing ? 1 : 0.78)
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear { updateAnimation(isActive) }
+        .onChange(of: isActive) { _, active in
+            updateAnimation(active)
+        }
+    }
+
+    private func updateAnimation(_ active: Bool) {
+        guard active else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                sweepAngle = 0
+                isBreathing = false
+            }
+            return
+        }
+        // 每次从普通卡片切为主控时从固定起点开始，避免接管后停在半截光带。
+        sweepAngle = 0
+        withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) {
+            sweepAngle = 360
+        }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+            isBreathing = true
+        }
     }
 }
