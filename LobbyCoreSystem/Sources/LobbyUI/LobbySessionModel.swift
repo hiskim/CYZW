@@ -34,6 +34,8 @@ public final class LobbySessionModel: ObservableObject {
     @Published public private(set) var accountOrders: [String: [String]] = [:]
     /// 多开矩阵窗口排列表（账号 ID 序；缺席账号按分组序追加在尾部）。
     @Published public private(set) var matrixOrder: [String] = []
+    /// 账号备注表：账号 ID → 备注文本。
+    @Published public private(set) var remarks: [String: String] = [:]
     /// 正被拖拽的矩阵卡（视觉反馈用：抬起 + 加深阴影）。
     @Published public var draggingMatrixAccountID: String?
 
@@ -64,6 +66,7 @@ public final class LobbySessionModel: ObservableObject {
         expansions = groupStore.loadExpansions()
         accountOrders = groupStore.loadOrders()
         matrixOrder = groupStore.loadMatrixOrder()
+        remarks = groupStore.loadRemarks()
     }
 
     /// 分组定义排序：sortOrder 优先，再按名称本地化比较（与上一代口径一致）。
@@ -138,6 +141,7 @@ public final class LobbySessionModel: ObservableObject {
         let removed = Set(deletedIDs)
         accountOrders = accountOrders.mapValues { $0.filter { !removed.contains($0) } }
         matrixOrder.removeAll { removed.contains($0) }
+        for id in removed { remarks.removeValue(forKey: id) }
     }
 
     /// 伪分组 / 自定义分组的展开状态。
@@ -260,8 +264,25 @@ public final class LobbySessionModel: ObservableObject {
         }
         groupStore.save(definitions: groupDefinitions, assignments: assignments,
                         expansions: allExpansions, orders: accountOrders,
-                        matrixOrder: matrixOrder)
+                        matrixOrder: matrixOrder, remarks: remarks)
         sync.configureGroups(definitions: groupDefinitions, assignments: assignments)
+    }
+
+    // MARK: - 备注
+
+    public func remark(forAccountID accountID: String) -> String {
+        remarks[accountID] ?? ""
+    }
+
+    /// 更新备注（空串 = 清除）。
+    public func updateRemark(_ value: String, forAccountID accountID: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            remarks.removeValue(forKey: accountID)
+        } else {
+            remarks[accountID] = trimmed
+        }
+        persistGroups()
     }
 
     // MARK: - 账号库

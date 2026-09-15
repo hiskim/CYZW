@@ -343,6 +343,9 @@ struct ViewportCardView: View {
     private var groupColor: Color {
         Color(red: swatch.0, green: swatch.1, blue: swatch.2)
     }
+    private var remark: String {
+        session.remark(forAccountID: account.id)
+    }
     /// 🔗 的提示文案随模式变化：无主控时它是「互相广播」的一份子，有主控时纯接收。
     private var participateHelp: String {
         let groupName = session.groupName(forAccountID: account.id)
@@ -407,6 +410,12 @@ struct ViewportCardView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+            if !remark.isEmpty {
+                Text(remark)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color(red: 1.0, green: 0.78, blue: 0.30).opacity(0.9))
+                    .lineLimit(1)
+            }
             Spacer(minLength: 3)
             // 主控：在所属分组内唯一。点击设为本组主控或退位。
             // 没有本组主控时，本组开了同步的窗口互相同步。

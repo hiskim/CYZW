@@ -14,6 +14,8 @@ struct AccountSidebarView: View {
     @State private var selectedGroupID: String?
     /// 分组编辑弹窗（create = 新建；edit(group) = 编辑既有分组）。
     @State private var draft: GroupDraft?
+    /// 正在编辑备注的账号（nil = 无弹窗）。
+    @State private var remarkDraft: GameAccount?
 
     init(session: LobbySessionModel) {
         _session = ObservedObject(wrappedValue: session)
@@ -33,6 +35,11 @@ struct AccountSidebarView: View {
         .sheet(item: $draft) { draft in
             GroupEditorSheet(session: session, draft: draft) {
                 self.draft = nil
+            }
+        }
+        .sheet(item: $remarkDraft) { account in
+            RemarkEditorSheet(session: session, account: account) {
+                remarkDraft = nil
             }
         }
         .confirmationDialog(
@@ -212,7 +219,8 @@ struct AccountSidebarView: View {
             ForEach(filteredAccounts) { account in
                 AccountSidebarCard(session: session,
                                    account: account,
-                                   groupContextID: selectedGroupID ?? AccountGroup.allID)
+                                   groupContextID: selectedGroupID ?? AccountGroup.allID,
+                                   onEditRemark: { remarkDraft = account })
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -367,17 +375,63 @@ struct GroupEditorSheet: View {
     }
 }
 
+/// 备注编辑弹窗：单行输入，保存写入备注表（空串清除）。
+struct RemarkEditorSheet: View {
+    @ObservedObject var session: LobbySessionModel
+    let account: GameAccount
+    @State private var text: String
+    let onDismiss: () -> Void
+
+    init(session: LobbySessionModel, account: GameAccount, onDismiss: @escaping () -> Void) {
+        self.session = session
+        self.account = account
+        _text = State(initialValue: session.remark(forAccountID: account.id))
+        self.onDismiss = onDismiss
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("备注 · \(account.nickname)")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            TextField("选填，方便区分账号用途", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13))
+            HStack {
+                Spacer()
+                Button("取消", action: onDismiss)
+                    .keyboardShortcut(.cancelAction)
+                Button("保存") {
+                    session.updateRemark(text, forAccountID: account.id)
+                    onDismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(white: 0.14)))
+    }
+}
+
 /// 侧栏账号卡片（含分组着色、「移动到分组」菜单与原生拖拽排序）。
 struct AccountSidebarCard: View {
     @ObservedObject var session: LobbySessionModel
     let account: GameAccount
     /// 拖拽排序的分组上下文（当前筛选视图的分组 ID，「全部」= allID）。
     let groupContextID: String
+    /// 编辑备注回调（状态由外层 AccountSidebarView 持有）。
+    let onEditRemark: () -> Void
 
     private var isRunning: Bool { session.isRunning(account) }
     private var isFocused: Bool { session.focusedAccountID == account.id }
     private var swatch: (Double, Double, Double) {
         GroupSwatch.rgb(for: session.groupColorName(forAccountID: account.id))
+    }
+    private var remarkText: String {
+        session.remark(forAccountID: account.id)
     }
 
     var body: some View {
@@ -401,6 +455,13 @@ struct AccountSidebarCard: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                if !remarkText.isEmpty {
+                    Text(remarkText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color(red: 1.0, green: 0.78, blue: 0.30).opacity(0.9))
+                        .lineLimit(1)
+                        .help(remarkText)
+                }
                 Text(session.groupName(forAccountID: account.id))
                     .font(.system(size: 10))
                     .foregroundStyle(Color(red: swatch.0, green: swatch.1, blue: swatch.2).opacity(0.85))
@@ -468,6 +529,7 @@ struct AccountSidebarCard: View {
                 Button("启动并登录") { session.launch(account) }
             }
             Divider()
+            Button("编辑备注…") { onEditRemark() }
             moveActions
             Divider()
             Button("删除账号文件", role: .destructive) { session.requestDelete(account) }

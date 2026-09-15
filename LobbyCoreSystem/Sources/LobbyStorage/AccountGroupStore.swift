@@ -17,6 +17,8 @@ public final class AccountGroupStore: GroupStoring, @unchecked Sendable {
         var orders: [String: [String]] = [:]
         /// 多开矩阵的窗口排列表。
         var matrixOrder: [String] = []
+        /// 账号备注表：账号 ID → 备注文本。
+        var remarks: [String: String] = [:]
     }
 
     private let fileURL: URL
@@ -49,15 +51,20 @@ public final class AccountGroupStore: GroupStoring, @unchecked Sendable {
         queue.sync { load().matrixOrder }
     }
 
+    public func loadRemarks() -> [String: String] {
+        queue.sync { load().remarks }
+    }
+
     public func save(definitions: [AccountGroup], assignments: [String: String],
                      expansions: [String: Bool], orders: [String: [String]],
-                     matrixOrder: [String]) {
+                     matrixOrder: [String], remarks: [String: String]) {
         queue.async { [fileURL] in
             let document = Document(groups: definitions.filter { !$0.isSynthetic },
                                     assignments: assignments,
                                     expansions: expansions,
                                     orders: orders,
-                                    matrixOrder: matrixOrder)
+                                    matrixOrder: matrixOrder,
+                                    remarks: remarks)
             guard let data = try? JSONEncoder().encode(document) else { return }
             try? data.write(to: fileURL, options: .atomic)
         }
