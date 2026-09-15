@@ -1,0 +1,115 @@
+# LobbyCoreSystem · macOS 游戏多开大厅（全新实现）
+
+参考 `new3.txt` 规格书 2.0 与上一代 macOS 大厅（`ios/Shell/IOS2-Mac`）的实战经验，
+在全新目录用全新代码实现的 Cocos 轻客户端同屏多开大厅。**代码与命名零 `ios2` 残留**
+（仅存的 `ios2Game` / `__IOS2_GAME_INSTANCE__` / `ios2-` 前缀是 WebRuntime 页面侧
+硬编码的外部契约，集中在 `LobbyConfiguration` 常量区声明，见文件内注释）。
+
+## 当前状态：阶段 1 —— 游戏大厅 + 登录 ✅
+
+- **账号库**：导入 / 删除 `.bin` 凭据（NSOpenPanel 多选），与上一代大厅**共用**
+  `~/Library/Application Support/AccountBins`，已导入账号开箱即用。
+- **登录**：选账号 → `.bin` 提交 `/login/authuser` 预认证 → WebKit 实例装载
+  `game-res://app/index.html`，XHR 拦截器把预认证响应喂给游戏登录请求，
+  HSDK 桥应答 `game-init` / `user-tokenlogin` 等登录链路。
+- **多开矩阵**：9:16 严格比例自动适配（闭式解 + 单调剪枝），启动并发闸门
+  （2 路 + 90s 超时），实例池化管理（SwiftUI 格子重建不重启游戏）。
+- **能耗仲裁**：焦点实例满帧出声，非焦点降帧（15 FPS）静音（帧率走
+  「暂停 → 等旧循环退出 → 重启」路径，规避 Cocos 2.4.9 `setFrameRate` 缺陷）。
+- **共享 CDN 资产仓**（actor）：下载合并、跨实例内存副本、磁盘缓存索引、
+  404 风暴防护、清单持久化回退。
+- **游戏内配置镜像**：localStorage 实时回传 + 20s 兜底快照，与上一代大厅共用
+  `GameStorage` 目录。
+- **存储隔离策略**（规格 §2.2）：默认 `WKWebsiteDataStore(forIdentifier:)` 账号
+  独立容器，可切换全局共享 / 不持久化（设置页）。
+
+## 构建与运行
+
+```bash
+# 命令行构建（无签名，Debug）
+xcodebuild -project GameLobby.xcodeproj -scheme GameLobby -configuration Debug build
+
+# 产物（DerivedData）
+open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/GameLobby.app
+```
+
+或直接用 Xcode 打开 `GameLobby.xcodeproj`，选 GameLobby scheme ⌘R。
+
+> ⚠️ 本工程刻意**不使用 SwiftPM**（含本地包）：本机环境 SwiftPM 的
+> `sandbox_apply` 被系统拒绝（`sandbox-exec: sandbox_apply: Operation not permitted`），
+> 任何含包的 xcodebuild 都无法完成解析。模块拓扑改用**五个 Swift 静态库 target**
+> 实现，模块边界同样由编译器强制（import 关系 = target 依赖），后续若环境
+> 修复可平移回 Package.swift（见下方拓扑对照）。
+
+WebRuntime（引擎壳工程）由 `Copy WebRuntime` 构建阶段从
+`../ios-cocos/cocos-project/{src,assets,jsb-adapter}` 拷入主资源包，
+路径与上一代一致。
+
+## 模块拓扑（规格 §3 的等价实现）
+
+```
+GameLobby.app（App target：装配根 + @main，唯一知道全部具体类型的地方）
+ ├── LobbyUI      表现层：SwiftUI 大厅（毛玻璃六步配方 / 中控台侧栏 / 矩阵）+ 会话门面
+ │                依赖 → Domain, Engine
+ ├── LobbyEngine  引擎层：认证器 / 引导脚本 / HSDK 响应器 / 视口实例 / 实例池
+ │                依赖 → Domain, IPC, Storage
+ ├── LobbyStorage 存储层：账号 bin 库 / 设置镜像 / CDN 资产仓 / game-res 方案处理器
+ │                依赖 → Domain
+ ├── LobbyIPC     页面桥契约：PageEvent 强类型解码（阶段 2 追加 SecureXPC 契约）
+ │                依赖 → Domain
+ └── LobbyDomain  领域层：模型 / 协议 / 9:16 矩阵求解器 / 日志门面 / 全局配置（零依赖）
+```
+
+与规格 Package.swift 的对照：`LobbyDomain/Storage/Engine/IPC/UI` 五个 target
+一一对应；`dependencies` 边一致；差异仅在实现载体（Xcode 静态库 vs SPM）。
+依赖方向只允许自上而下，跨层直连会被编译器拒绝。
+
+**依赖注入**：表现层只依赖领域协议（`AccountStoring` / `ResourceProviding` /
+`GameAuthenticating`），具体实现全部在 `App/Sources/GameLobbyApp.swift` 的
+`LobbyComposition` 装配根构造后注入——任何一层都可以独立替换 / mock。
+
+## 目录结构
+
+```
+LobbyCoreSystem/
+├── GameLobby.xcodeproj/       # 手写工程：6 个 target（App + 5 静态库）
+├── App/
+│   ├── Info.plist
+│   └── Sources/GameLobbyApp.swift   # @main + 装配根 + App Nap 防护
+├── Sources/
+│   ├── LobbyDomain/           # 配置 / 账号模型 / MatrixFit 求解器 / 协议 / 日志
+│   ├── LobbyIPC/              # PageEvent 强类型解码
+│   ├── LobbyStorage/          # AccountBinStore / GameSettingsMirror / CDNAssetStore / SchemeHandler
+│   ├── LobbyEngine/           # Authenticator / BootstrapScript / HSDKResponder / ViewportInstance / InstancePool
+│   └── LobbyUI/               # Theme / SessionModel / RootView / 侧栏 / 矩阵
+└── README.md
+```
+
+## 关键外部契约（页面侧硬编码，勿改）
+
+| 常量 | 值 | 来源 |
+|---|---|---|
+| `LobbyConfiguration.webChannelName` | `ios2Game` | `webkit.messageHandlers.ios2Game` |
+| `LobbyConfiguration.instanceGlobalName` | `__IOS2_GAME_INSTANCE__` | WebRuntime boot js |
+| `LobbyConfiguration.gameURLScheme` | `ios2-game` | WebRuntime index.html script 标签 + boot.js 全链路硬编码（`settings.server = 'ios2-game://app/cdn'` 等）；规格书的 `game-res://` 与页面契约冲突，页面契约优先 |
+| `LobbyConfiguration.identityPrefix` | `ios2-` | SDK 身份 = 前缀 + bin SHA256，保持与上一代一致避免游戏侧身份漂移 |
+
+## 用户偏好（UserDefaults）
+
+```
+com.xyzw.gamelobby.macos
+├── lobby.renderQuality          # low/medium/high（默认 high，改档需重启实例）
+├── lobby.frameRate              # 15/24/30/45/60/90/120（白名单对齐 WebRuntime）
+├── lobby.gameStorage.policy     # isolatedPerAccount / sharedAcrossAccounts / ephemeral
+├── lobby.audio.muteWhenUnfocused# 默认 true
+├── lobby.cdn.automaticCaching   # 默认 true
+├── lobby.debug.webInspector     # 默认 false；开启后右键可调 Safari Web Inspector
+└── lobby.log.level              # 0 verbose … 4 error（默认 2 info）
+```
+
+## 路线图
+
+- **阶段 1（本版）**：大厅 + 账号库 + 登录 + 多开矩阵 + 能耗仲裁 + 共享 CDN ✅
+- **阶段 2**：脚本流水线与注入管理（对齐旧 ScriptManager）、账号分组管理、
+  键鼠同步 / 群控（主控-参与者路由 + 防回灌）、渲染完整性自动重载的 HUD、
+  SecureXPC Helper 进程通信、全量资源预取（bundle config 展开）、拖拽重排。
