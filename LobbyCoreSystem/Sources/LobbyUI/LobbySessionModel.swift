@@ -45,16 +45,19 @@ public final class LobbySessionModel: ObservableObject {
     public let bins: AccountStoring
     public let pool: GameInstancePool
     public let sync: InputSyncController
+    public let scripts: ScriptStore
     private let groupStore: GroupStoring
 
     public init(bins: AccountStoring,
                 pool: GameInstancePool,
                 sync: InputSyncController,
-                groupStore: GroupStoring) {
+                groupStore: GroupStoring,
+                scripts: ScriptStore) {
         self.bins = bins
         self.pool = pool
         self.sync = sync
         self.groupStore = groupStore
+        self.scripts = scripts
         pool.delegate = self
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()

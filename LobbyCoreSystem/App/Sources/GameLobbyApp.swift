@@ -16,6 +16,7 @@ enum LobbyComposition {
         let mirror = GameSettingsMirror()
         let groups = AccountGroupStore()
         let sync = InputSyncController()
+        let scripts = ScriptStore()
         let authenticator = AccountAuthenticator(bins: bins)
         let pool = GameInstancePool { account, environment in
             GameViewportInstance(account: account,
@@ -23,9 +24,11 @@ enum LobbyComposition {
                                  authenticator: authenticator,
                                  resources: cdn,
                                  settingsMirror: mirror,
-                                 sync: sync)
+                                 sync: sync,
+                                 scripts: scripts)
         }
-        return LobbySessionModel(bins: bins, pool: pool, sync: sync, groupStore: groups)
+        return LobbySessionModel(bins: bins, pool: pool, sync: sync,
+                                 groupStore: groups, scripts: scripts)
     }
 
     /// 启动预热：CDN 清单 + 核心 bundle。失败不致命（游戏窗口可惰性重试）。

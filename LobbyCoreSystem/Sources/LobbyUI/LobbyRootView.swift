@@ -145,9 +145,7 @@ public struct LobbyRootView: View {
             case .accounts:
                 AccountSidebarView(session: session)
             case .scripts:
-                SidebarPlaceholderView(icon: "puzzlepiece.extension",
-                                       title: "脚本与自动化",
-                                       detail: "规划在阶段 2：脚本流水线与插件运行时。")
+                ScriptSidebarView(session: session)
             case .settings:
                 SidebarSettingsView()
             }

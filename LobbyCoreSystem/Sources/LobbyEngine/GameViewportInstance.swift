@@ -39,6 +39,8 @@ public final class GameViewportInstance: NSView {
     public weak var pool: GameInstancePool?
     /// 键鼠同步中控（事件上报入口 + 捕获开关写回）。
     public weak var sync: InputSyncController?
+    /// JS 脚本库（启动时按环境注入启用中的脚本）。
+    public weak var scripts: ScriptStore?
 
     private let authenticator: GameAuthenticating
     private let resources: ResourceProviding
@@ -66,13 +68,15 @@ public final class GameViewportInstance: NSView {
                 authenticator: GameAuthenticating,
                 resources: ResourceProviding,
                 settingsMirror: GameSettingsMirror,
-                sync: InputSyncController? = nil) {
+                sync: InputSyncController? = nil,
+                scripts: ScriptStore? = nil) {
         self.account = account
         self.environment = environment
         self.authenticator = authenticator
         self.resources = resources
         self.settingsMirror = settingsMirror
         self.sync = sync
+        self.scripts = scripts
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -128,6 +132,29 @@ public final class GameViewportInstance: NSView {
                     WKUserScript(source: self.bootstrapSource(authentication: authentication),
                                  injectionTime: .atDocumentStart, forMainFrameOnly: true)
                 )
+                // 注入启用中的 JS 脚本（上一代 _enabledScriptRecords 语义）：
+                // 单开环境取「单开生效 + 单多开生效」；多开环境过「多开全局门禁」
+                // 后仅取「单多开生效」；总开关关闭 → 一律不注入（只做门闸，
+                // 不修改子开关状态）。atDocumentEnd 注入、仅主框架。
+                if let scripts = self.scripts {
+                    let allowMulti: Bool
+                    switch self.environment {
+                    case .single: allowMulti = true
+                    case .multi: allowMulti = scripts.isMultiOpenGateEnabled
+                    }
+                    for record in scripts.enabledScripts(allowMulti: allowMulti) {
+                        guard let source = scripts.scriptSource(named: record.name),
+                              !source.isEmpty else {
+                            LobbyLog.warn("[instance] user script skipped (unreadable): %@", record.name)
+                            continue
+                        }
+                        self.webView.configuration.userContentController.addUserScript(
+                            WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+                        )
+                        LobbyLog.info("[instance] user script injected: %@ (%@)",
+                                      record.name, self.environment == .single ? "single" : "multi")
+                    }
+                }
                 let entry = URL(string: "\(LobbyConfiguration.gameURLScheme)://app/index.html?revision=lobby-macos-1")!
                 LobbyLog.debug("[instance] loading game document: %@", entry.absoluteString)
                 self.webView.load(URLRequest(url: entry))

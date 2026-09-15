@@ -86,6 +86,13 @@ public enum LobbyConfiguration {
         lobbySupportDirectory.appendingPathComponent("CDN", isDirectory: true)
     }
 
+    /// JS 脚本目录：`Application Support/IOS2Scripts`。
+    /// 与上一代宿主同路径（同为用户数据，与 AccountBins/GameStorage 同策略）——
+    /// 旧大厅已导入的脚本在新大厅开箱即用。
+    public static var scriptsDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("IOS2Scripts", isDirectory: true)
+    }
+
     /// WebKit 游戏运行时（引擎壳工程）在主资源包内的位置。
     public static var webRuntimeRoot: URL? {
         Bundle.main.resourceURL?.appendingPathComponent("WebRuntime", isDirectory: true)
@@ -108,5 +115,11 @@ public enum LobbyConfiguration {
         public static let webInspector = "lobby.debug.webInspector"
         /// 日志等级（Int，0=verbose…3=error；默认 info）。
         public static let logLevel = "lobby.log.level"
+        /// JS 脚本引擎总开关（默认 true）。
+        public static let scriptsGlobalEnabled = "lobby.scripts.globalEnabled"
+        /// 多开全局门禁（默认 false，防误操作多开注入）。
+        public static let scriptsMultiGate = "lobby.scripts.multiGate"
+        /// 脚本状态记录（JSON Data）。
+        public static let scriptsRecords = "lobby.scripts.records"
     }
 }
