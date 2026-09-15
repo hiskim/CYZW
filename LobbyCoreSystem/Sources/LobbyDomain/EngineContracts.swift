@@ -84,9 +84,12 @@ public protocol GroupStoring: Sendable {
     func loadExpansions() -> [String: Bool]
     /// 分组内账号拖拽排序表：分组 ID → 有序账号 ID 列表。
     func loadOrders() -> [String: [String]]
+    /// 多开矩阵的窗口排列表（账号 ID 序；缺席账号按分组序追加在尾部）。
+    func loadMatrixOrder() -> [String]
     /// 全量保存。
     func save(definitions: [AccountGroup], assignments: [String: String],
-              expansions: [String: Bool], orders: [String: [String]])
+              expansions: [String: Bool], orders: [String: [String]],
+              matrixOrder: [String])
 }
 
 /// 认证错误。

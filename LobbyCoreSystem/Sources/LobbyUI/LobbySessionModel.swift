@@ -32,6 +32,10 @@ public final class LobbySessionModel: ObservableObject {
     @Published public var expansions: [String: Bool] = [:]
     /// 分组内账号拖拽排序表：分组 ID → 有序账号 ID 列表（缺席 = 库扫描序）。
     @Published public private(set) var accountOrders: [String: [String]] = [:]
+    /// 多开矩阵窗口排列表（账号 ID 序；缺席账号按分组序追加在尾部）。
+    @Published public private(set) var matrixOrder: [String] = []
+    /// 正被拖拽的矩阵卡（视觉反馈用：抬起 + 加深阴影）。
+    @Published public var draggingMatrixAccountID: String?
 
     /// 待确认删除的分组是否连成员一起删（确认框选项）。
     @Published public var deleteGroupMembers = false
@@ -56,6 +60,7 @@ public final class LobbySessionModel: ObservableObject {
         assignments = groupStore.loadAssignments()
         expansions = groupStore.loadExpansions()
         accountOrders = groupStore.loadOrders()
+        matrixOrder = groupStore.loadMatrixOrder()
     }
 
     /// 分组定义排序：sortOrder 优先，再按名称本地化比较（与上一代口径一致）。
@@ -129,6 +134,7 @@ public final class LobbySessionModel: ObservableObject {
     private func removeOrderEntries(for deletedIDs: [String]) {
         let removed = Set(deletedIDs)
         accountOrders = accountOrders.mapValues { $0.filter { !removed.contains($0) } }
+        matrixOrder.removeAll { removed.contains($0) }
     }
 
     /// 伪分组 / 自定义分组的展开状态。
@@ -250,7 +256,8 @@ public final class LobbySessionModel: ObservableObject {
             allExpansions[group.id] = group.isExpanded
         }
         groupStore.save(definitions: groupDefinitions, assignments: assignments,
-                        expansions: allExpansions, orders: accountOrders)
+                        expansions: allExpansions, orders: accountOrders,
+                        matrixOrder: matrixOrder)
         sync.configureGroups(definitions: groupDefinitions, assignments: assignments)
     }
 
@@ -363,7 +370,29 @@ public final class LobbySessionModel: ObservableObject {
                 result.append(account)
             }
         }
-        return result
+        // 矩阵拖拽排列表优先（标题栏拖动换位用）：表内账号按 rank，
+        // 缺席账号（新启动等）按分组序追加在尾部。
+        return AccountOrder.apply(result, order: matrixOrder)
+    }
+
+    /// 矩阵标题栏拖拽换位：把 `draggedID` 移到 `targetID` 当前所在的位置。
+    /// 由矩阵舞台在拖动经过其它卡片时调用，实时重排并持久化。
+    /// 插入方向随拖拽方向变化：向左拖 = 插到目标**之前**；向右拖 = 插到目标
+    /// **之后**（否则向右拖到紧邻的卡上会落回原位，表现为"第一个窗口拖不动"）。
+    public func moveMatrixAccount(_ draggedID: String, before targetID: String) {
+        guard draggedID != targetID else { return }
+        var ordered = matrixAccounts.map(\.id)
+        guard let from = ordered.firstIndex(of: draggedID),
+              let to = ordered.firstIndex(of: targetID),
+              from != to else { return }
+        let draggingRight = from < to
+        ordered.remove(at: from)
+        guard let targetIndex = ordered.firstIndex(of: targetID) else { return }
+        ordered.insert(draggedID, at: draggingRight ? targetIndex + 1 : targetIndex)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            matrixOrder = ordered
+        }
+        persistGroups()
     }
 
     public func isRunning(_ account: GameAccount) -> Bool {

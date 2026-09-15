@@ -2,6 +2,14 @@ import SwiftUI
 import LobbyDomain
 import LobbyEngine
 
+/// 矩阵卡片布局帧上报（拖拽换位的命中测试输入）。
+struct MatrixCardFramesKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
 /// 多开矩阵舞台：画布测量 → 求解器算尺寸 → 网格摆卡片 + 群控状态胶囊。
 ///
 /// 数据源红线：适配计数与 ForEach 渲染必须共用 `session.matrixAccounts`——
@@ -12,6 +20,12 @@ struct MatrixStageView: View {
     @ObservedObject private var sync: InputSyncController
     /// 画布可视区尺寸（自动适配的输入；首帧为 0，随后立即被真实尺寸覆盖）。
     @State private var canvasViewport: CGSize = .zero
+
+    /// 各卡片的实时布局帧（全局坐标，拖拽命中测试输入）。
+    @State private var cardFrames: [String: CGRect] = [:]
+    /// 拖拽开始那一刻的布局快照：拖动过程中卡片会带动画换位，
+    /// 命中测试始终用**快照**（起点布局），否则动画中的帧会使命中抖动。
+    @State private var dragSnapshot: [String: CGRect]?
 
     init(session: LobbySessionModel) {
         self.session = session
@@ -40,6 +54,9 @@ struct MatrixStageView: View {
                     }
             }
         )
+        .onPreferenceChange(MatrixCardFramesKey.self) { frames in
+            cardFrames.merge(frames) { _, new in new }
+        }
         .confirmationDialog(
             "删除分组「\(session.groupDeletionCandidate?.groupName ?? "")」",
             isPresented: Binding(
@@ -65,6 +82,29 @@ struct MatrixStageView: View {
         } message: {
             Text("删除分组并删除成员会永久删除组内全部账号的凭据文件，且不可恢复。")
         }
+    }
+
+    // MARK: - 标题栏拖拽换位
+
+    /// 拖动经过某张卡片（用**起点布局快照**做命中测试）就把拖拽卡换到它前面。
+    private func headerDrag(_ value: DragGesture.Value) {
+        let location = value.location
+        if dragSnapshot == nil {
+            dragSnapshot = cardFrames
+            if let startID = cardFrames.first(where: { $0.value.contains(location) })?.key {
+                session.draggingMatrixAccountID = startID
+            }
+        }
+        guard let draggingID = session.draggingMatrixAccountID,
+              let snapshot = dragSnapshot else { return }
+        guard let targetID = snapshot.first(where: { $0.value.contains(location) })?.key,
+              targetID != draggingID else { return }
+        session.moveMatrixAccount(draggingID, before: targetID)
+    }
+
+    private func headerDragEnded() {
+        session.draggingMatrixAccountID = nil
+        dragSnapshot = nil
     }
 
     // MARK: - 群控状态胶囊（三态）
@@ -109,7 +149,9 @@ struct MatrixStageView: View {
                     ViewportCardView(session: session,
                                      account: account,
                                      layout: layout,
-                                     slotIndex: index)
+                                     slotIndex: index,
+                                     onHeaderDrag: headerDrag(_:),
+                                     onHeaderDragEnded: headerDragEnded)
                         .frame(width: layout.cardWidth, height: layout.cardHeight)
                         .id("\(account.id)#\(session.reloadRevision)")
                 }
@@ -140,6 +182,7 @@ struct MatrixStageView: View {
 
 /// 矩阵卡片：顶栏（序号 / 昵称 / 👑 主控 / 🔗 参与同步 / 重载 / 关闭）
 /// + 严格 9:16 游戏画面 + 分组着色描边（主控加流光）。
+/// 标题栏支持拖拽换位（DragGesture + 布局快照命中测试）。
 struct ViewportCardView: View {
     @ObservedObject var session: LobbySessionModel
     /// 群控中控：👑 / 🔗 两个开关都落在它身上。
@@ -147,16 +190,27 @@ struct ViewportCardView: View {
     let account: GameAccount
     let layout: MatrixLayout
     let slotIndex: Int
+    /// 标题栏拖拽回调（舞台统一处理换位逻辑）。
+    let onHeaderDrag: (DragGesture.Value) -> Void
+    let onHeaderDragEnded: () -> Void
 
-    init(session: LobbySessionModel, account: GameAccount, layout: MatrixLayout, slotIndex: Int) {
+    init(session: LobbySessionModel,
+         account: GameAccount,
+         layout: MatrixLayout,
+         slotIndex: Int,
+         onHeaderDrag: @escaping (DragGesture.Value) -> Void,
+         onHeaderDragEnded: @escaping () -> Void) {
         self.session = session
         self.account = account
         self.layout = layout
         self.slotIndex = slotIndex
+        self.onHeaderDrag = onHeaderDrag
+        self.onHeaderDragEnded = onHeaderDragEnded
         _sync = ObservedObject(wrappedValue: session.sync)
     }
 
     private var isFocused: Bool { session.focusedAccountID == account.id }
+    private var isDragging: Bool { session.draggingMatrixAccountID == account.id }
     private var isMaster: Bool { sync.isMaster(account.id) }
     private var isReceiver: Bool { sync.isReceiver(account.id) }
     private var swatch: (Double, Double, Double) {
@@ -201,8 +255,20 @@ struct ViewportCardView: View {
                 LobbyMasterBorderEffect(color: groupColor, isActive: isMaster)
             }
         }
-        .shadow(color: isFocused ? Color.yellow.opacity(0.22) : .black.opacity(0.4),
-                radius: isFocused ? 14 : 10, y: 4)
+        .shadow(color: isDragging ? groupColor.opacity(0.45) :
+                    (isFocused ? Color.yellow.opacity(0.22) : .black.opacity(0.4)),
+                radius: isDragging ? 18 : (isFocused ? 14 : 10), y: 4)
+        .scaleEffect(isDragging ? 1.03 : 1)
+        .opacity(isDragging ? 0.92 : 1)
+        // 布局帧上报（拖拽命中测试输入）。
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: MatrixCardFramesKey.self,
+                    value: [account.id: geo.frame(in: .global)]
+                )
+            }
+        )
     }
 
     private var header: some View {
@@ -273,6 +339,14 @@ struct ViewportCardView: View {
         .padding(.horizontal, 7)
         .frame(height: layout.headerHeight)
         .background(Color.black.opacity(0.55))
+        .contentShape(Rectangle())
+        // 标题栏拖拽换位：minimumDistance 4 保证不抢按钮的点击。
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                .onChanged { value in onHeaderDrag(value) }
+                .onEnded { _ in onHeaderDragEnded() }
+        )
+        .help("按住标题拖动可调整窗口位置")
     }
 
     private var gameSurface: some View {
