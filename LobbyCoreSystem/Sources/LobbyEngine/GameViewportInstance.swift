@@ -197,6 +197,24 @@ public final class GameViewportInstance: NSView {
         }
     }
 
+    /// 运行时切换画质：调用页面桥 `__LOBBY_QUALITY__.set()`，
+    /// 重设 cc.view._maxPixelRatio 并触发画布重算（不重启游戏）。
+    /// 引擎未就绪时页面侧返回 deferred（boot 时会读注入对象的档位）。
+    public func applyQuality(_ quality: RenderQuality) {
+        let raw = quality.rawValue
+        // 返回值诊断：ok:<ratio>=成功；deferred=引擎未就绪（boot 会读注入对象，
+        // 无需重试）；no-handler=页面没有运行时 setter（构建产物未更新）。
+        let script = "window.__LOBBY_QUALITY__ ? window.__LOBBY_QUALITY__.set('\(raw)') : 'no-handler'"
+        webView.evaluateJavaScript(script) { result, error in
+            if let error {
+                LobbyLog.warn("[instance] quality apply(%@) failed: %@", raw, error.localizedDescription)
+            } else {
+                LobbyLog.info("[instance] quality apply(%@) -> %@", raw,
+                              (result as? String) ?? String(describing: result))
+            }
+        }
+    }
+
     /// 群控中控向本实例页面注入 JS（回放事件 / 切捕获开关 / 波纹开关）。
     public func evaluateBridgeScript(_ script: String, completion: ((Error?) -> Void)? = nil) {
         webView.evaluateJavaScript(script) { _, error in completion?(error) }

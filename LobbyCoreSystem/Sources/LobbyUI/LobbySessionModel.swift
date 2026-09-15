@@ -430,6 +430,18 @@ public final class LobbySessionModel: ObservableObject {
         runningAccountIDs.contains(account.id)
     }
 
+    // MARK: - 画质广播
+
+    /// 设置页改档后广播给所有存活实例（页面桥重设 maxPixelRatio 并触发画布
+    /// 重算，不重启游戏）；新启动的实例由引导脚本从 UserDefaults 读档位。
+    public func broadcastQualityChange(_ quality: RenderQuality) {
+        let surfaces = pool.allSurfaces
+        LobbyLog.info("[session] quality broadcast(%@): %ld instance(s)", quality.rawValue, surfaces.count)
+        for instance in surfaces {
+            instance.applyQuality(quality)
+        }
+    }
+
     // MARK: - 焦点能耗仲裁
 
     /// 抢焦点：焦点实例满帧出声，其余降帧静音（规格 §4.1）。

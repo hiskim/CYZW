@@ -2,9 +2,10 @@ import SwiftUI
 import LobbyDomain
 
 /// 设置分节：画质 / 帧率 / 存储策略 / 音频 / CDN / 调试。
-/// 改动即时写 UserDefaults；渲染画质与存储策略在实例启动时读取（改档需重启实例），
-/// 帧率对运行中实例即时生效（走暂停-重启路径）。
+/// 改动即时写 UserDefaults；画质改档经页面桥对存活实例即时生效，
+/// 存储策略在实例启动时读取（改档需重启实例）。
 struct SidebarSettingsView: View {
+    @ObservedObject var session: LobbySessionModel
     @AppStorage(LobbyConfiguration.PreferenceKey.renderQuality) private var renderQualityRaw: String = RenderQuality.fallback.rawValue
     @AppStorage(LobbyConfiguration.PreferenceKey.frameRate) private var frameRateRaw: Int = TargetFrameRate.fallback.rawValue
     @AppStorage(LobbyConfiguration.PreferenceKey.storagePolicy) private var storagePolicyRaw: String = GameStoragePolicy.fallback.rawValue
@@ -16,7 +17,7 @@ struct SidebarSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 settingCard(title: "渲染画质",
-                            summary: "多开画布的像素比档位，改档需重启实例") {
+                            summary: "多开画布的像素比档位，改档即时生效") {
                     pickerRow(options: RenderQuality.allCases, selection: $renderQualityRaw) { $0.label }
                 }
                 settingCard(title: "目标帧率",
@@ -60,6 +61,13 @@ struct SidebarSettingsView: View {
                            isOn: $webInspector)
             }
             .padding(.vertical, 2)
+        }
+        .onChange(of: renderQualityRaw) { _, newValue in
+            // 画质改档即时生效：广播给所有存活实例（页面桥重算画布）；
+            // 新实例由引导脚本从 UserDefaults 读取。
+            if let quality = RenderQuality(rawValue: newValue) {
+                session.broadcastQualityChange(quality)
+            }
         }
     }
 

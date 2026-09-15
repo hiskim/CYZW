@@ -44718,7 +44718,7 @@
               var r = (t._devicePixelRatio = 1);
               (t.isRetinaEnabled() &&
                 (r = t._devicePixelRatio =
-                  Math.min(t._maxPixelRatio, window.devicePixelRatio || 1)),
+                  t._maxPixelRatio || 1),
                 (n.width = e * r),
                 (n.height = i * r));
             },

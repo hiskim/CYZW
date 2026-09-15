@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var IOS2_WEB_RUNTIME_REVISION = '20260829-webkit-retina-1';
+    var IOS2_WEB_RUNTIME_REVISION = '20260910-webgl-pvr-recovery-1';
     window.__IOS2_WEB_RUNTIME_REVISION__ = IOS2_WEB_RUNTIME_REVISION;
 
     // Keep serial startup responsive while still allowing the previous page's
@@ -13,6 +13,23 @@
     var IOS2_STARTUP_QUIET_MS = 250;
     var IOS2_STARTUP_MIN_SETTLE_MS = 400;
     var IOS2_STARTUP_MAX_SETTLE_MS = 1200;
+    var IOS2_PVR_RECOVERY_CONCURRENCY = 2;
+    var IOS2_PVR_RECOVERY_RESUME_DELAY_MS = 250;
+
+    // A WebGL context loss invalidates GPU texture contents, while keeping
+    // JavaScript Texture2D assets alive. PVR source bytes are intentionally
+    // not retained after their initial upload, so the recovery path fetches
+    // them from the app's native CDN cache only when the context returns.
+    var astcPVRRecoveryState = {
+        installed: false,
+        contextLost: false,
+        documentWasHidden: false,
+        scheduled: false,
+        recovering: false,
+        rerunRequested: false,
+        pendingReason: '',
+        sequence: 0
+    };
 
     function showFatal(message) {
         var panel = document.getElementById('ios2WebError');
@@ -27,9 +44,14 @@
         panel.textContent = String(message || 'WebKit 游戏启动失败');
     }
 
+    // 帧率白名单必须与 macOS 端 `MacFrameRate` 的档位集合严格一致，
+    // 不在名单里的注入值会被丢弃并回退到 60。
+    // 注意：实际能跑多高受显示器刷新率上限约束——引擎对非 30/60 档位用
+    // `_stTimeWithRAF`（setTimeout 计时后再对齐 rAF），rAF 最快就是一次 vsync，
+    // 所以 120 档在 60Hz/100Hz 屏上实测只会到 60/100，不会更高。
     function preferredFrameRate() {
         var frameRate = Number(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.frameRate) || 60;
-        return [15, 24, 30, 45, 60].indexOf(frameRate) >= 0 ? frameRate : 60;
+        return [15, 24, 30, 45, 60, 90, 120].indexOf(frameRate) >= 0 ? frameRate : 60;
     }
 
     function renderQuality() {
@@ -42,18 +64,57 @@
     function renderPixelRatio(quality, devicePixelRatio, multiOpen) {
         var device = Math.max(1, Number(devicePixelRatio) || 1);
         if (multiOpen) {
+            // 不再用 device 封顶：dpr=1 的显示器上 min(倍率, device) 会让
+            // 低/中/高三档全部落回 1x，画质设置形同虚设。改为固定倍率——
+            // 低=1x 最省 GPU；中=1.5x、高=2x 超采样（画布像素多于物理像素，
+            // 下屏后更锐利）。档位在实例启动时读取，改档需重启实例。
             if (quality === 'low') return 1;
-            if (quality === 'high') return Math.min(2, device);
-            return Math.min(1.5, device);
+            if (quality === 'high') return 2;
+            return 1.5;
         }
         if (quality === 'low') return 1;
         if (quality === 'medium') return Math.min(2, device);
         return Math.min(3, device);
     }
 
-    // Cocos' release manager only frees assets whose reference count has
-    // reached zero. Keep this entry point shared by scene, WebKit and native
-    // lifecycle notifications so cleanup is safe to request more than once.
+    // 运行时画质切换：原生在设置页改档后，对存活实例调用
+    // `window.__LOBBY_QUALITY__.set('low'|'medium'|'high')`。
+    // 原理与 boot 一致——更新注入对象的档位 + 重设 cc.view._maxPixelRatio +
+    // enableRetina 触发 _resizeEvent 重算画布 backing store（与窗口 resize
+    // 同一条重算路径，不重建 WebGL 上下文，游戏不必重启）。
+    // 引擎未就绪时只更新注入对象（boot 时自己会读），返回 'deferred'。
+    window.__LOBBY_QUALITY__ = {
+        set: function (quality) {
+            if (['low', 'medium', 'high'].indexOf(quality) < 0) return 'invalid:' + quality;
+            var instance = window.__IOS2_GAME_INSTANCE__ || (window.__IOS2_GAME_INSTANCE__ = {});
+            instance.qualitySingle = quality;
+            instance.qualityMulti = quality;
+            if (!(window.cc && window.cc.view)) return 'deferred:' + quality;
+            var devicePixelRatio = Number(window.devicePixelRatio) || 1;
+            var multiOpen = !!instance.multiOpen;
+            var webPixelRatio = renderPixelRatio(quality, devicePixelRatio, multiOpen);
+            var view = window.cc.view;
+            view._maxPixelRatio = webPixelRatio;
+            // enableRetina 只改标志位；必须再调 _resizeEvent(!0) 强制重算——
+            // 无参调用时引擎只在 frame 尺寸变化时才重设画布，恒等尺寸会被
+            // 直接跳过（这就是运行时切画质"不生效"的原因）。
+            view.enableRetina(webPixelRatio > 1);
+            if (typeof view._resizeEvent === 'function') view._resizeEvent(!0);
+            console.log('[ios2-web] pixel ratio runtime set',
+                'quality=' + quality, 'selected=' + webPixelRatio,
+                'backing=' + (window.cc.game.canvas
+                    ? window.cc.game.canvas.width + 'x' + window.cc.game.canvas.height
+                    : '?'));
+            return 'ok:' + webPixelRatio;
+        }
+    };
+
+    // Cocos' release manager only knows about references tracked by Cocos.
+    // WebKit pages also retain assets through FGUI/Spine, remote bundle
+    // caches and native bridges, so releasing during normal gameplay can
+    // destroy resources that the next scene still needs. Keep the state and
+    // entry point for native compatibility, but only permit it once the game
+    // is already shutting down.
     var assetReleaseState = {
         busy: false,
         sequence: 0,
@@ -64,15 +125,349 @@
         startupLastActivityAt: 0
     };
 
+    // WebKit runs the actual game in this shared boot path. Keep the normal
+    // cleanup conservative: deferred Cocos destruction and JavaScript GC are
+    // safe at a page transition, while releaseUnusedAssets() is not because
+    // FGUI/Spine and bridge code can retain resources outside Cocos' counter.
+    var IOS2_RUNTIME_CLEANUP_DELAY_MS = 5000;
+    var IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS = 15000;
+    var IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS = 2500;
+    // Automatic sampling and cleanup are OFF by default. Both run synchronously
+    // on the game's JS thread: sceneNodeProfile() walks the whole scene graph
+    // and calls cc.isValid twice per node (a 5.8k-node scene is ~12k calls),
+    // and garbageCollect() is a stop-the-world full GC. With the 2.5s sample
+    // and 15s cleanup intervals that shows up as a periodic hitch while playing
+    // — most visible right after a button press, which is why it looked like a
+    // click latency problem. Flip this to true (or call
+    // window.__ios2RuntimeMemorySnapshot / __ios2RuntimeSoftCleanup by hand)
+    // when actually hunting a memory issue.
+    var IOS2_RUNTIME_MEMORY_AUTOMATIC = false;
+    var IOS2_RUNTIME_MEMORY_ROOT_LIMIT = 6;
+    var IOS2_RUNTIME_MEMORY_BRANCH_DEPTH = 3;
+    var IOS2_RUNTIME_MEMORY_PAGE_NAMES = {
+        Home: true,
+        MainPanel: true,
+        LegionRoomPanel: true,
+        LegionScene: true,
+        legion: true,
+        NormalLoadingPanel: true
+    };
+    var runtimeMemoryState = {
+        cleanupTimer: null,
+        sampleTimer: null,
+        cleanupBusy: false,
+        lastCleanup: 0,
+        lastSample: 0,
+        pendingCleanupReason: '',
+        pendingSampleReason: '',
+        switchCount: 0,
+        lastSnapshot: null
+    };
+    var runtimeLoadingState = {
+        configured: false,
+        relaxed: false,
+        presets: null,
+        downloader: null
+    };
+
     function managedAssetCount() {
         var manager = window.cc && window.cc.assetManager;
         var assets = manager && manager.assets;
         return assets && typeof assets.count === 'number' ? assets.count : -1;
     }
 
+    function nodeMemoryLabel(node) {
+        var name = node && (node.name || node._name);
+        if (!name && node && node.constructor) name = node.constructor.name;
+        name = String(name || '<unnamed>');
+        return name.length > 48 ? name.slice(0, 45) + '...' : name;
+    }
+
+    function incrementNodeMemoryCount(counts, key) {
+        counts[key] = (counts[key] || 0) + 1;
+    }
+
+    function sceneNodeProfile() {
+        try {
+            var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+            if (!scene) return { nodes: -1, activeNodes: -1, inactiveNodes: -1, pendingDestroyNodes: -1 };
+            var profile = {
+                nodes: 0,
+                activeNodes: 0,
+                inactiveNodes: 0,
+                pendingDestroyNodes: 0,
+                rootCounts: {},
+                branchCounts: {}
+            };
+            var stack = [{ node: scene, depth: 0, root: '', branch: '' }];
+            while (stack.length) {
+                var entry = stack.pop();
+                var node = entry.node;
+                if (!node) continue;
+                profile.nodes++;
+                if (node.activeInHierarchy !== false && node.active !== false) profile.activeNodes++;
+                else profile.inactiveNodes++;
+                try {
+                    if (cc.isValid && cc.isValid(node) && !cc.isValid(node, true)) {
+                        profile.pendingDestroyNodes++;
+                    }
+                } catch (ignored) {}
+
+                var depth = entry.depth;
+                var root = entry.root;
+                var branch = entry.branch;
+                if (depth === 1) {
+                    root = nodeMemoryLabel(node);
+                    branch = root;
+                    incrementNodeMemoryCount(profile.rootCounts, root);
+                } else if (depth > 1) {
+                    if (depth <= IOS2_RUNTIME_MEMORY_BRANCH_DEPTH) {
+                        branch += '/' + nodeMemoryLabel(node);
+                    }
+                    incrementNodeMemoryCount(profile.rootCounts, root || '<scene>');
+                    incrementNodeMemoryCount(profile.branchCounts, branch || root || '<scene>');
+                }
+                var children = node._children || node.children || [];
+                for (var index = 0; index < children.length; index++) {
+                    stack.push({ node: children[index], depth: depth + 1, root: root, branch: branch });
+                }
+            }
+            return profile;
+        } catch (error) {
+            return { nodes: -1, activeNodes: -1, inactiveNodes: -1, pendingDestroyNodes: -1 };
+        }
+    }
+
+    function sortedNodeMemoryCounts(counts, limit) {
+        if (!counts) return [];
+        return Object.keys(counts).sort(function (left, right) {
+            var difference = counts[right] - counts[left];
+            return difference || (left < right ? -1 : left > right ? 1 : 0);
+        }).slice(0, limit || IOS2_RUNTIME_MEMORY_ROOT_LIMIT).map(function (key) {
+            return key + ':' + counts[key];
+        });
+    }
+
+    function nodeMemoryGrowth(counts, previousCounts) {
+        if (!counts || !previousCounts) return [];
+        var keys = {};
+        Object.keys(counts).forEach(function (key) { keys[key] = true; });
+        Object.keys(previousCounts).forEach(function (key) { keys[key] = true; });
+        return Object.keys(keys).map(function (key) {
+            return { key: key, value: (counts[key] || 0) - (previousCounts[key] || 0) };
+        }).filter(function (item) {
+            return item.value !== 0;
+        }).sort(function (left, right) {
+            var difference = Math.abs(right.value) - Math.abs(left.value);
+            return difference || (left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+        }).slice(0, IOS2_RUNTIME_MEMORY_ROOT_LIMIT).map(function (item) {
+            return item.key + (item.value > 0 ? ':+' : ':') + item.value;
+        });
+    }
+
+    function runtimeMemorySnapshot() {
+        var profile = sceneNodeProfile();
+        return {
+            assets: managedAssetCount(),
+            nodes: profile.nodes,
+            activeNodes: profile.activeNodes,
+            inactiveNodes: profile.inactiveNodes,
+            pendingDestroyNodes: profile.pendingDestroyNodes,
+            rootCounts: profile.rootCounts,
+            branchCounts: profile.branchCounts
+        };
+    }
+
+    function formatRuntimeMemorySnapshot(snapshot, previousSnapshot) {
+        var parts = [
+            'assets=' + snapshot.assets,
+            'nodes=' + snapshot.nodes,
+            'active=' + snapshot.activeNodes,
+            'inactive=' + snapshot.inactiveNodes,
+            'pendingDestroy=' + snapshot.pendingDestroyNodes
+        ];
+        var roots = sortedNodeMemoryCounts(snapshot.rootCounts);
+        var branches = sortedNodeMemoryCounts(snapshot.branchCounts);
+        var growth = nodeMemoryGrowth(snapshot.branchCounts, previousSnapshot && previousSnapshot.branchCounts);
+        if (roots.length) parts.push('roots=[' + roots.join(', ') + ']');
+        if (branches.length) parts.push('branches=[' + branches.join(', ') + ']');
+        if (growth.length) parts.push('growth=[' + growth.join(', ') + ']');
+        return parts.join(', ');
+    }
+
+    function postRuntimeMemorySnapshot(reason, phase, snapshot) {
+        snapshot = snapshot || runtimeMemorySnapshot();
+        var previousSnapshot = runtimeMemoryState.lastSnapshot;
+        var formatted = formatRuntimeMemorySnapshot(snapshot, previousSnapshot);
+        console.log('[ios2-web] runtime memory (' + (reason || 'sample') + ')' +
+            (phase ? ' ' + phase : '') + ' ' + formatted);
+        runtimeMemoryState.lastSnapshot = snapshot;
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        var handler = handlers && handlers.ios2Game;
+        if (handler && typeof handler.postMessage === 'function') {
+            try {
+                handler.postMessage({
+                    type: 'memory',
+                    instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                    reason: reason || 'sample',
+                    phase: phase || 'sample',
+                    assets: snapshot.assets,
+                    nodes: snapshot.nodes,
+                    activeNodes: snapshot.activeNodes,
+                    inactiveNodes: snapshot.inactiveNodes,
+                    pendingDestroyNodes: snapshot.pendingDestroyNodes,
+                    nodeDetails: formatted
+                });
+            } catch (ignored) {}
+        }
+        return snapshot;
+    }
+
+    function runRuntimeSoftCleanup(reason) {
+        if (runtimeMemoryState.cleanupBusy || !window.cc) return false;
+        runtimeMemoryState.cleanupBusy = true;
+        runtimeMemoryState.lastCleanup = Date.now();
+        reason = reason || 'page transition';
+        var before = postRuntimeMemorySnapshot(reason, 'before');
+        // Node destruction is the engine's job: the director already calls
+        // cc.Object._deferredDestroy() at the end of every frame. Forcing it
+        // at a page transition only destroys earlier than the engine decided,
+        // which is exactly how nodes still referenced by the incoming page got
+        // destroyed mid-handover. Nothing but GC is safe to trigger here.
+        window.setTimeout(function () {
+            try {
+                if (cc.sys && typeof cc.sys.garbageCollect === 'function') {
+                    cc.sys.garbageCollect();
+                }
+            } catch (error) {
+                console.warn('[ios2-web] JavaScript garbageCollect failed', reason, error);
+            }
+            window.setTimeout(function () {
+                runtimeMemoryState.cleanupBusy = false;
+                var after = postRuntimeMemorySnapshot(reason, 'after');
+                console.log('[ios2-web] runtime soft cleanup complete (' + reason + ') ' +
+                    formatRuntimeMemorySnapshot(before) + ' -> ' + formatRuntimeMemorySnapshot(after));
+            }, 0);
+        }, 0);
+        return true;
+    }
+
+    function scheduleRuntimeSoftCleanup(reason, delayMs) {
+        if (!window.cc || !IOS2_RUNTIME_MEMORY_AUTOMATIC) return false;
+        reason = reason || 'page transition';
+        runtimeMemoryState.pendingCleanupReason = reason;
+        if (runtimeMemoryState.cleanupTimer) {
+            window.clearTimeout(runtimeMemoryState.cleanupTimer);
+            runtimeMemoryState.cleanupTimer = null;
+        }
+        var delay = delayMs === undefined ? IOS2_RUNTIME_CLEANUP_DELAY_MS : Number(delayMs) || 0;
+        var elapsed = runtimeMemoryState.lastCleanup ? Date.now() - runtimeMemoryState.lastCleanup : Infinity;
+        if (elapsed < IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS) {
+            delay = Math.max(delay, IOS2_RUNTIME_CLEANUP_MIN_INTERVAL_MS - elapsed);
+        }
+        runtimeMemoryState.cleanupTimer = window.setTimeout(function () {
+            runtimeMemoryState.cleanupTimer = null;
+            var pendingReason = runtimeMemoryState.pendingCleanupReason || reason;
+            runtimeMemoryState.pendingCleanupReason = '';
+            runRuntimeSoftCleanup(pendingReason);
+        }, delay);
+        return true;
+    }
+
+    function scheduleRuntimeMemorySample(reason, delayMs) {
+        if (!window.cc || !IOS2_RUNTIME_MEMORY_AUTOMATIC) return false;
+        reason = reason || 'page transition';
+        runtimeMemoryState.pendingSampleReason = reason;
+        if (runtimeMemoryState.sampleTimer) return true;
+        var now = Date.now();
+        var elapsed = runtimeMemoryState.lastSample ? now - runtimeMemoryState.lastSample : Infinity;
+        var delay = delayMs === undefined ? 1000 : Number(delayMs) || 0;
+        if (elapsed < IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS) {
+            delay = Math.max(delay, IOS2_RUNTIME_MEMORY_SAMPLE_MIN_INTERVAL_MS - elapsed);
+        }
+        runtimeMemoryState.sampleTimer = window.setTimeout(function () {
+            runtimeMemoryState.sampleTimer = null;
+            runtimeMemoryState.lastSample = Date.now();
+            var pendingReason = runtimeMemoryState.pendingSampleReason || reason;
+            runtimeMemoryState.pendingSampleReason = '';
+            postRuntimeMemorySnapshot(pendingReason, 'sample');
+        }, delay);
+        return true;
+    }
+
+    function isTrackedRuntimePage(name) {
+        if (typeof name !== 'string' || !name) return false;
+        if (IOS2_RUNTIME_MEMORY_PAGE_NAMES[name]) return true;
+        return /^(Home|Main|Legion).*(Panel|Scene)$/.test(name);
+    }
+
+    function installRuntimeMemoryHooks() {
+        if (window.__ios2RuntimeMemoryHooksInstalled) return;
+        window.__ios2RuntimeMemoryHooksInstalled = true;
+
+        // The remote launcher reports page transitions through console.log.
+        // Observe those messages without changing their original output.
+        if (window.console && typeof console.log === 'function' && !console.__ios2RuntimeMemoryHook) {
+            var originalLog = console.log;
+            console.__ios2RuntimeMemoryHook = true;
+            console.log = function () {
+                // Guarded as well: the game logs a lot, and doing two regex
+                // passes plus an arguments walk on every single line is pure
+                // overhead once sampling is off anyway.
+                try {
+                    if (IOS2_RUNTIME_MEMORY_AUTOMATIC) {
+                        var parts = [];
+                        for (var index = 0; index < arguments.length && index < 4; index++) {
+                            var value = arguments[index];
+                            if (typeof value === 'string' || typeof value === 'number') parts.push(String(value));
+                        }
+                        var message = parts.join(' ');
+                        var pageMatch = /^(hide|show)\s+([^\s]+)/.exec(message);
+                        if (pageMatch && isTrackedRuntimePage(pageMatch[2])) {
+                            runtimeMemoryState.switchCount++;
+                            scheduleRuntimeMemorySample(pageMatch[1] + ' ' + pageMatch[2]);
+                            if (pageMatch[1] === 'hide' && runtimeMemoryState.switchCount >= 4) {
+                                scheduleRuntimeSoftCleanup('page switches=' + runtimeMemoryState.switchCount);
+                            }
+                        } else if (/\bc_battle(Pause|Resume)\b/.test(message)) {
+                            scheduleRuntimeMemorySample('battle transition');
+                        }
+                    }
+                } catch (ignored) {}
+                return originalLog.apply(this, arguments);
+            };
+        }
+
+        if (window.document && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) scheduleRuntimeSoftCleanup('document hidden', 0);
+                scheduleRuntimeMemorySample(document.hidden ? 'document hidden' : 'document visible', 0);
+            });
+        }
+
+        try {
+            if (cc.game && cc.game.EVENT_HIDE && typeof cc.game.on === 'function') {
+                cc.game.on(cc.game.EVENT_HIDE, function () {
+                    scheduleRuntimeSoftCleanup('game hidden', 0);
+                });
+            }
+        } catch (error) {
+            console.warn('[ios2-web] runtime memory lifecycle hook unavailable', error);
+        }
+
+        window.__ios2RuntimeMemorySnapshot = function (reason) {
+            return postRuntimeMemorySnapshot(reason || 'manual', 'sample');
+        };
+        window.__ios2RuntimeSoftCleanup = runRuntimeSoftCleanup;
+    }
+
     function releaseUnusedAssets(reason) {
         var manager = window.cc && window.cc.assetManager;
         if (!manager || typeof manager.releaseUnusedAssets !== 'function') return false;
+        if (!assetReleaseState.shuttingDown) {
+            console.warn('[ios2-web] ignored normal asset release request', reason || 'unknown');
+            return false;
+        }
         if (assetReleaseState.busy) return false;
 
         assetReleaseState.busy = true;
@@ -257,8 +652,14 @@
         // independent WebContent heaps turn those queues into a large burst of
         // encrypted bytes, decoded source, image buffers and GPU uploads.
         var presets = manager.presets || {};
+        runtimeLoadingState.configured = true;
+        runtimeLoadingState.presets = {};
         function limitPreset(name, concurrency, requestsPerFrame) {
             if (!presets[name]) return;
+            runtimeLoadingState.presets[name] = {
+                maxConcurrency: presets[name].maxConcurrency,
+                maxRequestsPerFrame: presets[name].maxRequestsPerFrame
+            };
             presets[name].maxConcurrency = concurrency;
             presets[name].maxRequestsPerFrame = requestsPerFrame;
         }
@@ -270,6 +671,10 @@
 
         var downloader = manager.downloader;
         if (downloader) {
+            runtimeLoadingState.downloader = {
+                maxConcurrency: downloader.maxConcurrency,
+                maxRequestsPerFrame: downloader.maxRequestsPerFrame
+            };
             downloader.maxConcurrency = Math.min(Number(downloader.maxConcurrency) || 6, 2);
             downloader.maxRequestsPerFrame = Math.min(Number(downloader.maxRequestsPerFrame) || 6, 1);
         }
@@ -277,6 +682,42 @@
             'mode=' + (serial ? 'serial' : 'parallel'),
             'scene=' + (serial ? 1 : 2),
             'bundle=' + (serial ? 1 : 2), 'script=1');
+    }
+
+    function relaxInteractiveLoadingLimits() {
+        if (!runtimeLoadingState.configured || runtimeLoadingState.relaxed) return;
+        runtimeLoadingState.relaxed = true;
+        var presets = window.cc && cc.assetManager && cc.assetManager.presets;
+        var interactiveLimits = {
+            preload: [2, 2],
+            scene: [4, 4],
+            bundle: [4, 4],
+            script: [16, 16]
+        };
+        if (presets) {
+            Object.keys(interactiveLimits).forEach(function (name) {
+                var preset = presets[name];
+                if (!preset) return;
+                var limits = interactiveLimits[name];
+                var original = runtimeLoadingState.presets && runtimeLoadingState.presets[name];
+                var originalConcurrency = Number(original && original.maxConcurrency);
+                var originalRequests = Number(original && original.maxRequestsPerFrame);
+                preset.maxConcurrency = Math.min(originalConcurrency || limits[0], limits[0]);
+                preset.maxRequestsPerFrame = Math.min(originalRequests || limits[1], limits[1]);
+            });
+        }
+        var downloader = window.cc && cc.assetManager && cc.assetManager.downloader;
+        var originalDownloader = runtimeLoadingState.downloader;
+        if (downloader) {
+            var originalConcurrency = Number(originalDownloader && originalDownloader.maxConcurrency);
+            var originalRequests = Number(originalDownloader && originalDownloader.maxRequestsPerFrame);
+            downloader.maxConcurrency = Math.min(originalConcurrency || 4, 4);
+            downloader.maxRequestsPerFrame = Math.min(originalRequests || 4, 4);
+        }
+        console.log('[ios2-web] interactive loading limits restored',
+            'scene=' + (presets && presets.scene && presets.scene.maxRequestsPerFrame || 0),
+            'bundle=' + (presets && presets.bundle && presets.bundle.maxRequestsPerFrame || 0),
+            'downloader=' + (downloader && downloader.maxRequestsPerFrame || 0));
     }
 
     function notifyStartupReadyAfterSettling(sceneError) {
@@ -289,7 +730,6 @@
         var startedAt = Date.now();
         var previousCount = managedAssetCount();
         var stableSamples = 0;
-        var releaseRequested = false;
         if (!assetReleaseState.startupLastActivityAt) {
             assetReleaseState.startupLastActivityAt = startedAt;
         }
@@ -297,6 +737,9 @@
         function sendReady(forced) {
             if (assetReleaseState.startupReadySent) return;
             assetReleaseState.startupReadySent = true;
+            // Startup is now complete. Relax the multi-open safety throttle so
+            // interactive bundle loads do not process only one request/frame.
+            relaxInteractiveLoadingLimits();
             var elapsedMs = Date.now() - startedAt;
             var message = {
                 type: 'ready',
@@ -315,13 +758,15 @@
                 'pendingDownloads=' + message.pendingDownloads,
                 'elapsedMs=' + message.elapsedMs,
                 'stable=' + message.stable);
+            // 启动沉降完成 = 该到的资源都到了。从这一刻起，场景里还有画不出来的
+            // 节点就是真的「缺块」，不再是加载中。自检看门狗在这里接管。
+            installRenderIntegrityWatchdog();
         }
 
         function check() {
             var now = Date.now();
             var count = managedAssetCount();
             var pending = assetReleaseState.startupDownloadCount;
-            if (!releaseRequested) releaseRequested = releaseUnusedAssets('startup-ready');
             var quiet = now - assetReleaseState.startupLastActivityAt >= IOS2_STARTUP_QUIET_MS;
             if (pending === 0 && quiet && count >= 0 && count === previousCount) {
                 stableSamples++;
@@ -354,16 +799,24 @@
             if (director && typeof director.purgeDirector === 'function') {
                 director.purgeDirector();
             }
-            if (typeof manager.releaseAll === 'function') {
-                manager.releaseAll();
-            } else {
-                manager.releaseUnusedAssets();
-            }
+            // cc.assetManager.releaseAll() frees every tracked asset no matter
+            // what its reference count is. Cocos documents it as a blunt
+            // instrument for tearing a game down, and it is the direct cause of
+            // "textures vanish after switching back" whenever it is reached
+            // while anything still holds a reference.
+            //
+            // cc.assetManager.releaseUnusedAssets() is the only safe form: it
+            // walks the asset table and frees just the assets whose reference
+            // count already reached zero (unreferenced / orphaned resources).
+            // Everything still referenced by FGUI, Spine or the native bridge
+            // is kept, so a resumed page still has its textures.
+            //
+            // https://docs.cocos.com/creator/2.4/manual/zh/asset-manager/release-manager.html
+            releaseUnusedAssets('shutdown');
             console.log('[ios2-web] Cocos game instance shut down',
                 'assets=' + managedAssetCount());
         } catch (error) {
             console.warn('[ios2-web] Cocos game shutdown failed', error);
-            try { manager.releaseAll(); } catch (ignored) {}
         }
         return true;
     }
@@ -372,23 +825,179 @@
     function installAssetReleaseHooks() {
         if (window.__ios2AssetReleaseHooksInstalled) return;
         window.__ios2AssetReleaseHooksInstalled = true;
-        document.addEventListener('visibilitychange', function () {
-            if (document.hidden) releaseUnusedAssets('document-hidden');
-        });
-        window.addEventListener('pagehide', function () {
-            releaseUnusedAssets('pagehide');
-        });
+        installRuntimeMemoryHooks();
+        // Do not release assets when a WebView is backgrounded or hidden.
+        // The instance can resume with the same scene and resource graph.
+    }
+
+    // 场景切换期间的资源释放闸门 —— 「来回切几次后某个场景元素不全」的根因。
+    //
+    // Cocos 的资源释放是**引用计数驱动**的：`Asset.decRef()` 一旦把计数减到 0，
+    // 就会 `tryRelease()` 进去，下一帧 `_free()` 真正 `destroy()` —— 纹理的 GL
+    // 句柄一起删掉，而且会**递归释放它的依赖**（见引擎 release-manager 的
+    // `_free`：`o.decRef(!1), m._free(o, !1)`）。
+    //
+    // 引用计数是**全局共享**的，不认场景归属。所以：
+    //   切走 A → A 的依赖 decRef → 公共图标 / 图集 / FairyGUI 包的计数掉到 0
+    //   → 下一帧被 destroy → B 随后加载时拿到一个已销毁的 asset
+    //   → Sprite 的纹理 isValid 为 false → assembler 静默跳过 → 画面少一块
+    //
+    // 时序上它天然是竞态：切走得早一点就撞上，晚一点就没事，所以「来回切几
+    // 次」才会概率复现，而且是随机缺不同的块。
+    //
+    // 之前只门控了 `releaseUnusedAssets()` 这一个出口，引用计数这条自动释放
+    // 路径完全没堵，所以问题反复出现。
+    var sceneTransitionState = {
+        releaseBlockedUntil: 0,
+        /// 闸门开启的起点，用来算总时长上限。
+        armedAt: 0,
+        blocked: 0,
+        transitions: 0,
+        /// 被拦下的释放请求。不是丢弃，是**延后**——见 flushDeferredReleases。
+        deferred: []
+    };
+    /// 切换窗口长度。要盖住「旧场景销毁 → 新场景资源异步加载完成」整段，
+    /// 切场景往往跟几批 bundle 加载，给 5s 比较稳。
+    var IOS2_SCENE_TRANSITION_GUARD_MS = 5000;
+    /// 闸门期内每拦到一次释放就往后顺延的时长：还有释放请求涌进来，说明
+    /// 切换与随之而来的加载仍在进行，不能急着放行。
+    var IOS2_SCENE_RELEASE_EXTEND_MS = 1500;
+    /// 闸门总时长上限。多开时资源回来得慢（共享 CDN 队列 + 主线程排队），
+    /// 顺延可能一直续下去，这里兜个底，避免资源永远不被回收。
+    var IOS2_SCENE_RELEASE_MAX_MS = 30000;
+    /// 延后队列上限，防止整包卸载时无限堆积。
+    var IOS2_SCENE_RELEASE_QUEUE_LIMIT = 4096;
+
+    function markSceneTransition(reason) {
+        sceneTransitionState.transitions++;
+        sceneTransitionState.armedAt = Date.now();
+        sceneTransitionState.releaseBlockedUntil = Date.now() + IOS2_SCENE_TRANSITION_GUARD_MS;
+        console.log('[ios2-web] scene transition armed (' + reason + ')',
+            'transitions=' + sceneTransitionState.transitions);
+    }
+
+    // 闸门关闭后再补执行被拦下的释放。
+    //
+    // 这里**不能**简单地丢掉被拦截的释放请求，否则这些资源永远不会被回收。
+    // 延后执行是安全的：引擎的 `_free()` 在非强制模式下会先看 `refCount`，
+    // 若新场景已经重新引用了这个资源（refCount > 0），它会跳过销毁 ——
+    // 这正好是我们要的语义：切换期间误判的释放，会在窗口结束时自动作废。
+    function flushDeferredReleases() {
+        var releaseManager = window.cc && cc.assetManager && cc.assetManager._releaseManager;
+        if (!releaseManager || !releaseManager.__ios2OriginalTryRelease) return;
+        var queued = sceneTransitionState.deferred;
+        sceneTransitionState.deferred = [];
+        if (!queued.length) return;
+        var freed = 0;
+        for (var index = 0; index < queued.length; index++) {
+            var asset = queued[index];
+            try {
+                // refCount 已恢复的会被引擎自己跳过，无需在这里判断。
+                releaseManager.__ios2OriginalTryRelease.call(releaseManager, asset);
+                freed++;
+            } catch (error) {
+                console.warn('[ios2-web] deferred release failed', error);
+            }
+        }
+        console.log('[ios2-web] deferred asset releases flushed',
+            'queued=' + queued.length, 'passed=' + freed);
+    }
+
+    function installAssetReleaseGate() {
+        var manager = window.cc && window.cc.assetManager;
+        var releaseManager = manager && manager._releaseManager;
+        if (!releaseManager || releaseManager.__ios2ReleaseGateInstalled) return;
+        if (typeof releaseManager.tryRelease !== 'function') return;
+        releaseManager.__ios2ReleaseGateInstalled = true;
+        var original = releaseManager.tryRelease;
+        releaseManager.__ios2OriginalTryRelease = original;
+        releaseManager.tryRelease = function (asset, force) {
+            // 显式强制释放（releaseAsset(asset, true) 这类）与实例真正关闭，
+            // 都保持原样不拦——那是明确的销毁意图。
+            if (force || assetReleaseState.shuttingDown) {
+                return original.apply(this, arguments);
+            }
+            var now = Date.now();
+            // 闸门期内但队列已经过长：说明这次切换释放面极大（整包卸载），
+            // 再囤下去只会白占内存，直接放行交给引擎原逻辑。
+            if (now < sceneTransitionState.releaseBlockedUntil &&
+                sceneTransitionState.deferred.length < IOS2_SCENE_RELEASE_QUEUE_LIMIT) {
+                sceneTransitionState.blocked++;
+                sceneTransitionState.deferred.push(asset);
+                // 顺延，但不超过总上限。
+                if (sceneTransitionState.armedAt) {
+                    sceneTransitionState.releaseBlockedUntil = Math.min(
+                        Math.max(sceneTransitionState.releaseBlockedUntil,
+                            now + IOS2_SCENE_RELEASE_EXTEND_MS),
+                        sceneTransitionState.armedAt + IOS2_SCENE_RELEASE_MAX_MS);
+                }
+                if (sceneTransitionState.blocked <= 3 || sceneTransitionState.blocked % 200 === 0) {
+                    console.log('[ios2-web] deferred asset release during scene transition',
+                        sceneTransitionState.blocked,
+                        asset && (asset._name || asset.nativeUrl || asset.uuid));
+                }
+                return;
+            }
+            return original.apply(this, arguments);
+        };
+        console.log('[ios2-web] asset release gate installed');
+    }
+
+    // 等闸门真正关闭再收尾：先补执行被拦下的释放，再验一次渲染完整性。
+    // 这时还画不出来的节点就是真缺块，不是「资源还在路上」。
+    //
+    // 防重入标记必须在函数外：写在函数里的话每次调用都重新置 false，
+    // 连续两次切场景会起两条并行的检查链，flush 和自检都会重复跑。
+    var postTransitionCheckScheduled = false;
+
+    function schedulePostTransitionCheck() {
+        function check() {
+            if (Date.now() < sceneTransitionState.releaseBlockedUntil) {
+                // 闸门被顺延了（多开时资源回来得慢，切换期间还有释放请求在涌入）。
+                window.setTimeout(check, 1000);
+                return;
+            }
+            postTransitionCheckScheduled = false;
+            flushDeferredReleases();
+            reportRenderIntegrity('scene transition');
+        }
+        if (postTransitionCheckScheduled) return;
+        postTransitionCheckScheduled = true;
+        var delay = Math.max(500, sceneTransitionState.releaseBlockedUntil - Date.now() + 500);
+        window.setTimeout(check, delay);
     }
 
     function installDirectorAssetReleaseHook() {
         var director = window.cc && window.cc.director;
         var Director = window.cc && window.cc.Director;
-        if (!director || !Director || !Director.EVENT_AFTER_SCENE_LAUNCH ||
-            director.__ios2AssetReleaseHookInstalled) return;
+        if (!director || !Director || director.__ios2AssetReleaseHookInstalled) return;
         director.__ios2AssetReleaseHookInstalled = true;
-        director.on(Director.EVENT_AFTER_SCENE_LAUNCH, function () {
-            releaseUnusedAssets('after-scene-launch');
+        installAssetReleaseGate();
+
+        // 场景切换的入口不止一个，三处一起武装：loadScene / runScene /
+        // preloadScene 覆盖代码调用，BEFORE/AFTER_SCENE_LAUNCH 覆盖引擎内部
+        // 与常驻节点路径。
+        ['loadScene', 'runScene', 'preloadScene'].forEach(function (name) {
+            if (typeof director[name] !== 'function') return;
+            var original = director[name];
+            director[name] = function () {
+                markSceneTransition(name);
+                return original.apply(this, arguments);
+            };
         });
+        if (typeof director.on === 'function') {
+            if (Director.EVENT_BEFORE_SCENE_LAUNCH) {
+                director.on(Director.EVENT_BEFORE_SCENE_LAUNCH, function () {
+                    markSceneTransition('before scene launch');
+                });
+            }
+            if (Director.EVENT_AFTER_SCENE_LAUNCH) {
+                director.on(Director.EVENT_AFTER_SCENE_LAUNCH, function () {
+                    markSceneTransition('after scene launch');
+                    schedulePostTransitionCheck();
+                });
+            }
+        }
     }
 
     function decryptJSC(data, keyText) {
@@ -906,6 +1515,568 @@
     }
     window.__ios2InstallEncryptedBundleLoader = installEncryptedBundleLoader;
 
+    function postWebGraphicsLog(event, message, details) {
+        console.log('[ios2-web] ' + message);
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        var handler = handlers && handlers.ios2Game;
+        if (!handler || typeof handler.postMessage !== 'function') return;
+        try {
+            var payload = {
+                type: 'graphics',
+                instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                event: event,
+                message: message
+            };
+            if (details) {
+                Object.keys(details).forEach(function (key) {
+                    var value = details[key];
+                    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                        payload[key] = value;
+                    }
+                });
+            }
+            handler.postMessage(payload);
+        } catch (ignored) {}
+    }
+
+    function parseASTCPVRBuffer(file) {
+        var bytes;
+        if (file instanceof ArrayBuffer) {
+            bytes = new Uint8Array(file);
+        } else if (file && file.buffer instanceof ArrayBuffer) {
+            bytes = new Uint8Array(file.buffer, file.byteOffset || 0,
+                file.byteLength === undefined ? file.length : file.byteLength);
+        }
+        if (!bytes || bytes.length < 16 || bytes[0] !== 0x13 || bytes[1] !== 0xAB ||
+            bytes[2] !== 0xA1 || bytes[3] !== 0x5C) {
+            throw new Error('Unsupported PVR texture header');
+        }
+        var blockX = bytes[4];
+        var blockY = bytes[5];
+        var blockZ = bytes[6];
+        var width = bytes[7] | bytes[8] << 8 | bytes[9] << 16;
+        var height = bytes[10] | bytes[11] << 8 | bytes[12] << 16;
+        var formats = {
+            '4x4': 0x93B0, '5x4': 0x93B1, '5x5': 0x93B2,
+            '6x5': 0x93B3, '6x6': 0x93B4, '8x5': 0x93B5,
+            '8x6': 0x93B6, '8x8': 0x93B7, '10x5': 0x93B8,
+            '10x6': 0x93B9, '10x8': 0x93BA, '10x10': 0x93BB,
+            '12x10': 0x93BC, '12x12': 0x93BD
+        };
+        var internalFormat = formats[blockX + 'x' + blockY];
+        if (blockZ !== 1 || !width || !height || !internalFormat) {
+            throw new Error('Unsupported ASTC texture header');
+        }
+        var payloadLength = Math.ceil(width / blockX) * Math.ceil(height / blockY) * 16;
+        if (16 + payloadLength > bytes.length) {
+            throw new Error('Truncated ASTC texture payload');
+        }
+        return {
+            _compressed: true,
+            _data: new Uint8Array(bytes.buffer, bytes.byteOffset + 16, payloadLength),
+            width: width,
+            height: height,
+            __ios2ASTCFormat: internalFormat
+        };
+    }
+
+    // `gl.getExtension()` 是一次到 GPU 进程的同步往返。纹理上传是热路径（一个
+    // 场景几百张 PVR），每次都查一遍既慢，又会在 GPU 进程繁忙时偶发返回 null
+    // ——返回 null 就抛错，抛错就等于这张贴图永久不画（引擎不报错，只是不画）。
+    // 缓存到 gl 对象上；上下文丢失时由 resetASTCExtensionCache() 主动作废。
+    var astcExtensionCache = { gl: null, value: undefined };
+
+    function astcExtensionFor(gl) {
+        if (astcExtensionCache.gl !== gl || astcExtensionCache.value === undefined) {
+            astcExtensionCache.gl = gl;
+            astcExtensionCache.value = gl.getExtension('WEBGL_compressed_texture_astc') || null;
+        }
+        return astcExtensionCache.value;
+    }
+
+    function resetASTCExtensionCache() {
+        astcExtensionCache.gl = null;
+        astcExtensionCache.value = undefined;
+    }
+
+    function isRecoverableASTCPVRTexture(texture) {
+        // 注意：这里**不能**要求 texture.loaded。
+        //
+        // loaded 为 false 恰恰是最需要救的那批：它们首次上传就失败了
+        // （device 未就绪 / context 已丢失 / 扩展查询落空），引擎因此永远
+        // 跳过渲染，画面上就是「少一块」。原来的判定把它们全排除了，
+        // 恢复机制只救得回「曾经画出来过」的纹理。
+        if (!texture || !texture.__ios2ASTCPVRRecovery) return false;
+        try {
+            if (window.cc && cc.isValid && !cc.isValid(texture)) return false;
+        } catch (ignored) {
+            return false;
+        }
+        var url = texture.__ios2ASTCPVRRecovery.url;
+        return typeof url === 'string' && url.indexOf('ios2-game://') === 0;
+    }
+
+    function collectRecoverableASTCPVRTextures() {
+        var manager = window.cc && cc.assetManager;
+        var assets = manager && manager.assets;
+        if (!assets || typeof assets.forEach !== 'function') return [];
+        var textures = [];
+        assets.forEach(function (asset) {
+            if (isRecoverableASTCPVRTexture(asset)) textures.push(asset);
+        });
+        return textures;
+    }
+
+    function uploadASTCPVRTexture(textureAsset, data, preserveTextureIdentity) {
+        var renderer = cc.renderer;
+        var device = renderer && renderer.device;
+        var gl = device && device._gl;
+        if (!renderer || !device || !gl) throw new Error('WebGL device is unavailable');
+        if (typeof gl.isContextLost === 'function' && gl.isContextLost()) {
+            resetASTCExtensionCache();
+            throw new Error('WebGL context is lost');
+        }
+        var extension = astcExtensionFor(gl);
+        if (!extension) throw new Error('ASTC WebGL extension is unavailable');
+
+        var previous = textureAsset._texture;
+        var reusedTextureIdentity = preserveTextureIdentity && previous && previous._device === device;
+        var replacement = reusedTextureIdentity ? previous : null;
+        if (replacement) {
+            // Materials retain the renderer Texture2D, not the Cocos asset.
+            // Keep that object stable so active Sprite/FGUI/Spine material
+            // properties automatically see the recreated WebGL handle.
+            try {
+                if (replacement._glID) gl.deleteTexture(replacement._glID);
+            } catch (ignored) {}
+            replacement._glID = gl.createTexture();
+            if (!replacement._glID) throw new Error('Unable to recreate WebGL texture');
+            replacement._width = data.width;
+            replacement._height = data.height;
+            replacement._genMipmap = false;
+        } else {
+            replacement = new renderer.Texture2D(device, {
+                images: [],
+                width: data.width,
+                height: data.height,
+                format: cc.Texture2D.PixelFormat.RGBA8888,
+                genMipmaps: false
+            });
+        }
+        try {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, replacement._glID);
+            gl.compressedTexImage2D(gl.TEXTURE_2D, 0, data.__ios2ASTCFormat,
+                data.width, data.height, 0, data._data);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            device._restoreTexture(0);
+        } catch (error) {
+            if (!reusedTextureIdentity) replacement.destroy();
+            throw error;
+        }
+
+        if (previous && previous !== replacement) previous.destroy();
+        textureAsset._texture = replacement;
+        // Do not retain data._data here. This image marker keeps the existing
+        // Cocos Texture2D contract without pinning the PVR ArrayBuffer.
+        textureAsset._image = { width: data.width, height: data.height, __ios2Compressed: true };
+        textureAsset.width = data.width;
+        textureAsset.height = data.height;
+        textureAsset._packable = false;
+        textureAsset.loaded = true;
+        textureAsset.emit('load');
+    }
+
+    // 上传失败统计。「元素画不出来」在 Cocos 里没有任何错误输出——assembler
+    // 只是 `if (!texture.loaded) return;` 跳过这个节点。所以这里必须自己记账，
+    // 否则线上表现为「某个实例随机缺几块 UI」，日志里一条痕迹都没有。
+    var textureUploadState = { failed: 0, succeeded: 0, reported: [] };
+
+    function noteTextureUploadSuccess() {
+        textureUploadState.succeeded++;
+    }
+
+    function noteTextureUploadFailure(textureAsset, error) {
+        textureUploadState.failed++;
+        var url = textureAsset && (textureAsset._nativeUrl || textureAsset.nativeUrl) || '<unknown>';
+        if (textureUploadState.reported.length < 8) {
+            textureUploadState.reported.push(url.split('/').pop() + ': ' +
+                (error && (error.message || error) || 'unknown'));
+        }
+        postWebGraphicsLog('texture-upload-failed',
+            'PVR upload failed, texture will not render (url=' + url.split('/').pop() +
+            ', error=' + (error && (error.message || error) || 'unknown') + ')',
+            { url: url, total: textureUploadState.failed });
+    }
+
+    function rememberASTCPVRRecoverySource(textureAsset, data) {
+        var url = textureAsset && (textureAsset._nativeUrl || textureAsset.nativeUrl);
+        if (typeof url !== 'string' || url.indexOf('ios2-game://') !== 0) return;
+        // Deliberately retain metadata only. PVR bytes are refetched from the
+        // native CDN cache after a context loss instead of remaining in JS.
+        textureAsset.__ios2ASTCPVRRecovery = {
+            url: url,
+            width: data.width,
+            height: data.height
+        };
+    }
+
+    function recoverASTCPVRTexture(texture) {
+        if (!isRecoverableASTCPVRTexture(texture)) return Promise.resolve({ skipped: true });
+        var url = texture.__ios2ASTCPVRRecovery.url;
+        return fetch(url, { cache: 'force-cache' })
+            .then(function (response) {
+                if (!response || !response.ok) {
+                    throw new Error('PVR recovery request failed: ' + (response && response.status || 'unknown'));
+                }
+                return response.arrayBuffer();
+            })
+            .then(function (buffer) {
+                var data = null;
+                try {
+                    if (!isRecoverableASTCPVRTexture(texture)) return { skipped: true };
+                    data = parseASTCPVRBuffer(buffer);
+                    uploadASTCPVRTexture(texture, data, true);
+                    return { restored: true };
+                } finally {
+                    // The temporary view is the final reference to the PVR
+                    // bytes once this callback returns.
+                    if (data) data._data = null;
+                    data = null;
+                    buffer = null;
+                }
+            });
+    }
+
+    function scheduleASTCPVRRecovery(reason) {
+        var state = astcPVRRecoveryState;
+        reason = reason || 'manual';
+        state.pendingReason = reason;
+        if (state.recovering) {
+            state.rerunRequested = true;
+            return true;
+        }
+        if (state.contextLost || (window.document && document.hidden)) {
+            return false;
+        }
+        if (state.scheduled) return true;
+        state.scheduled = true;
+        postWebGraphicsLog('pvr-recovery-scheduled',
+            'PVR recovery scheduled (reason=' + reason + ')', { reason: reason });
+        window.setTimeout(function () {
+            state.scheduled = false;
+            runASTCPVRRecovery(state.pendingReason || reason);
+        }, IOS2_PVR_RECOVERY_RESUME_DELAY_MS);
+        return true;
+    }
+
+    function runASTCPVRRecovery(reason) {
+        var state = astcPVRRecoveryState;
+        reason = reason || 'manual';
+        state.pendingReason = '';
+        if (state.recovering) {
+            state.rerunRequested = true;
+            return;
+        }
+        if (state.contextLost || (window.document && document.hidden)) {
+            state.pendingReason = reason;
+            postWebGraphicsLog('pvr-recovery-deferred',
+                'PVR recovery deferred (reason=' + reason + ', contextLost=' + state.contextLost + ')', {
+                    reason: reason,
+                    contextLost: state.contextLost
+                });
+            return;
+        }
+
+        var textures = collectRecoverableASTCPVRTextures();
+        var startedAt = Date.now();
+        var restored = 0;
+        var failed = 0;
+        var skipped = 0;
+        var cursor = 0;
+        var examples = [];
+        state.recovering = true;
+        state.rerunRequested = false;
+        var sequence = ++state.sequence;
+        postWebGraphicsLog('pvr-recovery-start',
+            'PVR recovery started (reason=' + reason + ', targets=' + textures.length + ')', {
+                reason: reason,
+                targets: textures.length
+            });
+
+        function finish() {
+            state.recovering = false;
+            var elapsedMs = Date.now() - startedAt;
+            var message = 'PVR recovery complete (reason=' + reason + ', targets=' + textures.length +
+                ', restored=' + restored + ', failed=' + failed + ', skipped=' + skipped +
+                ', elapsedMs=' + elapsedMs + ')';
+            if (examples.length) message += ' failures=[' + examples.join(' | ') + ']';
+            postWebGraphicsLog('pvr-recovery-complete', message, {
+                reason: reason,
+                targets: textures.length,
+                restored: restored,
+                failed: failed,
+                skipped: skipped,
+                elapsedMs: elapsedMs
+            });
+            if (state.rerunRequested && !state.contextLost && !(window.document && document.hidden)) {
+                state.rerunRequested = false;
+                scheduleASTCPVRRecovery('queued after recovery ' + sequence);
+            }
+        }
+
+        function next() {
+            if (cursor >= textures.length) return Promise.resolve();
+            var texture = textures[cursor++];
+            return recoverASTCPVRTexture(texture).then(function (result) {
+                if (result && result.restored) restored++;
+                else skipped++;
+            }, function (error) {
+                failed++;
+                if (examples.length < 3) {
+                    examples.push(String(error && (error.message || error) || 'unknown'));
+                }
+            }).then(next);
+        }
+
+        var workers = [];
+        var workerCount = Math.min(IOS2_PVR_RECOVERY_CONCURRENCY, textures.length);
+        for (var index = 0; index < workerCount; index++) workers.push(next());
+        Promise.all(workers).then(finish, function (error) {
+            failed++;
+            if (examples.length < 3) examples.push(String(error && (error.message || error) || 'unknown'));
+            finish();
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // 渲染完整性自检
+    //
+    // Cocos 里没有「渲染失败」这个概念。一个节点画不出来时，assembler 只是
+    // `if (!texture.loaded) return;` 静默跳过 —— 不抛错、不告警、不重试。
+    // 所以「画面元素不全」无法通过错误日志发现，只能主动遍历场景树去问：
+    // 有多少**本该画出来**的节点，此刻其实画不出来？
+    //
+    // 判定「本该画」的四条（全部成立才计入分母）：
+    //   ① 节点在层级里激活（activeInHierarchy）
+    //   ② 节点自身可见（opacity > 0）
+    //   ③ 挂载了带 spriteFrame 的渲染组件
+    //   ④ 该组件的纹理已 loaded —— 这一条不成立，就是画面上缺的那一块
+    // ------------------------------------------------------------------
+    var renderIntegrityState = {
+        installed: false,
+        timer: null,
+        samples: 0,
+        badSamples: 0
+    };
+
+    function collectRenderIntegrity() {
+        var result = { visible: 0, missingTexture: 0, missingMaterial: 0, samples: [] };
+        var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+        if (!scene) return result;
+        var stack = [scene];
+        while (stack.length) {
+            var node = stack.pop();
+            if (!node) continue;
+            var children = node._children || [];
+            for (var index = 0; index < children.length; index++) stack.push(children[index]);
+            if (node.activeInHierarchy === false || node.active === false) continue;
+            if (typeof node.opacity === 'number' && node.opacity <= 0) continue;
+            var components = node._components || [];
+            for (var cursor = 0; cursor < components.length; cursor++) {
+                var component = components[cursor];
+                var frame = component && component.spriteFrame;
+                if (!frame || typeof frame.getTexture !== 'function') continue;
+                result.visible++;
+                var texture = frame.getTexture();
+                if (!texture || texture.loaded === false) {
+                    result.missingTexture++;
+                    if (result.samples.length < 6) {
+                        var label = (texture && (texture._nativeUrl || texture.nativeUrl)) || node.name || '?';
+                        result.samples.push(String(label).split('/').pop());
+                    }
+                } else if (component._materials && component._materials.length === 0) {
+                    // 纹理在、材质没了：通常发生在上下文/device 重建之后。
+                    result.missingMaterial++;
+                }
+            }
+        }
+        return result;
+    }
+
+    // 纹理**后到**时 assembler 不会自己重算：它那一帧已经因为
+    // `!texture.loaded` 提前 return 了，之后没有新的脏标记就再也不进来。
+    // 所以补完纹理必须手动把整棵树标脏，否则贴图补上了、画面还是缺的。
+    function markSceneRenderDataDirty() {
+        try {
+            var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+            var Flow = window.cc && cc.RenderFlow;
+            if (!scene || !Flow) return;
+            var flag = Flow.FLAG_UPDATE_RENDER_DATA || Flow.FLAG_RENDER || 0;
+            if (!flag) return;
+            var stack = [scene];
+            while (stack.length) {
+                var node = stack.pop();
+                if (!node) continue;
+                node._renderFlag |= flag;
+                var children = node._children || [];
+                for (var index = 0; index < children.length; index++) stack.push(children[index]);
+            }
+        } catch (ignored) {}
+    }
+
+    function reportRenderIntegrity(reason) {
+        var snapshot = collectRenderIntegrity();
+        var missing = snapshot.missingTexture + snapshot.missingMaterial;
+        renderIntegrityState.samples++;
+        if (missing > 0) renderIntegrityState.badSamples++;
+        else renderIntegrityState.badSamples = 0;
+
+        var device = window.cc && cc.renderer && cc.renderer.device;
+        var gl = device && device._gl;
+        var contextLost = !!(gl && typeof gl.isContextLost === 'function' && gl.isContextLost());
+
+        var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ios2Game;
+        if (handler && typeof handler.postMessage === 'function' &&
+            (missing > 0 || reason === 'manual')) {
+            try {
+                handler.postMessage({
+                    type: 'render',
+                    instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                    reason: reason,
+                    visible: snapshot.visible,
+                    missingTexture: snapshot.missingTexture,
+                    missingMaterial: snapshot.missingMaterial,
+                    contextLost: contextLost,
+                    samples: snapshot.samples.join(',')
+                });
+            } catch (ignored) {}
+        }
+        // 正常时别刷：10 个实例 × 每 12 秒一条，日志会被自检自己淹掉。
+        // 只在真的缺块时打，正常采样走上面的 render 消息（原生侧按等级过滤）。
+        if (missing > 0) {
+            console.warn('[ios2-web] render integrity degraded', reason,
+                'visible=' + snapshot.visible,
+                'missingTexture=' + snapshot.missingTexture,
+                'missingMaterial=' + snapshot.missingMaterial,
+                'samples=' + snapshot.samples.join(','));
+        }
+        // 上下文已经丢了就别瞎补：那种情况只能整页重载（见下方 webgl-fatal）。
+        if (missing > 0 && !contextLost) {
+            scheduleASTCPVRRecovery('render integrity: ' + missing + ' unrenderable');
+            markSceneRenderDataDirty();
+        }
+        return snapshot;
+    }
+
+    function installRenderIntegrityWatchdog() {
+        if (renderIntegrityState.installed) return;
+        renderIntegrityState.installed = true;
+        var intervalMs = 12000;
+        function scheduleNext() {
+            renderIntegrityState.timer = window.setTimeout(function () {
+                reportRenderIntegrity('watchdog');
+                scheduleNext();
+            }, intervalMs);
+        }
+        // 首次采样要晚：刚 launch 完的一两秒里大批资源还在路上，那是正常的
+        // 「加载中」，不是「缺块」，早采只会误报。
+        window.setTimeout(function () {
+            reportRenderIntegrity('startup');
+            scheduleNext();
+        }, 4000);
+    }
+    window.__ios2RenderIntegrityCheck = function () {
+        return reportRenderIntegrity('manual');
+    };
+
+    // 上下文丢失后的兜底：给 WebKit 一点时间自己恢复，恢复不了就报
+    // `webgl-fatal` 让原生重载实例。留这个窗口是因为 macOS 上上下文丢失
+    // 有时只是 GPU 进程短暂重启，restored 事件会晚几百毫秒到。
+    var contextLostFallback = { timer: null, waitMs: 3000 };
+
+    function clearContextLostFallback() {
+        if (contextLostFallback.timer) {
+            window.clearTimeout(contextLostFallback.timer);
+            contextLostFallback.timer = null;
+        }
+    }
+
+    function scheduleContextLostFallback() {
+        if (contextLostFallback.timer) return;
+        contextLostFallback.timer = window.setTimeout(function () {
+            contextLostFallback.timer = null;
+            if (!astcPVRRecoveryState.contextLost) return;
+            var handler = window.webkit && window.webkit.messageHandlers &&
+                window.webkit.messageHandlers.ios2Game;
+            if (!handler || typeof handler.postMessage !== 'function') return;
+            try {
+                handler.postMessage({
+                    type: 'webgl-fatal',
+                    instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                    reason: 'context lost without restore'
+                });
+            } catch (ignored) {}
+        }, contextLostFallback.waitMs);
+    }
+
+    function installWebGLContextRecovery() {
+        var state = astcPVRRecoveryState;
+        var canvas = window.cc && cc.game && cc.game.canvas || document.getElementById('GameCanvas');
+        if (!canvas || state.installed) return;
+        state.installed = true;
+        state.documentWasHidden = !!(window.document && document.hidden);
+        canvas.addEventListener('webglcontextlost', function (event) {
+            if (event && typeof event.preventDefault === 'function') event.preventDefault();
+            state.contextLost = true;
+            state.rerunRequested = true;
+            resetASTCExtensionCache();
+            var status = event && event.statusMessage || 'unknown';
+            postWebGraphicsLog('webgl-context-lost', 'WebGL context lost (status=' + status + ')', {
+                status: status
+            });
+            // Cocos 2.4 的 gfx 后端**不支持**上下文恢复：program、buffer、VAO、
+            // framebuffer 全部失效，而引擎没有任何重建路径。PVR 恢复只能把贴图
+            // 内容补回去，补不回渲染管线 —— 画面必然残缺。所以这里不做无谓的
+            // 局部修复，直接通知原生整页重载（重新登录），这是唯一可靠出路。
+            scheduleContextLostFallback();
+        }, false);
+        canvas.addEventListener('webglcontextrestored', function () {
+            state.contextLost = false;
+            resetASTCExtensionCache();
+            clearContextLostFallback();
+            postWebGraphicsLog('webgl-context-restored', 'WebGL context restored');
+            scheduleASTCPVRRecovery('webgl context restored');
+        }, false);
+        canvas.addEventListener('webglcontextcreationerror', function (event) {
+            var status = event && event.statusMessage || 'unknown';
+            postWebGraphicsLog('webgl-context-creation-error',
+                'WebGL context creation error (status=' + status + ')', { status: status });
+            // 创建失败不是「丢失」，等不到 restored 事件，但有可能是可恢复的
+            // 资源竞争（WebKit 的 maxActiveContexts 驱逐）。给一次兜底机会。
+            scheduleContextLostFallback();
+        }, false);
+        if (window.document && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) {
+                    state.documentWasHidden = true;
+                    return;
+                }
+                if (state.documentWasHidden) {
+                    state.documentWasHidden = false;
+                    scheduleASTCPVRRecovery('document visible after hidden');
+                }
+            });
+        }
+        window.__ios2RecoverPVRTextures = function (reason) {
+            return scheduleASTCPVRRecovery(reason || 'manual');
+        };
+        postWebGraphicsLog('webgl-context-recovery-installed', 'WebGL context recovery installed');
+    }
+
     function installASTCTextureSupport() {
         var downloader = cc.assetManager && cc.assetManager.downloader;
         var parser = cc.assetManager && cc.assetManager.parser;
@@ -917,6 +2088,7 @@
             if (parser.__ios2ASTCPVRParser) {
                 parser.register('.pvr', parser.__ios2ASTCPVRParser);
             }
+            installWebGLContextRecovery();
             return;
         }
         parser.__ios2ASTCInstalled = true;
@@ -943,10 +2115,15 @@
 
         var originalPVRParser = parser.parsePVRTex;
         var astcPVRParser = function (file, options, onComplete) {
-            var buffer = file instanceof ArrayBuffer ? file : file && file.buffer;
-            var bytes = buffer ? new Uint8Array(buffer) : null;
-            if (!bytes || bytes.length < 16 || bytes[0] !== 0x13 || bytes[1] !== 0xAB ||
-                bytes[2] !== 0xA1 || bytes[3] !== 0x5C) {
+            var isASTC = false;
+            try {
+                var bytes = file instanceof ArrayBuffer ? new Uint8Array(file) :
+                    file && file.buffer instanceof ArrayBuffer && new Uint8Array(file.buffer,
+                        file.byteOffset || 0, file.byteLength === undefined ? file.length : file.byteLength);
+                isASTC = !!(bytes && bytes.length >= 4 && bytes[0] === 0x13 && bytes[1] === 0xAB &&
+                    bytes[2] === 0xA1 && bytes[3] === 0x5C);
+            } catch (ignored) {}
+            if (!isASTC) {
                 if (typeof originalPVRParser === 'function') {
                     originalPVRParser(file, options, onComplete);
                 } else {
@@ -954,35 +2131,11 @@
                 }
                 return;
             }
-            var blockX = bytes[4];
-            var blockY = bytes[5];
-            var blockZ = bytes[6];
-            var width = bytes[7] | bytes[8] << 8 | bytes[9] << 16;
-            var height = bytes[10] | bytes[11] << 8 | bytes[12] << 16;
-            var formats = {
-                '4x4': 0x93B0, '5x4': 0x93B1, '5x5': 0x93B2,
-                '6x5': 0x93B3, '6x6': 0x93B4, '8x5': 0x93B5,
-                '8x6': 0x93B6, '8x8': 0x93B7, '10x5': 0x93B8,
-                '10x6': 0x93B9, '10x8': 0x93BA, '10x10': 0x93BB,
-                '12x10': 0x93BC, '12x12': 0x93BD
-            };
-            var internalFormat = formats[blockX + 'x' + blockY];
-            if (blockZ !== 1 || !width || !height || !internalFormat) {
-                onComplete(new Error('Unsupported ASTC texture header'));
-                return;
+            try {
+                onComplete(null, parseASTCPVRBuffer(file));
+            } catch (error) {
+                onComplete(error);
             }
-            var payloadLength = Math.ceil(width / blockX) * Math.ceil(height / blockY) * 16;
-            if (16 + payloadLength > bytes.length) {
-                onComplete(new Error('Truncated ASTC texture payload'));
-                return;
-            }
-            onComplete(null, {
-                _compressed: true,
-                _data: new Uint8Array(buffer, 16, payloadLength),
-                width: width,
-                height: height,
-                __ios2ASTCFormat: internalFormat
-            });
         };
         parser.__ios2ASTCPVRParser = astcPVRParser;
         parser.register('.pvr', astcPVRParser);
@@ -998,41 +2151,25 @@
                     descriptor.set.call(this, data);
                     return;
                 }
-                var renderer = cc.renderer;
-                var device = renderer && renderer.device;
-                var gl = device && device._gl;
-                var extension = gl && gl.getExtension('WEBGL_compressed_texture_astc');
-                if (!extension) throw new Error('ASTC WebGL extension is unavailable');
-                if (this._texture) this._texture.destroy();
-                var texture = new renderer.Texture2D(device, {
-                    images: [],
-                    width: data.width,
-                    height: data.height,
-                    format: cc.Texture2D.PixelFormat.RGBA8888,
-                    genMipmaps: false
-                });
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, texture._glID);
-                gl.compressedTexImage2D(gl.TEXTURE_2D, 0, data.__ios2ASTCFormat,
-                    data.width, data.height, 0, data._data);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                device._restoreTexture(0);
-                this._texture = texture;
-                // The compressed payload has already been uploaded to GL. Keep
-                // only dimensions as the image handle; retaining every PVR
-                // ArrayBuffer here duplicates CPU memory for every texture and
-                // every WebKit instance.
-                this._image = { width: data.width, height: data.height, __ios2Compressed: true };
-                this.width = data.width;
-                this.height = data.height;
-                this._packable = false;
-                this.loaded = true;
-                this.emit('load');
+                // 先登记来源，再上传：上传失败时恢复队列需要靠这条记录
+                // 重新 fetch 并重试（否则这张贴图就永远停在 loaded=false）。
+                rememberASTCPVRRecoverySource(this, data);
+                try {
+                    uploadASTCPVRTexture(this, data);
+                    noteTextureUploadSuccess();
+                } catch (error) {
+                    // 绝不向上抛：抛出会被 Cocos 的 deserialize 当成整包解析失败，
+                    // 连带同一批资源一起废掉，比「缺一块」严重得多。
+                    // 改为记账 + 排进恢复队列，等 device / 上下文回来后自动补齐。
+                    noteTextureUploadFailure(this, error);
+                    scheduleASTCPVRRecovery('texture upload failed');
+                }
+                // The uploader stores dimensions only. Drop the temporary
+                // parser view promptly so the source ArrayBuffer can be GCed.
+                data._data = null;
             }
         });
+        installWebGLContextRecovery();
     }
 
     function reportCapabilities(gl) {
@@ -1188,6 +2325,10 @@
                     installASTCTextureSupport();
                     console.log('[ios2-web] WebKit PVR parser restored after engine init');
                     installDirectorAssetReleaseHook();
+                    // 兜底：自检看门狗正常由启动沉降（sendReady）接手。万一沉降
+                    // 因故没上报（页面卡在加载中等），这里 20s 后也必须把它拉起来，
+                    // 否则「元素不全」又回到无人观测的状态。
+                    window.setTimeout(installRenderIntegrityWatchdog, 20000);
                     var device = cc.renderer && cc.renderer.device;
                     var gl = device && device._gl;
                     var pvrtc = device && device.ext('WEBGL_compressed_texture_pvrtc');
@@ -1216,10 +2357,19 @@
                         cc.view._maxPixelRatio = webPixelRatio;
                     }
                     cc.view.enableRetina(webPixelRatio > 1);
+                    // Desktop matrix cells are resizable surfaces. Use
+                    // EXACT_FIT in multi-open mode so the game canvas fills
+                    // the whole cell instead of preserving a phone ratio and
+                    // showing black bars at the sides.
+                    if (multiOpen && cc.ResolutionPolicy &&
+                        typeof cc.view.setResolutionPolicy === 'function') {
+                        cc.view.setResolutionPolicy(cc.ResolutionPolicy.EXACT_FIT);
+                    }
                     cc.view.resizeWithBrowserSize(true);
                     console.log('[ios2-web] pixel ratio',
                         'device=' + devicePixelRatio,
                         'quality=' + quality,
+                        'instances=' + ((window.__IOS2_GAME_INSTANCE__ || {}).instanceCount || 1),
                         'selected=' + webPixelRatio,
                         'retina=' + cc.view.isRetinaEnabled());
                     cc.director.loadScene(settings.launchScene, function (sceneError) {

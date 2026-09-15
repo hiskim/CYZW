@@ -147,7 +147,7 @@ public struct LobbyRootView: View {
             case .scripts:
                 ScriptSidebarView(session: session)
             case .settings:
-                SidebarSettingsView()
+                SidebarSettingsView(session: session)
             }
 
             Spacer(minLength: 0)
