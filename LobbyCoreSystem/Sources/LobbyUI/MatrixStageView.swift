@@ -18,6 +18,8 @@ struct MatrixStageView: View {
     @ObservedObject var session: LobbySessionModel
     /// 群控中控：状态胶囊（主控驱动 / 互相同步 / idle）直接观察它。
     @ObservedObject private var sync: InputSyncController
+    /// 侧栏显隐（由根视图持有，顶栏开关读写）。
+    @Binding var sidebarVisible: Bool
     /// 画布可视区尺寸（自动适配的输入；首帧为 0，随后立即被真实尺寸覆盖）。
     @State private var canvasViewport: CGSize = .zero
 
@@ -27,9 +29,10 @@ struct MatrixStageView: View {
     /// 命中测试始终用**快照**（起点布局），否则动画中的帧会使命中抖动。
     @State private var dragSnapshot: [String: CGRect]?
 
-    init(session: LobbySessionModel) {
+    init(session: LobbySessionModel, sidebarVisible: Binding<Bool>) {
         self.session = session
         _sync = ObservedObject(wrappedValue: session.sync)
+        _sidebarVisible = sidebarVisible
     }
 
     var body: some View {
@@ -44,8 +47,10 @@ struct MatrixStageView: View {
         }
         .overlay(alignment: .topTrailing) {
             HStack(spacing: 6) {
+                sidebarToggleChip
                 syncActionChip
                 syncStatusChip
+                closeAllChip
             }
         }
         .background(
@@ -119,6 +124,57 @@ struct MatrixStageView: View {
 
     private var allLiveInstancesAreSyncing: Bool {
         !liveSyncAccountIDs.isEmpty && liveSyncAccountIDs.allSatisfy { sync.isReceiver($0) }
+    }
+
+    /// 侧栏显隐开关：隐藏后画布铺满整窗（顶部拖拽区自适应已就位）。
+    @ViewBuilder
+    private var sidebarToggleChip: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sidebarVisible.toggle()
+            }
+        } label: {
+            Image(systemName: "sidebar.leading")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(sidebarVisible ? Color.white.opacity(0.85) : Color.cyan)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Capsule(style: .continuous)
+                    .fill(sidebarVisible ? Color.white.opacity(0.08) : Color.cyan.opacity(0.16)))
+                .overlay(Capsule(style: .continuous)
+                    .strokeBorder(sidebarVisible ? Color.white.opacity(0.16) : Color.cyan.opacity(0.55), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+        .help(sidebarVisible ? "隐藏左侧边栏" : "显示左侧边栏")
+    }
+
+    /// 一键关闭全部运行中的账号（逐个走账号级关闭：群控退休 + 池销毁）。
+    @ViewBuilder
+    private var closeAllChip: some View {
+        if !liveSyncAccountIDs.isEmpty {
+            Button {
+                session.closeAll()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: 10, weight: .bold))
+                    Text("关闭全部（\(liveSyncAccountIDs.count)）")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.42))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule(style: .continuous)
+                    .fill(Color(red: 1.0, green: 0.45, blue: 0.42).opacity(0.14)))
+                .overlay(Capsule(style: .continuous)
+                    .strokeBorder(Color(red: 1.0, green: 0.45, blue: 0.42).opacity(0.5), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("一键关闭全部运行中的实例")
+        }
     }
 
     /// 一键开启当前已打开实例的同步（路由仍由中控按账号所属分组隔离）；

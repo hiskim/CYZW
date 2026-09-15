@@ -35,6 +35,21 @@ struct AccountSidebarView: View {
                 self.draft = nil
             }
         }
+        .confirmationDialog(
+            "删除账号",
+            isPresented: Binding(
+                get: { session.deletionCandidate != nil },
+                set: { if !$0 { session.deletionCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除「\(session.deletionCandidate?.nickname ?? "")」的账号文件", role: .destructive) {
+                session.confirmDelete()
+            }
+            Button("取消", role: .cancel) { session.deletionCandidate = nil }
+        } message: {
+            Text("凭据文件将被永久删除，且不可恢复。若该账号正在运行，实例会先被关闭。")
+        }
     }
 
     private var filteredAccounts: [GameAccount] {

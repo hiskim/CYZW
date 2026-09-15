@@ -378,6 +378,13 @@ public final class LobbySessionModel: ObservableObject {
         return AccountOrder.apply(result, order: matrixOrder)
     }
 
+    /// 一键关闭全部运行中的账号（逐个走账号级关闭：群控退休 + 池销毁）。
+    public func closeAll() {
+        for account in accounts where runningAccountIDs.contains(account.id) {
+            close(account)
+        }
+    }
+
     /// 矩阵标题栏拖拽换位：把 `draggedID` 移到 `targetID` 当前所在的位置。
     /// 由矩阵舞台在拖动经过其它卡片时调用，实时重排并持久化。
     /// 插入方向随拖拽方向变化：向左拖 = 插到目标**之前**；向右拖 = 插到目标

@@ -102,7 +102,7 @@ public struct LobbyRootView: View {
                         .frame(width: Self.sidebarWidth)
                     Color.clear.frame(width: 1)
                 }
-                MatrixStageView(session: session)
+                MatrixStageView(session: session, sidebarVisible: $sidebarVisible)
             }
         }
         .overlay(alignment: .topLeading) {
