@@ -463,17 +463,28 @@
 			files = (
 			);
 			inputPaths = (
+				"$(SRCROOT)/Scripts/copy-webruntime.sh",
 				"$(SRCROOT)/../ios-cocos/cocos-project/src/ios2-web-index.html",
+				"$(SRCROOT)/../ios-cocos/cocos-project/src/settings.b2e22.js",
+				"$(SRCROOT)/../ios-cocos/cocos-project/src/ios2-web-cocos2d.js",
 				"$(SRCROOT)/../ios-cocos/cocos-project/src/ios2-web-boot.js",
+				"$(SRCROOT)/../ios-cocos/cocos-project/src/ios2-script-runtime.js",
+				"$(SRCROOT)/../ios-cocos/cocos-project/src/assets/launcher/common/libs/platform/hortor/HSDK.app.min.faac9.js",
+				"$(SRCROOT)/../ios-cocos/cocos-project/jsb-adapter/game-defines.js",
 				"$(SRCROOT)/../ios-cocos/cocos-project/assets/internal",
 			);
 			name = "Copy WebRuntime";
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/src/ios2-web-index.html",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/src/settings.b2e22.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/src/ios2-web-cocos2d.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/src/ios2-web-boot.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/src/ios2-script-runtime.js",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WebRuntime/jsb-adapter/game-defines.js",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nRUNTIME=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/WebRuntime\"\nmkdir -p \"$RUNTIME\"\nditto \"${SRCROOT}/../ios-cocos/cocos-project/src\" \"$RUNTIME/src\"\nditto \"${SRCROOT}/../ios-cocos/cocos-project/assets\" \"$RUNTIME/assets\"\nmkdir -p \"$RUNTIME/jsb-adapter\"\nditto \"${SRCROOT}/../ios-cocos/cocos-project/jsb-adapter/game-defines.js\" \"$RUNTIME/jsb-adapter/game-defines.js\"\n";
+			shellScript = "set -eu\n# 白名单拷贝逻辑见 Scripts/copy-webruntime.sh（本地 JSB 路径专用的 js 不再入包）。\nexec /bin/sh \"${SRCROOT}/Scripts/copy-webruntime.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

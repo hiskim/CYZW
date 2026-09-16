@@ -53,9 +53,22 @@ open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/Game
 > 实现，模块边界同样由编译器强制（import 关系 = target 依赖），后续若环境
 > 修复可平移回 Package.swift（见下方拓扑对照）。
 
-WebRuntime（引擎壳工程）由 `Copy WebRuntime` 构建阶段从
-`../ios-cocos/cocos-project/{src,assets,jsb-adapter}` 拷入主资源包，
-路径与上一代一致。
+WebRuntime（引擎壳工程）由 `Copy WebRuntime` 构建阶段往主资源包写入，
+实现是 `Scripts/copy-webruntime.sh`。它**只拷白名单文件**，路径与上一代一致：
+入口链（`ios2-web-index.html` / `settings.b2e22.js` / `ios2-web-cocos2d.js` /
+`ios2-web-boot.js` / `jsb-adapter/game-defines.js`）、`settings.jsList` 指向的
+`HSDK.app.min.*.js`、`ScriptStore` 直接读盘的 `ios2-script-runtime.js`，
+加上内置资源包 `assets/{internal,main}`。
+
+`ios-cocos/cocos-project/src` 是 **iOS 原生 JSB 与 macOS WebRuntime 共用** 的目录。
+`cocos2d-jsb.07adf.js`、`vendor/fairygui.js`、`ios2-login.js`、`ios2-manager*.js`、
+`ios2-account-*.js`、`ios2-bin-page.js`、`ios2-config-page.js`、`ios2-script-page.js`
+只服务原生 JSB 路径（由 `cocos-project/main.js` 的 require 链驱动），
+进 macOS 包就是死重量（约 2.1 MB），因此被挡在白名单外。iOS 原生构建读的是
+`cocos-project` 源目录，不受影响。
+
+> 往 `src/` 里新增 `*.js` 时：`ios2-web-*.js` 会被自动纳入；其它名字若既不在白名单
+> 也不在脚本末尾的「仅 iOS 原生」清单里，构建日志会打印 warning，请显式归类。
 
 ## 模块拓扑（规格 §3 的等价实现）
 
