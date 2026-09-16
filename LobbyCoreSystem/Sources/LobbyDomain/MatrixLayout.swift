@@ -116,6 +116,35 @@ public enum MatrixFit {
         return MatrixLayout(columns: columns, rows: rows, cardWidth: cardWidth, headerHeight: header)
     }
 
+    /// 手动尺寸：按首选宽度排、列数固定时收缩，结果统一成 MatrixLayout，
+    /// 让自动 / 手动两种模式走同一套渲染代码（与上一代口径一致）。
+    /// ⚠️ 手动档位同样受**高度约束**：每行可用高度反推出宽度上限（严格 9:16）——
+    /// 否则高度满时宽度还能继续加，网格溢出画布、画面变形。
+    public static func manual(count: Int,
+                              preferredWidth: CGFloat,
+                              in container: CGSize,
+                              forcedColumns: Int? = nil) -> MatrixLayout {
+        let n = max(1, count)
+        let width = max(minCardWidth, container.width - safetyMargin)
+        let height = max(headerHeightSingle + minCardWidth / gameAspect,
+                         container.height - safetyMargin)
+        let automaticColumns = max(1, Int((width + spacing) / (preferredWidth + spacing)))
+        let columns = max(1, min(forcedColumns ?? automaticColumns, maxColumns))
+        let fitted = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        let rows = (n + columns - 1) / columns
+        let header = headerHeight(forInstanceCount: n, rows: rows)
+        // 高度约束：该行数下每行可用高度（扣间距、扣顶栏）能撑起多宽的 9:16 画面。
+        let rowHeight = (height - spacing * CGFloat(rows - 1)) / CGFloat(rows)
+        let widthByHeight = max(0, rowHeight - header) * gameAspect
+        let widthCandidate = forcedColumns == nil
+            ? min(maxCardWidth, max(minCardWidth, preferredWidth))
+            : min(maxCardWidth, max(minCardWidth, min(preferredWidth, fitted)))
+        // 两个方向取小：宽度候选与高度上限取小，保证整屏放得下（画面不变形）。
+        let cardWidth = min(widthCandidate, max(minCardWidth, widthByHeight))
+        return MatrixLayout(columns: columns, rows: rows,
+                            cardWidth: cardWidth.rounded(.down), headerHeight: header)
+    }
+
     // MARK: - 内部
 
     /// 最优列数扫描（单调剪枝，见类型注释）。

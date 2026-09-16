@@ -22,6 +22,13 @@ struct MatrixStageView: View {
     @Binding var sidebarVisible: Bool
     /// 画布可视区尺寸（自动适配的输入；首帧为 0，随后立即被真实尺寸覆盖）。
     @State private var canvasViewport: CGSize = .zero
+    /// 尺寸模式：true = 自动适配（跟随画布、严格 9:16、单实例优先吃满高度）；
+    /// false = 手动（用 ± 调过的宽度，点 ± 以当前实际宽度为起点自动切手动）。
+    @AppStorage("lobby.matrix.autoSize") private var isAutoSizing = true
+    /// 手动模式下的卡片宽度（持久化；± 步进 ±20）。
+    @AppStorage("lobby.matrix.instanceWidth") private var instanceWidth: Double = 280
+    /// 每行显示的窗口数（nil = 自动按宽度适配；1~12 手动固定）。
+    @State private var fixedColumns: Int?
 
     /// 各卡片的实时布局帧（全局坐标，拖拽命中测试输入）。
     @State private var cardFrames: [String: CGRect] = [:]
@@ -29,39 +36,54 @@ struct MatrixStageView: View {
     /// 命中测试始终用**快照**（起点布局），否则动画中的帧会使命中抖动。
     @State private var dragSnapshot: [String: CGRect]?
 
+    /// 红黄绿交通灯避让带宽度（与 LobbyRootView 的同名常量保持一致）。
+    /// 侧栏隐藏时控制条必须从这里之后开始，否则开关 chip 落进顶部拖拽区，
+    /// 点击会被 AppKit 消费成拖窗口（点击黑洞）。
+    private static let trafficLightsClearance: CGFloat = 96
+
     init(session: LobbySessionModel, sidebarVisible: Binding<Bool>) {
         self.session = session
         _sync = ObservedObject(wrappedValue: session.sync)
         _sidebarVisible = sidebarVisible
     }
 
+    /// 当前矩阵布局：自动适配 / 手动尺寸统一输出同一份 MatrixLayout，
+    /// 两种模式共用网格与卡片渲染代码（body 与尺寸控制条共用）。
+    private var currentLayout: MatrixLayout {
+        isAutoSizing
+            ? MatrixFit.fit(count: session.matrixAccounts.count,
+                            in: MatrixCanvasMetrics.contentSize(from: canvasViewport),
+                            forcedColumns: fixedColumns)
+            : MatrixFit.manual(count: session.matrixAccounts.count,
+                               preferredWidth: CGFloat(instanceWidth),
+                               in: MatrixCanvasMetrics.contentSize(from: canvasViewport),
+                               forcedColumns: fixedColumns)
+    }
+
     var body: some View {
         let entries = session.matrixAccounts
-        let layout = MatrixFit.fit(count: entries.count,
-                                   in: MatrixCanvasMetrics.contentSize(from: canvasViewport))
-        ZStack {
-            canvas(entries: entries, layout: layout)
-            if entries.isEmpty {
-                emptyState
+        let layout = currentLayout
+        // 控制条是**固定顶栏**而非悬浮层：窗口再小也不会压住第一行卡片的标题
+        // （悬浮 overlay 在单实例吃满画布时与卡片标题重叠——实测截图）。
+        VStack(spacing: 0) {
+            controlBar
+            ZStack {
+                canvas(entries: entries, layout: layout)
+                if entries.isEmpty {
+                    emptyState
+                }
             }
+            // 画布可视区只测量控制条以下的区域（自动适配的输入）。
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { canvasViewport = proxy.size }
+                        .onChange(of: proxy.size) { _, newSize in
+                            canvasViewport = newSize
+                        }
+                }
+            )
         }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 6) {
-                sidebarToggleChip
-                syncActionChip
-                syncStatusChip
-                closeAllChip
-            }
-        }
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { canvasViewport = proxy.size }
-                    .onChange(of: proxy.size) { _, newSize in
-                        canvasViewport = newSize
-                    }
-            }
-        )
         .onPreferenceChange(MatrixCardFramesKey.self) { frames in
             cardFrames.merge(frames) { _, new in new }
         }
@@ -89,6 +111,35 @@ struct MatrixStageView: View {
             Button("取消", role: .cancel) { session.groupDeletionCandidate = nil }
         } message: {
             Text("删除分组并删除成员会永久删除组内全部账号的凭据文件，且不可恢复。")
+        }
+    }
+
+    // MARK: - 矩阵顶栏控制条
+
+    /// 固定顶栏：左侧 = 侧栏开关 + 群控 chips；右侧 = 尺寸控制 + 每行列数 +
+    /// 一键关闭。固定高度、不随卡片滚动、永不与卡片标题重叠。
+    private var controlBar: some View {
+        HStack(spacing: 6) {
+            sidebarToggleChip
+            syncActionChip
+            syncStatusChip
+            Spacer(minLength: 8)
+            sizeControlChip
+            columnsMenu
+            closeAllChip
+        }
+        // 侧栏隐藏时左移让出交通灯带（96 + 8 间距）——避让方向选横向，
+        // 不下移控制条（两态顶部高度保持一致）。
+        .padding(.leading, sidebarVisible ? 8 : Self.trafficLightsClearance + 8)
+        .padding(.trailing, 8)
+        .padding(.vertical, 4)
+        .background(
+            Color.black.opacity(0.28)
+        )
+        .overlay(alignment: .bottom) {
+            LinearGradient(colors: [Color.white.opacity(0.10), Color.white.opacity(0.02)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 1)
         }
     }
 
@@ -175,6 +226,126 @@ struct MatrixStageView: View {
             .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
             .help("一键关闭全部运行中的实例")
         }
+    }
+
+    // MARK: - 尺寸控制（自动适配 / 手动 ± / 每行窗口数）
+
+    /// ± 调整实例尺寸：以**当前实际显示宽度**为起点（自动模式下就是自动算出的
+    /// 宽度），步进后切到手动模式——用户手动调过之后就不再被自适应覆盖。
+    private func stepInstanceWidth(_ delta: Double) {
+        let base = isAutoSizing ? Double(currentLayout.cardWidth) : instanceWidth
+        instanceWidth = min(MatrixFit.maxCardWidth,
+                            max(MatrixFit.minCardWidth, (base + delta).rounded(.down)))
+        isAutoSizing = false
+    }
+
+    private var sizeReadout: String {
+        guard !session.matrixAccounts.isEmpty else { return "" }
+        return "\(Int(currentLayout.cardWidth))×\(Int(currentLayout.gameHeight))"
+    }
+
+    /// 尺寸控制胶囊：尺寸读数 + －/＋ + 自动/手动 + 每行窗口数菜单。
+    private var sizeControlChip: some View {
+        HStack(spacing: 5) {
+            if !session.matrixAccounts.isEmpty {
+                Text(sizeReadout)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .help(isAutoSizing
+                          ? "自动适配：跟随画布大小，严格 9:16"
+                          : "手动尺寸：点「自动」交回自适应")
+            }
+            Button {
+                stepInstanceWidth(-20)
+            } label: {
+                Image(systemName: "minus")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 9, intensity: 0.14)
+            .help("缩小窗口（自动切到手动尺寸）")
+            Button {
+                stepInstanceWidth(20)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 9, intensity: 0.14)
+            .help("放大窗口（自动切到手动尺寸）")
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isAutoSizing = true
+                    fixedColumns = nil
+                }
+            } label: {
+                Text("自动")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isAutoSizing ? Color.white : Color.cyan)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule(style: .continuous)
+                        .fill(isAutoSizing ? Color.cyan.opacity(0.72) : Color.cyan.opacity(0.12)))
+                    .overlay(Capsule(style: .continuous)
+                        .strokeBorder(Color.cyan.opacity(0.55), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+            .help("自动适配：按画布大小与实例数整屏排布，严格 9:16")
+        }
+    }
+
+    /// 每行窗口数菜单：自动 / 每行 1~12 个。
+    private var columnsMenu: some View {
+        Menu {
+            Button {
+                fixedColumns = nil
+            } label: {
+                if fixedColumns == nil {
+                    Label("自动", systemImage: "checkmark")
+                } else {
+                    Text("自动")
+                }
+            }
+            Divider()
+            ForEach(1...12, id: \.self) { count in
+                Button {
+                    fixedColumns = count
+                } label: {
+                    if fixedColumns == count {
+                        Label("每行 \(count) 个", systemImage: "checkmark")
+                    } else {
+                        Text("每行 \(count) 个")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "rectangle.split.3x1")
+                    .font(.system(size: 10, weight: .bold))
+                Text(fixedColumns.map { "每行 \($0) 个" } ?? "每行自动")
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white.opacity(0.85))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Capsule(style: .continuous).fill(Color.white.opacity(0.08)))
+            .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
+        .help("指定每行显示的窗口数")
     }
 
     /// 一键开启当前已打开实例的同步（路由仍由中控按账号所属分组隔离）；
