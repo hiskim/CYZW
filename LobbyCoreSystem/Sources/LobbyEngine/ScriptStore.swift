@@ -231,6 +231,17 @@ public final class ScriptStore: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// 读取 WebRuntime 内置的脚本兼容层源码（`ios2-script-runtime.js`）。
+    /// 它为第三方脚本提供 DOM 垫片、WebSocket 捕获（window.ws + sendAsync）、
+    /// __require 模块桥与 g_utils/ROLE 别名——用户脚本必须在它 install 之后
+    /// 才能真正操作游戏。
+    public func scriptRuntimeSource() -> String? {
+        guard let root = LobbyConfiguration.webRuntimeRoot else { return nil }
+        let url = root.appendingPathComponent("src/ios2-script-runtime.js")
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// 读取某个脚本的源码（UTF-8）。读取失败返回 nil，调用方跳过该脚本。
     public func scriptSource(named name: String) -> String? {
         guard !name.isEmpty, name == (name as NSString).lastPathComponent else { return nil }

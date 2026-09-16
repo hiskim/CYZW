@@ -142,7 +142,27 @@ public final class GameViewportInstance: NSView {
                     case .single: allowMulti = true
                     case .multi: allowMulti = scripts.isMultiOpenGateEnabled
                     }
-                    for record in scripts.enabledScripts(allowMulti: allowMulti) {
+                    let enabledRecords = scripts.enabledScripts(allowMulti: allowMulti)
+                    // 兼容层必须先于用户脚本安装：它把游戏第一条 socket 捕获为
+                    // window.ws（脚本经 ws.sendAsync 操作游戏）、把 bundle 的
+                    // 模块注册表提升为 window.__require，并打 DOM 垫片。
+                    // 文档开始即安装（早于游戏 socket 创建），保证捕获不漏。
+                    if !enabledRecords.isEmpty, let runtimeSource = scripts.scriptRuntimeSource(),
+                       !runtimeSource.isEmpty {
+                        self.webView.configuration.userContentController.addUserScript(
+                            WKUserScript(source: runtimeSource,
+                                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+                        )
+                        let glue = "if(window.__ios2ScriptRuntime){window.__ios2ScriptRuntime.install();" +
+                            "console.log('[lobby] script runtime installed');}"
+                        self.webView.configuration.userContentController.addUserScript(
+                            WKUserScript(source: glue,
+                                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+                        )
+                        LobbyLog.info("[instance] script runtime injected (%ld user script(s))",
+                                      enabledRecords.count)
+                    }
+                    for record in enabledRecords {
                         guard let source = scripts.scriptSource(named: record.name),
                               !source.isEmpty else {
                             LobbyLog.warn("[instance] user script skipped (unreadable): %@", record.name)
