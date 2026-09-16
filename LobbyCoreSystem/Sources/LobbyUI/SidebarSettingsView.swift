@@ -55,6 +55,10 @@ struct SidebarSettingsView: View {
                 }
                 toggleCard(title: "非焦点静音", summary: "多开时未聚焦实例自动静音（推荐）",
                            isOn: $muteWhenUnfocused)
+                settingCard(title: "游戏加强",
+                            summary: "改档即时下发到存活实例") {
+                    GameEnhancementSectionView(session: session)
+                }
                 toggleCard(title: "CDN 自动缓存", summary: "启动预热核心资源并共享给全部实例",
                            isOn: $cdnAutomaticCaching)
                 toggleCard(title: "Web 检查器", summary: "允许右键调出 Safari Web Inspector（排障用）",

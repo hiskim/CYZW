@@ -41,6 +41,8 @@ public final class GameViewportInstance: NSView {
     public weak var sync: InputSyncController?
     /// JS 脚本库（启动时按环境注入启用中的脚本）。
     public weak var scripts: ScriptStore?
+    /// 游戏加强设置库（十殿加速等；文档就绪时下发，改档由会话模型广播）。
+    public weak var enhancements: GameEnhancementStore?
 
     private let authenticator: GameAuthenticating
     private let resources: ResourceProviding
@@ -72,7 +74,8 @@ public final class GameViewportInstance: NSView {
                 resources: ResourceProviding,
                 settingsMirror: GameSettingsMirror,
                 sync: InputSyncController? = nil,
-                scripts: ScriptStore? = nil) {
+                scripts: ScriptStore? = nil,
+                enhancements: GameEnhancementStore? = nil) {
         self.account = account
         self.environment = environment
         self.authenticator = authenticator
@@ -80,6 +83,7 @@ public final class GameViewportInstance: NSView {
         self.settingsMirror = settingsMirror
         self.sync = sync
         self.scripts = scripts
+        self.enhancements = enhancements
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -253,6 +257,26 @@ public final class GameViewportInstance: NSView {
         webView.evaluateJavaScript(script) { _, error in completion?(error) }
     }
 
+    /// 下发游戏加强设置（十殿加速开关 + 倍率）。幂等，可重复调用。
+    /// 两条触发路径：① 文档就绪时补一次（代理已在 atDocumentStart 装好，
+    /// 此刻只差配置）；② 用户在设置页改档，由会话模型广播到全部存活实例。
+    public func applyEnhancements() {
+        guard let enhancements else { return }
+        let settings = enhancements.settings
+        let script = GameEnhancementScript.apply(enabled: settings.nightmareSpeedEnabled,
+                                                speed: settings.nightmareSpeedMultiplier)
+        webView.evaluateJavaScript(script) { result, error in
+            if let error {
+                LobbyLog.warn("[instance] enhancement apply failed: %@", error.localizedDescription)
+            } else {
+                // 诊断串形如 `running=1 speed=100 hook=1 panel=1 note=running-live`。
+                // no-handler = 代理脚本没进页面（构建产物未更新）。
+                LobbyLog.info("[instance] enhancement apply -> %@",
+                              (result as? String) ?? String(describing: result))
+            }
+        }
+    }
+
     /// 用户主动「重新登录」。
     public func requestReload() {
         pool?.requestReload(accountID: account.id)
@@ -384,6 +408,12 @@ public final class GameViewportInstance: NSView {
         // （WKUserScript 只能在导航时注入，运行时无法追加，所以必须预先装好）。
         contentController.addUserScript(
             WKUserScript(source: InputSyncScript.agent,
+                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        // ④ 游戏加强代理（十殿加速等）：同样必须预注入——用户在实例已经跑起来
+        // 之后才打开开关时，运行时只能推配置，没法再补装代理。
+        contentController.addUserScript(
+            WKUserScript(source: GameEnhancementScript.agent,
                          injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
@@ -712,6 +742,8 @@ extension GameViewportInstance: WKNavigationDelegate {
         // 页面就绪后把「是否捕获 / 波纹开关」写回页面：WKUserScript 在导航时已注入
         // 代理，但捕获开关是运行时状态（重载/新建实例都必须补一次）。
         sync?.refreshCapture(forAccountID: account.id)
+        // 游戏加强（十殿加速）同理：代理已随文档起点注入，这里补一次当前配置。
+        applyEnhancements()
         // 就绪后先按「非焦点」降帧静音；焦点仲裁由会话模型在 ready 后统一重放。
         applyEnergyPolicy(isFocused: false)
     }

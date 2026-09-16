@@ -10,7 +10,7 @@ import SwiftUI
 enum LobbyComposition {
     /// 构建指纹。排查「改了但没重装 / 跑的是旧版」这一类别时，看启动第一行日志即可。
     /// **每次改动宿主侧行为就 bump 一次。**
-    static let buildTag = "2026-09-16.8"
+    static let buildTag = "2026-09-16.9"
 
     /// 组装会话门面（窗口级单例）。主线程执行（实例池 / 会话门面均为 MainActor 类型）。
     @MainActor
@@ -27,6 +27,7 @@ enum LobbyComposition {
         let groups = AccountGroupStore()
         let sync = InputSyncController()
         let scripts = ScriptStore()
+        let enhancements = GameEnhancementStore()
         let authenticator = AccountAuthenticator(bins: bins)
         let pool = GameInstancePool { account, environment in
             GameViewportInstance(account: account,
@@ -35,10 +36,12 @@ enum LobbyComposition {
                                  resources: cdn,
                                  settingsMirror: mirror,
                                  sync: sync,
-                                 scripts: scripts)
+                                 scripts: scripts,
+                                 enhancements: enhancements)
         }
         return LobbySessionModel(bins: bins, pool: pool, sync: sync,
-                                 groupStore: groups, scripts: scripts)
+                                 groupStore: groups, scripts: scripts,
+                                 enhancements: enhancements)
     }
 
     /// 启动预热：CDN 清单 + 核心 bundle。失败不致命（游戏窗口可惰性重试）。

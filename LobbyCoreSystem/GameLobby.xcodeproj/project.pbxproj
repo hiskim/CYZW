@@ -36,6 +36,9 @@
 		C10000000000000000000023 /* InputSyncController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000023 /* InputSyncController.swift */; };
 		C10000000000000000000024 /* ScriptStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000024 /* ScriptStore.swift */; };
 		C10000000000000000000025 /* ScriptSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000025 /* ScriptSidebarView.swift */; };
+		C10000000000000000000027 /* GameEnhancementStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000027 /* GameEnhancementStore.swift */; };
+		C10000000000000000000028 /* GameEnhancementScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000028 /* GameEnhancementScript.swift */; };
+		C10000000000000000000029 /* GameEnhancementSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000029 /* GameEnhancementSectionView.swift */; };
 		C10000000000000000000017 /* libLobbyDomain.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C20000000000000000000019 /* libLobbyDomain.a */; };
 		C10000000000000000000018 /* libLobbyIPC.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001A /* libLobbyIPC.a */; };
 		C10000000000000000000019 /* libLobbyStorage.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001B /* libLobbyStorage.a */; };
@@ -160,6 +163,9 @@
 		C20000000000000000000023 /* InputSyncController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSyncController.swift; sourceTree = "<group>"; };
 		C20000000000000000000024 /* ScriptStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptStore.swift; sourceTree = "<group>"; };
 		C20000000000000000000025 /* ScriptSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptSidebarView.swift; sourceTree = "<group>"; };
+		C20000000000000000000027 /* GameEnhancementStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEnhancementStore.swift; sourceTree = "<group>"; };
+		C20000000000000000000028 /* GameEnhancementScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEnhancementScript.swift; sourceTree = "<group>"; };
+		C20000000000000000000029 /* GameEnhancementSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEnhancementSectionView.swift; sourceTree = "<group>"; };
 		C20000000000000000000017 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C20000000000000000000018 /* GameLobby.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GameLobby.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C20000000000000000000019 /* libLobbyDomain.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLobbyDomain.a; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -267,6 +273,8 @@
 				C2000000000000000000000D /* HSDKResponder.swift */,
 				C20000000000000000000023 /* InputSyncController.swift */,
 				C20000000000000000000024 /* ScriptStore.swift */,
+				C20000000000000000000027 /* GameEnhancementStore.swift */,
+				C20000000000000000000028 /* GameEnhancementScript.swift */,
 				C2000000000000000000000E /* GameViewportInstance.swift */,
 				C2000000000000000000000F /* GameInstancePool.swift */,
 			);
@@ -281,6 +289,7 @@
 				C20000000000000000000012 /* LobbyRootView.swift */,
 				C20000000000000000000013 /* AccountSidebarView.swift */,
 				C20000000000000000000014 /* SidebarSettingsView.swift */,
+				C20000000000000000000029 /* GameEnhancementSectionView.swift */,
 				C20000000000000000000015 /* MatrixStageView.swift */,
 				C20000000000000000000025 /* ScriptSidebarView.swift */,
 			);
@@ -541,6 +550,8 @@
 				C1000000000000000000000D /* HSDKResponder.swift in Sources */,
 				C10000000000000000000023 /* InputSyncController.swift in Sources */,
 				C10000000000000000000024 /* ScriptStore.swift in Sources */,
+				C10000000000000000000027 /* GameEnhancementStore.swift in Sources */,
+				C10000000000000000000028 /* GameEnhancementScript.swift in Sources */,
 				C1000000000000000000000E /* GameViewportInstance.swift in Sources */,
 				C1000000000000000000000F /* GameInstancePool.swift in Sources */,
 			);
@@ -557,6 +568,7 @@
 				C10000000000000000000014 /* SidebarSettingsView.swift in Sources */,
 				C10000000000000000000015 /* MatrixStageView.swift in Sources */,
 				C10000000000000000000025 /* ScriptSidebarView.swift in Sources */,
+				C10000000000000000000029 /* GameEnhancementSectionView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

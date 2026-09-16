@@ -48,18 +48,22 @@ public final class LobbySessionModel: ObservableObject {
     public let pool: GameInstancePool
     public let sync: InputSyncController
     public let scripts: ScriptStore
+    /// 游戏加强设置库（十殿加速等）。
+    public let enhancements: GameEnhancementStore
     private let groupStore: GroupStoring
 
     public init(bins: AccountStoring,
                 pool: GameInstancePool,
                 sync: InputSyncController,
                 groupStore: GroupStoring,
-                scripts: ScriptStore) {
+                scripts: ScriptStore,
+                enhancements: GameEnhancementStore) {
         self.bins = bins
         self.pool = pool
         self.sync = sync
         self.groupStore = groupStore
         self.scripts = scripts
+        self.enhancements = enhancements
         pool.delegate = self
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()
@@ -439,6 +443,37 @@ public final class LobbySessionModel: ObservableObject {
         LobbyLog.info("[session] quality broadcast(%@): %ld instance(s)", quality.rawValue, surfaces.count)
         for instance in surfaces {
             instance.applyQuality(quality)
+        }
+    }
+
+    // MARK: - 游戏加强下发（十殿加速）
+
+    /// 十殿加速开关变更：落盘（store 内 didSet）+ 下发全部存活实例。
+    /// 唯一写入路径——不让 UI 直接改 store，避免「改了值但没下发」的静默状态。
+    public func setNightmareSpeedEnabled(_ enabled: Bool) {
+        guard enhancements.nightmareSpeedEnabled != enabled else { return }
+        enhancements.nightmareSpeedEnabled = enabled
+        broadcastEnhancements()
+    }
+
+    /// 十殿加速倍率变更（越界钳制到 1...1000）：落盘 + 下发全部存活实例。
+    public func setNightmareSpeedMultiplier(_ multiplier: Int) {
+        let clamped = GameEnhancementSettings.clamp(multiplier: multiplier)
+        guard enhancements.nightmareSpeedMultiplier != clamped else { return }
+        enhancements.nightmareSpeedMultiplier = clamped
+        broadcastEnhancements()
+    }
+
+    /// 把当前游戏加强设置推给所有存活实例。
+    /// 新启动的实例不在这里管：它在文档就绪时自行下发一次。
+    public func broadcastEnhancements() {
+        let surfaces = pool.allSurfaces
+        let settings = enhancements.settings
+        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld): %ld instance(s)",
+                      settings.nightmareSpeedEnabled ? "on" : "off",
+                      settings.nightmareSpeedMultiplier, surfaces.count)
+        for instance in surfaces {
+            instance.applyEnhancements()
         }
     }
 

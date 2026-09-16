@@ -121,5 +121,11 @@ public enum LobbyConfiguration {
         public static let scriptsMultiGate = "lobby.scripts.multiGate"
         /// 脚本状态记录（JSON Data）。
         public static let scriptsRecords = "lobby.scripts.records"
+
+        // 游戏加强（十殿加速）
+        /// 十殿加速开关（默认 false，防误开）。
+        public static let enhanceNightmareSpeedEnabled = "lobby.enhance.nightmareSpeed.enabled"
+        /// 十殿加速倍率（Int，1...1000；默认 100）。
+        public static let enhanceNightmareSpeedMultiplier = "lobby.enhance.nightmareSpeed.multiplier"
     }
 }
