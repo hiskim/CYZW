@@ -25,6 +25,9 @@
         // 游戏加载器探测的失败计数（见 _readRole / refreshGlobals）。
         _roleLookupFailures: 0,
         _gUtilsUnavailable: false,
+        // 游戏网络管理器（见 _gameNetwork）与一次性告警开关。
+        _networkManager: null,
+        _sendAsyncWarned: false,
 
         _ensureElement: function (element) {
             if (!element) return element;
@@ -155,84 +158,47 @@
             } catch (ignored) {}
         },
 
-        // 请求编码：有真实 g_utils.bon.encode 就用它（游戏协议体是自定义编码，
-        // JSON 化会被服务端丢弃）；只在它确实返回字符串时才采用，避免把
-        // 对象喂给 WebSocket.send 变成 "[object Object]"。
-        _encodeRequest: function (request) {
-            if (typeof request === 'string') return request;
-            var utils = global.g_utils;
-            if (utils && utils.bon && typeof utils.bon.encode === 'function') {
-                try {
-                    var encoded = utils.bon.encode(request);
-                    if (typeof encoded === 'string') return encoded;
-                } catch (ignored) {}
-            }
-            try { return JSON.stringify(request); } catch (unserializable) { return String(request); }
+        // 游戏自己的网络管理器（game bundle 里的 NetworkManager 模块）。
+        //
+        // `window.ws.sendAsync` 必须转到它这里，**不能**往裸 socket 里塞 JSON：
+        // 游戏 socket 是二进制 + 自定义分帧的私有 RPC ——
+        //   new WebSocket(url) / binaryType = 'arraybuffer' / 1 字节握手(0x03)
+        //   sendInternal({cmd, params}) →
+        //     { ack: getAndUseAck(), body: encode(params), hint, time, seq: ++seq, cmd }
+        //     → 分帧 He(n, enc) → enqueue
+        // body 编码器在 @o4e/core 里、帧格式也是私有的，宿主都拿不到；硬塞 JSON 只会
+        // 把 RPC 流写坏、命令到不了服务端 —— 脚本的表现就是「能运行但没有效果」。
+        // NetworkManager.sendAsync 是游戏自己发命令用的同一条路径，直接复用。
+        _gameNetwork: function () {
+            if (this._networkManager) return this._networkManager;
+            var requireFn = this._findRequire();
+            if (!requireFn) return null;
+            try {
+                var module = requireFn('NetworkManager');
+                var manager = module && (module.NetworkManager || module.default || module);
+                if (manager && typeof manager.sendAsync === 'function') {
+                    this._networkManager = manager;
+                    return manager;
+                }
+            } catch (ignored) {}
+            return null;
         },
 
-        // sendAsync 靠临时接管 socket.onmessage 匹配响应，而游戏共用同一个 socket。
-        // 两个并发请求会互相抢 onmessage，所以这里串行化；还原时也只还原「还是我们
-        // 装的那个 handler」，避免把游戏中途换上的处理器顶掉。
         _ensureSendAsync: function (socket) {
-            if (!socket || typeof socket.sendAsync === 'function' || typeof socket.send !== 'function') return socket;
+            if (!socket || typeof socket.sendAsync === 'function') return socket;
             var runtime = this;
-            var queue = Promise.resolve();
             socket.sendAsync = function (request) {
-                var self = this;
-                var run = function () { return runtime._sendAsyncOnce(self, request); };
-                var result = queue.then(run, run);
-                queue = result.then(function () {}, function () {});
-                return result;
+                var network = runtime._gameNetwork();
+                if (network) return Promise.resolve(network.sendAsync(request));
+                // 拿不到 NetworkManager 时**明确失败**，而不是退回「往裸 socket 写 JSON」：
+                // 那会污染自定义分帧的 RPC 流，比不工作更糟（可能打断整条连接）。
+                if (!runtime._sendAsyncWarned) {
+                    runtime._sendAsyncWarned = true;
+                    try { console.warn('[lobby] NetworkManager 未就绪，脚本 sendAsync 暂不可用'); } catch (ignored) {}
+                }
+                return Promise.reject(new Error('游戏网络尚未就绪（NetworkManager.sendAsync 不可用）'));
             };
             return socket;
-        },
-
-        _sendAsyncOnce: function (socket, request) {
-            var runtime = this;
-            var originalSend = socket.send;
-            return new Promise(function (resolve, reject) {
-                var previous = socket.onmessage;
-                var finished = false;
-                var timer = null;
-                var restore = function () {
-                    if (socket.onmessage === handler) socket.onmessage = previous;
-                };
-                var finish = function (settle, value) {
-                    if (finished) return;
-                    finished = true;
-                    if (timer) clearTimeout(timer);
-                    restore();
-                    settle(value);
-                };
-                var handler = function (event) {
-                    var value = event && event.data !== undefined ? event.data : event;
-                    var parsed = value;
-                    if (typeof value === 'string') {
-                        try { parsed = JSON.parse(value); } catch (ignored) {}
-                    }
-                    var requestSeq = request && request.seq;
-                    var requestCmd = request && request.cmd;
-                    var responseSeq = parsed && parsed.seq;
-                    var responseCmd = parsed && parsed.cmd;
-                    var sequenceMismatch = requestSeq !== undefined && responseSeq !== undefined && String(requestSeq) !== String(responseSeq);
-                    var commandMismatch = requestCmd && responseCmd && String(requestCmd) !== String(responseCmd);
-                    if (sequenceMismatch || commandMismatch) {
-                        if (typeof previous === 'function') previous.call(socket, event);
-                        return;
-                    }
-                    if (typeof previous === 'function') previous.call(socket, event);
-                    finish(resolve, parsed);
-                };
-                timer = setTimeout(function () {
-                    finish(reject, new Error('WebSocket response timeout'));
-                }, 10000);
-                socket.onmessage = handler;
-                try {
-                    originalSend.call(socket, runtime._encodeRequest(request));
-                } catch (error) {
-                    finish(reject, error);
-                }
-            });
         },
 
         // The game owns the real socket. Mirror its inbound messages to the
@@ -580,6 +546,8 @@
                 var serverData = this._findRequire()('ServerData');
                 if (serverData && serverData.ROLE) {
                     this._roleLookupFailures = 0;
+            this._networkManager = null;
+            this._sendAsyncWarned = false;
                     return serverData.ROLE;
                 }
             } catch (ignored) {}
