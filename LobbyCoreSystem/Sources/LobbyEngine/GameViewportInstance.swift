@@ -57,6 +57,9 @@ public final class GameViewportInstance: NSView {
     private var storageSyncTask: Task<Void, Never>?
     private var isStopped = false
     private var renderBadSamples = 0
+    /// 在途下载的代理。`WKDownload.delegate` 是弱引用，不自己持有就会被提前释放，
+    /// 表现为「下载一动不动、也不报错」。
+    private var activeDownloads: [ObjectIdentifier: ScriptDownloadSink] = [:]
 
     /// 存储分区键（镜像 / 数据存储共用口径）。
     public var storageKey: String { account.id }
@@ -143,10 +146,16 @@ public final class GameViewportInstance: NSView {
                     case .multi: allowMulti = scripts.isMultiOpenGateEnabled
                     }
                     let enabledRecords = scripts.enabledScripts(allowMulti: allowMulti)
-                    // 兼容层必须先于用户脚本安装：它把游戏第一条 socket 捕获为
-                    // window.ws（脚本经 ws.sendAsync 操作游戏）、把 bundle 的
-                    // 模块注册表提升为 window.__require，并打 DOM 垫片。
-                    // 文档开始即安装（早于游戏 socket 创建），保证捕获不漏。
+                    // 兼容层必须先于用户脚本安装，且在游戏 boot 之前：
+                    // ① 接管 `window.__require`——游戏的模块加载器会把它当外层 require
+                    //    缓存下来，用户脚本也靠它拿游戏模块（macOS 上原本没人建这个符号，
+                    //    脚本因此拿不到 ROLE / 模块 / g_utils，UI 根本不挂载）；
+                    // ② 捕获游戏第一条 WebSocket，并把 ws/gameWs/gameSocket/
+                    //    WebSocketClient/h5websocket 五个别名一次给全；
+                    // ③ 打 DOM 垫片、装 GM_* 垫片。
+                    // install() 内部自带「1s × 60 有界轮询」补齐环境（socket、模块、
+                    // ROLE 谁先就绪谁先接上），所以不需要额外调用 waitForGame——
+                    // 那条路径是旧架构（脚本跑在独立覆盖 WebView）用的。
                     if !enabledRecords.isEmpty, let runtimeSource = scripts.scriptRuntimeSource(),
                        !runtimeSource.isEmpty {
                         self.webView.configuration.userContentController.addUserScript(
@@ -208,6 +217,10 @@ public final class GameViewportInstance: NSView {
         schemeHandler.stopAll()
         webView.stopLoading()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: LobbyConfiguration.webChannelName)
+        // WKUserScript 绑在 userContentController 上、随每次导航注入。start() 是
+        // 追加式的，只摘消息处理器会让引导脚本 / 兼容层 / 用户脚本残留并叠加
+        // 注入——实例池复用时尤其危险，这里一次清干净。
+        webView.configuration.userContentController.removeAllUserScripts()
         // 从群控注册表摘除（identity 校验：重载卡片时新实例已登记，不能误删）。
         sync?.registry.unregister(self, accountID: account.id)
         if gameSessionStarted {
@@ -514,8 +527,65 @@ public final class GameViewportInstance: NSView {
         case .input(let event):
             // 键鼠同步：本实例只有被允许发言时中控才会路由（中控会再校验一次）。
             sync?.publish(event, from: account.id)
+        case .openURL(let url):
+            openExternally(url)
+        case .downloadFile(let name, let mimeType, let base64):
+            saveExportedFile(base64: base64, name: name, mimeType: mimeType)
+        case .downloadURL(let url, let name):
+            downloadExportedFile(url: url, name: name)
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
+        }
+    }
+
+    /// 脚本经 GM_openInTab 请求打开外链。只放行 http/https：脚本是第三方来源，
+    /// 不能让它用自定义 scheme 去触发本机应用或系统设置跳转。
+    private func openExternally(_ urlString: String) {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            LobbyLog.warn("[instance] blocked external open request: %@", urlString)
+            return
+        }
+        LobbyLog.info("[instance] opening externally: %@", urlString)
+        NSWorkspace.shared.open(url)
+    }
+
+    /// 脚本导出（`<a download>` + Blob）落盘到系统「下载」目录。
+    /// 解码 + 写盘丢到后台：单文件上限 32 MB，在主线程解 base64 会直接撞上
+    /// `slow main work` 探针，还会拖住这一个格子的画面。
+    private func saveExportedFile(base64: String, name: String, mimeType: String) {
+        Task.detached(priority: .utility) {
+            guard let url = DownloadStore.write(base64: base64, preferredName: name, mimeType: mimeType) else {
+                LobbyLog.warn("[instance] export dropped: %@", name)
+                return
+            }
+            LobbyLog.info("[instance] export saved: %@", url.path)
+        }
+    }
+
+    /// 脚本导出的是远端 URL（`<a download href="https://…">`）：原生代下，
+    /// 同样只放行 http/https，并复用下载目录的改名 / 净化规则。
+    private func downloadExportedFile(url urlString: String, name: String) {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            LobbyLog.warn("[instance] blocked download request: %@", urlString)
+            return
+        }
+        let preferredName = name.isEmpty ? url.lastPathComponent : name
+        Task.detached(priority: .utility) {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 60
+            let session = URLSession(configuration: configuration)
+            defer { session.finishTasksAndInvalidate() }
+            do {
+                let (temporary, response) = try await session.download(from: url)
+                let mimeType = response.mimeType ?? "application/octet-stream"
+                DownloadStore.adopt(temporaryFile: temporary, preferredName: preferredName, mimeType: mimeType)
+            } catch {
+                LobbyLog.error("[instance] download failed %@: %@", urlString, error.localizedDescription)
+            }
         }
     }
 
@@ -644,6 +714,116 @@ extension GameViewportInstance: WKNavigationDelegate {
         sync?.refreshCapture(forAccountID: account.id)
         // 就绪后先按「非焦点」降帧静音；焦点仲裁由会话模型在 ready 后统一重放。
         applyEnergyPolicy(isFocused: false)
+    }
+
+    // MARK: - 页面导出的下载通道
+
+    /// 第三方脚本的导出是 `Blob` + `<a download>` + `a.click()`（锚点常常脱离文档）。
+    /// 实测 WebKit **原生支持**这种下载：锚点带 `download` 属性时
+    /// `navigationAction.shouldPerformDownload == true`，并且它会把脚本指定的文件名
+    /// 原样带进 `suggestedFilename`。所以宿主只需要把策略放成 `.download`、
+    /// 在 `didBecome` 时挂上代理、在代理里挑一个落盘位置就完事。
+    ///
+    /// 这一步**必须在原生侧做**：靠页面侧垫片接管锚点的话，导出就会依赖
+    /// 脚本运行时被注入（那是另一条独立链路），而且要走一次 base64 中转、受大小限制。
+    /// 缺了这里，WebKit 会进入下载通道却拿不到目的地 —— 日志里就会看到
+    /// `Could not create a sandbox extension for ''`，导出表现为「点了没反应」。
+    public func webView(_ webView: WKWebView,
+                        decidePolicyFor navigationAction: WKNavigationAction,
+                        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.shouldPerformDownload {
+            // 这行是排查「导出点了没反应」的分水岭：
+            // 有它 → 页面确实触发了下载，问题在宿主的目的地/落盘；
+            // 没它 → 点击根本没走到 WebKit，问题在页面/脚本侧。
+            LobbyLog.info("[download] shouldPerformDownload url=%@", navigationAction.request.url?.absoluteString ?? "?")
+            decisionHandler(.download)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    /// 兜住「响应本身无法在页面里显示」的下载（未知 MIME / 附件）。
+    public func webView(_ webView: WKWebView,
+                        decidePolicyFor navigationResponse: WKNavigationResponse,
+                        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if !navigationResponse.canShowMIMEType {
+            LobbyLog.info("[download] canShowMIMEType=false url=%@", navigationResponse.response.url?.absoluteString ?? "?")
+            decisionHandler(.download)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    public func webView(_ webView: WKWebView,
+                        navigationAction: WKNavigationAction,
+                        didBecome download: WKDownload) {
+        attachDownloadDelegate(to: download,
+                               suggestedName: navigationAction.request.url?.lastPathComponent ?? "")
+    }
+
+    public func webView(_ webView: WKWebView,
+                        navigationResponse: WKNavigationResponse,
+                        didBecome download: WKDownload) {
+        attachDownloadDelegate(to: download,
+                               suggestedName: navigationResponse.response.url?.lastPathComponent ?? "")
+    }
+
+    /// `WKDownload.delegate` 是**弱引用**：不自己持有的话，下载还没落盘代理就没了。
+    private func attachDownloadDelegate(to download: WKDownload, suggestedName: String) {
+        let sink = ScriptDownloadSink(fallbackName: suggestedName) { [weak self] identifier in
+            self?.activeDownloads.removeValue(forKey: identifier)
+        }
+        activeDownloads[ObjectIdentifier(download)] = sink
+        download.delegate = sink
+    }
+}
+
+/// 把 WebKit 的下载落到系统「下载」目录。
+///
+/// 只做「挑位置 + 记账」：内容由 WebKit 流式写盘，因此大文件也不会在内存里过一遍。
+private final class ScriptDownloadSink: NSObject, WKDownloadDelegate {
+    private let fallbackName: String
+    private let onFinish: (ObjectIdentifier) -> Void
+    /// WebKit 拿到目的地之后才落盘，这中间路径是被预约的，结束必须释放。
+    private var destination: URL?
+
+    init(fallbackName: String, onFinish: @escaping (ObjectIdentifier) -> Void) {
+        self.fallbackName = fallbackName
+        self.onFinish = onFinish
+    }
+
+    func download(_ download: WKDownload,
+                  decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String,
+                  completionHandler: @escaping (URL?) -> Void) {
+        // suggestedFilename 来自锚点的 download 属性（脚本自己定的名字），
+        // 拿不到时才退回响应里的文件名。
+        let preferred = suggestedFilename.isEmpty ? fallbackName : suggestedFilename
+        let mimeType = response.mimeType ?? "application/octet-stream"
+        guard let destination = DownloadStore.destinationURL(preferredName: preferred, mimeType: mimeType) else {
+            LobbyLog.warn("[download] no writable destination for: %@", preferred)
+            completionHandler(nil)
+            return
+        }
+        self.destination = destination
+        LobbyLog.info("[download] webkit download -> %@", destination.path)
+        completionHandler(destination)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        LobbyLog.info("[download] webkit download finished")
+        finish(download)
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        LobbyLog.error("[download] webkit download failed: %@", error.localizedDescription)
+        finish(download)
+    }
+
+    private func finish(_ download: WKDownload) {
+        if let destination { DownloadStore.release(destination: destination) }
+        destination = nil
+        onFinish(ObjectIdentifier(download))
     }
 }
 

@@ -32,6 +32,7 @@
 		C10000000000000000000020 /* AccountGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000020 /* AccountGroup.swift */; };
 		C10000000000000000000021 /* InputSyncRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000021 /* InputSyncRouting.swift */; };
 		C10000000000000000000022 /* AccountGroupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000022 /* AccountGroupStore.swift */; };
+		C10000000000000000000026 /* DownloadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000026 /* DownloadStore.swift */; };
 		C10000000000000000000023 /* InputSyncController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000023 /* InputSyncController.swift */; };
 		C10000000000000000000024 /* ScriptStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000024 /* ScriptStore.swift */; };
 		C10000000000000000000025 /* ScriptSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000025 /* ScriptSidebarView.swift */; };
@@ -155,6 +156,7 @@
 		C20000000000000000000020 /* AccountGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountGroup.swift; sourceTree = "<group>"; };
 		C20000000000000000000021 /* InputSyncRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSyncRouting.swift; sourceTree = "<group>"; };
 		C20000000000000000000022 /* AccountGroupStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountGroupStore.swift; sourceTree = "<group>"; };
+		C20000000000000000000026 /* DownloadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadStore.swift; sourceTree = "<group>"; };
 		C20000000000000000000023 /* InputSyncController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSyncController.swift; sourceTree = "<group>"; };
 		C20000000000000000000024 /* ScriptStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptStore.swift; sourceTree = "<group>"; };
 		C20000000000000000000025 /* ScriptSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptSidebarView.swift; sourceTree = "<group>"; };
@@ -251,6 +253,7 @@
 				C20000000000000000000022 /* AccountGroupStore.swift */,
 				C20000000000000000000008 /* GameSettingsMirror.swift */,
 				C20000000000000000000009 /* CDNAssetStore.swift */,
+				C20000000000000000000026 /* DownloadStore.swift */,
 				C2000000000000000000000A /* GameResourceSchemeHandler.swift */,
 			);
 			path = LobbyStorage;
@@ -513,6 +516,7 @@
 				C10000000000000000000022 /* AccountGroupStore.swift in Sources */,
 				C10000000000000000000008 /* GameSettingsMirror.swift in Sources */,
 				C10000000000000000000009 /* CDNAssetStore.swift in Sources */,
+				C10000000000000000000026 /* DownloadStore.swift in Sources */,
 				C1000000000000000000000A /* GameResourceSchemeHandler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

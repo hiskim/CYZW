@@ -63,6 +63,13 @@ public enum PageEvent: Sendable {
     case frameRateWrite(fps: String, stack: String)
     /// 键鼠同步：捕获器上报的中性输入事件（仅参与同步的实例会上报）。
     case input(InputSyncEvent)
+    /// 脚本请求用系统浏览器打开外链（GM_openInTab 垫片的兜底路径）。
+    case openURL(url: String)
+    /// 脚本导出文件：页面侧的下载垫片把 `<a download>` + Blob 的内容交回原生落盘。
+    /// WKWebView 不实现 HTML 的 download 属性，不做这一步脚本的「导出」就是死键。
+    case downloadFile(name: String, mimeType: String, base64: String)
+    /// 脚本导出的是远端 URL（`<a download href="https://…">`），由原生代下。
+    case downloadURL(url: String, name: String)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -111,6 +118,18 @@ public enum PageEvent: Sendable {
         case "input":
             guard let event = InputSyncEvent.decode(from: body) else { return .unknown(type: type) }
             return .input(event)
+        case "openurl":
+            guard let url = body["url"] as? String else { return .unknown(type: type) }
+            return .openURL(url: url)
+        case "download":
+            guard let name = body["name"] as? String,
+                  let base64 = body["base64"] as? String else { return .unknown(type: type) }
+            return .downloadFile(name: name,
+                                 mimeType: body["mimeType"] as? String ?? "application/octet-stream",
+                                 base64: base64)
+        case "downloadurl":
+            guard let url = body["url"] as? String else { return .unknown(type: type) }
+            return .downloadURL(url: url, name: body["name"] as? String ?? "")
         default:
             return .unknown(type: type)
         }
