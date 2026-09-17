@@ -598,15 +598,25 @@ public final class GameViewportInstance: NSView {
 
     // MARK: - 存储策略
 
-    /// 按 GameStoragePolicy 选型 WKWebsiteDataStore（规格 §2.2 账号强隔离）。
-    /// 隔离 / 共享都用确定性 UUID：同一账号每次启动拿到同一个存储区。
+    /// WebKit 存储容器选型。
+    ///
+    /// ⚠️ **除 ephemeral 外永远按账号隔离**（`sharedAcrossAccounts` 只作用于原生
+    /// 设置镜像，见 GameSettingsMirror）。历史教训（2026-09-18，log.txt/log2.txt）：
+    /// 共享模式下所有实例共用同一个 `WKWebsiteDataStore` + 同一个 origin
+    /// `ios2-game://`，于是**同一个 localStorage 被所有实例同时读写**：
+    ///   · atDocumentStart 的「钉住 serverId」互相覆盖——最后一个钉的赢，
+    ///     先启动的游戏在 `_authUser` 时读到的就是**别的 bin 的区**
+    ///     （实测 41石大/42石二 都带着 43石三 的 1014028 去请求认证）；
+    ///   · 游戏 / 第三方脚本的 uid、角色态、脚本状态也全部串号。
+    /// 多个 bin 同账号（authuser 的 roleId = 账号 uid，同账号恒同值）落到同一个区
+    /// 之后就是服务端顶号——「启用分组全部账号，有些登录互相挤掉」的根因。
+    /// 登录态的隔离是本大厅「账号 = bin 内容 SHA256」架构的地基，不可让渡；
+    /// 「一处改、全账号生效」的需求由原生镜像层以「只补缺、登录键不进池」的方式满足。
     private static func websiteDataStore(forAccountID accountID: String) -> WKWebsiteDataStore {
         switch GameStoragePolicy.current() {
         case .ephemeral:
             return .nonPersistent()
-        case .sharedAcrossAccounts:
-            return WKWebsiteDataStore(forIdentifier: StableIdentifier.uuid(from: "lobby-game-store-shared"))
-        case .isolatedPerAccount:
+        case .sharedAcrossAccounts, .isolatedPerAccount:
             return WKWebsiteDataStore(forIdentifier: StableIdentifier.uuid(from: "lobby-game-store-\(accountID)"))
         }
     }
@@ -708,9 +718,9 @@ public final class GameViewportInstance: NSView {
                snapshot.serverID != 0, snapshot.serverID != Int(expected) {
                 if !skippedProfileForServerMismatch {
                     skippedProfileForServerMismatch = true
-                    LobbyLog.info("[instance] 拦下切服后的资料上报（页面 serverId=%ld ≠ 凭据 %lld），账号卡保持原区资料",
-                                  snapshot.serverID, expected)
-                    DiagnosticsLog.append("[instance] 拦下切服后的资料上报"
+                    LobbyLog.info("[instance] 拦下切服后的资料上报：%@（页面 serverId=%ld ≠ 凭据 %lld），账号卡保持原区资料",
+                                  account.fileName, snapshot.serverID, expected)
+                    DiagnosticsLog.append("[instance] 拦下切服后的资料上报 \(account.fileName)"
                         + "（页面 serverId=\(snapshot.serverID) ≠ 凭据 \(expected)）——账号卡保持原区资料")
                 }
                 return
@@ -750,7 +760,10 @@ public final class GameViewportInstance: NSView {
         // 页面侧还有一类请求需要「体 = 凭据本身」（`/login/serverlist`）：
         // 游戏自己发的是参数体，服务端只会回一个空列表 —— 「选择大区」因此是空的。
         loginCredential = try? credential.loginBody(serverID: nil)
-        LobbyLog.info("[instance] 登录代理就绪：凭据区服 serverId=%lld（凭据体 %ld 字节，编码头 %@）",
+        // ⚠️ 行里必须带 bin 名：多开时这些行在日志里交错，没有名字就无法把
+        // 「哪个实例请求了哪个区」归因到账号（2026-09-18 排查顶号问题时的最大障碍）。
+        LobbyLog.info("[instance] 登录代理就绪：%@ 凭据区服 serverId=%lld（凭据体 %ld 字节，编码头 %@）",
+                      account.fileName,
                       credential.serverID ?? 0,
                       loginCredential?.bytes.count ?? 0,
                       loginCredential?.encodingHeader ?? "（不发）")
@@ -776,9 +789,9 @@ public final class GameViewportInstance: NSView {
                 guard let self else { return }
                 let answer = await loginProxy.serverListResponse()
                 guard !self.isStopped else { return }
-                LobbyLog.info("[login-proxy] serverlist 应答 %@（%ld 字节）",
-                              requestID, answer.bytes.count)
-                DiagnosticsLog.append("[login-proxy] serverlist 应答 \(requestID)"
+                LobbyLog.info("[login-proxy] %@ serverlist 应答 %@（%ld 字节）",
+                              self.account.fileName, requestID, answer.bytes.count)
+                DiagnosticsLog.append("[login-proxy] \(self.account.fileName) serverlist 应答 \(requestID)"
                     + "（来源=\(answer.source)，\(answer.bytes.count) 字节）")
                 self.completeLoginRequest(requestID: requestID,
                                           base64: answer.bytes.base64EncodedString(),
@@ -791,9 +804,9 @@ public final class GameViewportInstance: NSView {
             guard let self else { return }
             let answer = await loginProxy.respond(gameRequestBody: body)
             guard !self.isStopped else { return }
-            LobbyLog.info("[login-proxy] 应答 %@（来源=%@，%ld 字节）",
-                          requestID, answer.source, answer.bytes.count)
-            DiagnosticsLog.append("[login-proxy] 应答 \(requestID)（来源=\(answer.source)，\(answer.bytes.count) 字节）")
+            LobbyLog.info("[login-proxy] %@ 应答 %@（来源=%@，%ld 字节）",
+                          self.account.fileName, requestID, answer.source, answer.bytes.count)
+            DiagnosticsLog.append("[login-proxy] \(self.account.fileName) 应答 \(requestID)（来源=\(answer.source)，\(answer.bytes.count) 字节）")
             self.completeLoginRequest(requestID: requestID,
                                       base64: answer.bytes.base64EncodedString(),
                                       source: answer.source)

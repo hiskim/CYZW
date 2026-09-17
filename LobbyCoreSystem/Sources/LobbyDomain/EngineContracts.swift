@@ -150,8 +150,9 @@ public enum StableIdentifier {
 ///
 /// - `isolatedPerAccount`（规格 2.0 默认）：每账号 `WKWebsiteDataStore(forIdentifier:)`
 ///   独占容器，磁盘与内存层面绝对隔离，彻底杜绝串号。
-/// - `sharedAcrossAccounts`：所有账号共用一份存储。游戏自身按 uid 区分角色数据，
-///   全局设置（音量、省电）一处修改全账号生效——与真机「一个 App 一份存储」语义一致。
+/// - `sharedAcrossAccounts`：游戏内配置走**共享镜像池**（只补缺、登录态永不共享）；
+///   WebKit 存储容器仍按账号隔离——登录态（serverId/uid/puid、角色、脚本状态）
+///   共享会让多开互相顶号（2026-09-18 实测），所以「共享」只剩配置继承一层。
 /// - `ephemeral`：不持久化（排障用），配置由原生镜像层兜底。
 public enum GameStoragePolicy: String, CaseIterable, Identifiable, Codable, Sendable {
     case isolatedPerAccount
@@ -173,7 +174,7 @@ public enum GameStoragePolicy: String, CaseIterable, Identifiable, Codable, Send
     public var summary: String {
         switch self {
         case .isolatedPerAccount: return "每账号独立存储容器，互不串号（推荐）"
-        case .sharedAcrossAccounts: return "所有账号共用一份游戏内配置"
+        case .sharedAcrossAccounts: return "新账号继承共享游戏内配置（登录态/区服永不共享）"
         case .ephemeral: return "关闭窗口即丢弃 WebKit 侧数据（排障用）"
         }
     }
