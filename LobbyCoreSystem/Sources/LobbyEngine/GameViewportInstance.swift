@@ -675,6 +675,11 @@ public final class GameViewportInstance: NSView {
             avatars?.record(snapshot, forAccountID: account.id)
         case .loginAuth(let requestID, let bodyBase64):
             respondToLoginRequest(requestID: requestID, bodyBase64: bodyBase64)
+        case .loginDiag(let message):
+            // 页面侧的登录链路诊断：直接落盘。这条通道特意**不经过 console**
+            // （游戏 boot 后会把 console 整个换掉，我们包装的那层会失效）。
+            LobbyLog.info("[login-diag] %@", message)
+            DiagnosticsLog.append("[diag] \(message)")
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
         }

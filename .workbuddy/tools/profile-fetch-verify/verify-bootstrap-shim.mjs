@@ -111,6 +111,9 @@ console.log(`引导脚本 ${script.length} 字符\n`);
   check('Content-Type 是二进制', native.headers['content-type'] === 'application/octet-stream',
         JSON.stringify(native.headers));
   check('游戏自己的参数体没有被发出去', new Uint8Array(native.body).length !== 3);
+  check('诊断通过 postMessage 上报（不依赖 console）',
+        posts.some((m) => m.type === 'loginDiag' && /改用凭据体/.test(m.message || '')),
+        JSON.stringify(posts.map((m) => m.type)));
 
   console.log('\n④ 其它请求原样放行（body 一字不改）');
   const other = new window.XMLHttpRequest();
@@ -172,6 +175,9 @@ console.log(`引导脚本 ${script.length} 字符\n`);
   check('解析方法已被包住', !!SelectServerModule.prototype._parseFirstServerList.__lobbyPatched);
   check('统计里 parseHooked=true',
         JSON.parse(w.__LOBBY_LOGIN__.stats()).parseHooked === true);
+  check('补丁安装通过 postMessage 上报',
+        harness.posts.some((m) => m.type === 'loginDiag' && /解析补丁已挂上/.test(m.message || '')),
+        JSON.stringify(harness.posts.map((m) => m.type)));
 
   // 模拟服务端响应（只有 5 个字段，正是线上的样子）
   const response = {

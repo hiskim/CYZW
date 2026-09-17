@@ -106,6 +106,12 @@ public enum PageEvent: Sendable {
     /// 页面把原始请求体原样送上来（base64）——**体里带着游戏想去哪个区**
     /// （`serverId`），宿主据此重新认证，这是「游戏内选区」能生效的唯一依据。
     case loginAuth(requestID: String, bodyBase64: String)
+    /// 登录链路的诊断上报（**不走 console**）。
+    ///
+    /// 为什么不复用 console 桥：页面 boot 之后游戏会把 `console` 整个换掉，
+    /// 我们包装的那层随之失效 —— 实测「改用凭据体 / 完成：响应 N 字节」这类
+    /// 关键行根本回不到宿主，排查时会被误判成「没发生」。这条通道只发一个小字符串。
+    case loginDiag(message: String)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -182,6 +188,8 @@ public enum PageEvent: Sendable {
         case "loginAuth":
             guard let requestID = body["requestId"] as? String else { return .unknown(type: type) }
             return .loginAuth(requestID: requestID, bodyBase64: body["body"] as? String ?? "")
+        case "loginDiag":
+            return .loginDiag(message: body["message"] as? String ?? "")
         default:
             return .unknown(type: type)
         }

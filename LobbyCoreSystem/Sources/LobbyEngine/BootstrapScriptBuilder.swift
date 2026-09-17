@@ -81,6 +81,17 @@ public enum BootstrapScriptBuilder {
           manifest: \(manifestValue),
         };
         \(consoleBridgeScript)
+        // 诊断上报：**不走 console**。页面 boot 之后游戏会把 console 整个换掉，
+        // 我们包装的那层随之失效（实测 `改用凭据体` / `完成` 这些行根本回不到宿主）。
+        // 这条链路只发一条极小的字符串，native 侧直接落到 diagnostics.log。
+        function __diag(message) {
+          try {
+            window.webkit.messageHandlers.\(channel).postMessage({
+              type: 'loginDiag', instance: window.\(global).id, message: String(message)
+            });
+          } catch (ignored) {}
+          try { console.warn('[lobby] ' + message); } catch (ignored) {}
+        }
         window.jsb = window.jsb || {};
         window.jsb.reflection = window.jsb.reflection || {};
         window.jsb.reflection.callStaticMethod = function() {
@@ -133,14 +144,14 @@ public enum BootstrapScriptBuilder {
         var __credentialBytes = null;
         (function () {
           var base64 = window.\(global).credential || '';
-          if (!base64) { console.warn('[lobby] 没有注入凭据本体（/login/serverlist 只能原样放行）'); return; }
+          if (!base64) { __diag('没有注入凭据本体（/login/serverlist 只能原样放行）'); return; }
           try {
             var binary = atob(base64), bytes = new Uint8Array(binary.length);
             for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             __credentialBytes = bytes;
-            console.warn('[lobby] 凭据本体已注入：' + bytes.length + ' 字节，编码头='
+            __diag('凭据本体已注入：' + bytes.length + ' 字节，编码头='
               + (window.\(global).credentialEncoding || '（不发）'));
-          } catch (error) { console.error('[lobby] 凭据解码失败', error); }
+          } catch (error) { __diag('凭据解码失败：' + (error && error.message)); }
           window.\(global).credential = '';
         })();
         // 诊断计数：这条链路出问题时界面只是「空着」，没有异常可看，
@@ -173,7 +184,7 @@ public enum BootstrapScriptBuilder {
                 var found = /login_[a-z]+/.exec(text);
                 if (found) {
                   __loginStats.wsLoginCmds.push(found[0] + '(' + bytes.length + 'B)');
-                  console.warn('[lobby] WS 上出现 ' + found[0] + ' 命令（' + bytes.length + ' 字节）');
+                  __diag('WS 上出现 ' + found[0] + ' 命令（' + bytes.length + ' 字节）');
                   break;
                 }
               }
@@ -235,15 +246,15 @@ public enum BootstrapScriptBuilder {
                   }
                   if (!__loginSeen[match[1]]) {
                     __loginSeen[match[1]] = true;
-                    console.warn('[lobby] 未接管的 /login/' + match[1] + '（体是游戏参数，服务端可能只回空）');
+                    __diag('未接管的 /login/' + match[1] + '（体是游戏参数，服务端可能只回空）');
                   }
                 }
               }
-            } catch (statsError) { console.error('[lobby] 统计失败（不影响请求）', statsError); }
+            } catch (statsError) { __diag('统计失败（不影响请求）：' + (statsError && statsError.message)); }
             if (this._fake) { this._readyState = 1; this._emit('readystatechange'); }
             else this._native.open.apply(this._native, arguments);
           } catch (error) {
-            console.error('[lobby] XHR open 垫片异常，降级为原样放行', error);
+            __diag('XHR open 垫片异常，降级为原样放行：' + (error && error.message));
             try { this._fake = false; this._credential = false; this._native.open.apply(this._native, arguments); } catch (ignored) {}
           }
         };
@@ -253,8 +264,8 @@ public enum BootstrapScriptBuilder {
               this._native.setRequestHeader('Content-Type', 'application/octet-stream');
               var encoding = window.\(global).credentialEncoding;
               if (encoding) this._native.setRequestHeader('O4e-Encoding', encoding);
-            } catch (error) { console.error('[lobby] 设置凭据请求头失败', error); }
-            console.warn('[lobby] /login/serverlist 改用凭据体（' + __credentialBytes.length
+            } catch (error) { __diag('设置凭据请求头失败：' + (error && error.message)); }
+            __diag('/login/serverlist 改用凭据体（' + __credentialBytes.length
               + ' 字节；游戏给的参数体服务端只回空列表）');
             // 回执：这条到底是成功了还是又拿了个空货，一眼可见。
             var self = this;
@@ -262,7 +273,8 @@ public enum BootstrapScriptBuilder {
               try {
                 var response = self._native.response;
                 var size = response ? (response.byteLength || 0) : 0;
-                console.warn('[lobby] /login/serverlist 完成：status=' + self._native.status
+                // ★ 这条是关键判据：响应到底是不是空的。
+                __diag('/login/serverlist 完成：status=' + self._native.status
                   + ' 响应 ' + size + ' 字节' + (size < 4096 ? '（太小，八成还是空的）' : ''));
               } catch (ignored) {}
             });
@@ -298,7 +310,7 @@ public enum BootstrapScriptBuilder {
           self.__lobbyTimer = setTimeout(function () {
             if (!__loginPending[requestId]) return;
             delete __loginPending[requestId];
-            console.warn('[lobby] loginAuth ' + __loginTimeoutMs + 'ms 未应答，退回预认证字节');
+            __diag('loginAuth ' + __loginTimeoutMs + 'ms 未应答，退回预认证字节');
             self.__lobbyFinish(200, __authBytes(), 'timeout');
           }, __loginTimeoutMs);
         };
@@ -352,7 +364,7 @@ public enum BootstrapScriptBuilder {
             if (done) { clearInterval(timer); return; }
             if (++tries > 120) {
               clearInterval(timer);
-              console.warn('[lobby] 未能挂上 SelectServerModule（轮询 60s 放弃，选择大区会是空的）');
+              __diag('未能挂上 SelectServerModule（轮询 60s 放弃，选择大区会是空的）');
               return;
             }
             var requireFn = window.__require;
@@ -395,9 +407,9 @@ public enum BootstrapScriptBuilder {
             done = true;
             if (patched > 0) {
               __loginStats.parseHooked = true;
-              console.warn('[lobby] SelectServerModule 解析补丁已挂上（' + patched + ' 个方法）');
+              __diag('SelectServerModule 解析补丁已挂上（' + patched + ' 个方法）');
             } else {
-              console.warn('[lobby] SelectServerModule 上没找到可打的解析方法');
+              __diag('SelectServerModule 上没找到可打的解析方法');
             }
           }, 500);
         })();
