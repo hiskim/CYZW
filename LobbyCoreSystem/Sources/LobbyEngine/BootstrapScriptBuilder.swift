@@ -156,7 +156,7 @@ public enum BootstrapScriptBuilder {
         })();
         // 诊断计数：这条链路出问题时界面只是「空着」，没有异常可看，
         // 所以把「有没有发过 / 走的哪条通道」记下来，由原生在 didFinish 后主动取。
-        var __loginStats = { authXHR: 0, credentialXHR: 0, passthroughLoginXHR: 0,
+        var __loginStats = { authXHR: 0, credentialXHR: 0, serverListXHR: 0, passthroughLoginXHR: 0,
                              passthroughPaths: [], parseHooked: false, wsLoginCmds: [] };
         // WS 嗅探：帧是 BON + 单字节 XOR（密钥在头 4 字节里），所以对 2..249 逐把钥匙试一遍，
         // 看解密后有没有 `login_xxx` —— 只要 1KB 级的字节，代价可以忽略。
@@ -228,15 +228,20 @@ public enum BootstrapScriptBuilder {
           // 诊断/统计代码尤其危险——之前就因为统计字段没初始化，把它变成了异常源。
           try {
             var target = String(url || '');
+            this.__lobbyMethod = String(method || 'GET');
+            this.__lobbyURL = target;
+            // 分类：① authuser → 原生代理；② serverlist → 原生代发（带得上 O4e-Encoding）；
+            //      ③ 其余 → 原样放行。
+            // ⚠️ ②绝不能由页面自己发：页面 origin 是自定义 scheme，跨源 XHR 的非安全头
+            //    （O4e-Encoding）会被 WebKit 丢掉 → 服务端回裸 BON → 游戏按 lx 解不开
+            //    → 「选择大区」空列表（实测 3,879,411 字节 vs 正确的 1,446,832）。
             this._fake = /\\/login\\/authuser(?:\\?|$)/.test(target);
-            // 「体必须是凭据」的端点：真 XHR 照常 open（URL / 方法 / _seq 全原样），
-            // 只在 send 时把 body 与编码头换掉。事件继续由 _native 转发。
-            this._credential = !this._fake && !!__credentialBytes
+            this._serverList = !this._fake && !!__credentialBytes
               && /\\/login\\/serverlist(?:\\?|$)/.test(target);
-            // 诊断：还有哪些 `/login/*` 没被接管。单独一层 try——统计出问题不该影响分类结果。
+            this._credential = false;
             try {
               if (this._fake) __loginStats.authXHR++;
-              else if (this._credential) __loginStats.credentialXHR++;
+              else if (this._serverList) __loginStats.serverListXHR++;
               else {
                 var match = /\\/login\\/([a-z]+)/.exec(target);
                 if (match) {
@@ -252,38 +257,72 @@ public enum BootstrapScriptBuilder {
               }
             } catch (statsError) { __diag('统计失败（不影响请求）：' + (statsError && statsError.message)); }
             if (this._fake) { this._readyState = 1; this._emit('readystatechange'); }
-            else this._native.open.apply(this._native, arguments);
+            else if (!this._serverList) this._native.open.apply(this._native, arguments);
           } catch (error) {
             __diag('XHR open 垫片异常，降级为原样放行：' + (error && error.message));
-            try { this._fake = false; this._credential = false; this._native.open.apply(this._native, arguments); } catch (ignored) {}
+            try { this._fake = false; this._serverList = false; this._native.open.apply(this._native, arguments); } catch (ignored) {}
           }
         };
         __bridgedXHR.prototype.send = function(body) {
-          if (this._credential) {
-            try {
-              this._native.setRequestHeader('Content-Type', 'application/octet-stream');
-              var encoding = window.\(global).credentialEncoding;
-              if (encoding) this._native.setRequestHeader('O4e-Encoding', encoding);
-            } catch (error) { __diag('设置凭据请求头失败：' + (error && error.message)); }
-            __diag('/login/serverlist 改用凭据体（' + __credentialBytes.length
-              + ' 字节；游戏给的参数体服务端只回空列表）');
-            // 回执：这条到底是成功了还是又拿了个空货，一眼可见。
+          // ② serverlist：由宿主代发（页面发的自定义头会被 WebKit 丢掉）。
+          if (this._serverList) {
             var self = this;
-            this.addEventListener('loadend', function () {
+            var requestId = 's' + (++__loginSeq);
+            self.__lobbyFinish = function (status, bytes, source) {
+              // 必须标成 fake：应答字节是原生回填的，不在 _native.response 里。
+              self._fake = true;
+              self._status = status; self._response = bytes; self._loginSource = source || '';
+              self._readyState = 2; self._emit('readystatechange');
+              self._readyState = 3; self._emit('readystatechange');
+              self._readyState = 4; self._emit('readystatechange');
+              self._emit('load'); self._emit('loadend');
+            };
+            __loginPending[requestId] = self;
+            __diag('/login/serverlist 由宿主代发（凭据体 ' + __credentialBytes.length
+              + ' 字节；游戏给的参数体被丢弃）');
+            var posted = false;
+            try {
+              window.webkit.messageHandlers.\(channel).postMessage({
+                type: 'loginAuth', kind: 'serverList', instance: window.\(global).id,
+                requestId: requestId, body: ''
+              });
+              posted = true;
+            } catch (error) { __diag('桥不可用：' + (error && error.message)); }
+            if (!posted) {
+              // 桥不可用：退回「页面自己换体」。响应会是裸 BON，游戏解不开，
+              // 列表大概率仍空 —— 但至少不会卡死，也不会丢掉这条请求。
+              delete __loginPending[requestId];
               try {
-                var response = self._native.response;
-                var size = response ? (response.byteLength || 0) : 0;
-                // ★ 这条是关键判据：响应到底是不是空的。
-                __diag('/login/serverlist 完成：status=' + self._native.status
-                  + ' 响应 ' + size + ' 字节' + (size < 4096 ? '（太小，八成还是空的）' : ''));
-              } catch (ignored) {}
-            });
-            return this._native.send(__credentialBytes.buffer);
+                self._native.open(self.__lobbyMethod, self.__lobbyURL);
+                self._native.setRequestHeader('Content-Type', 'application/octet-stream');
+                if (window.\(global).credentialEncoding) {
+                  self._native.setRequestHeader('O4e-Encoding', window.\(global).credentialEncoding);
+                }
+                self._native.send(__credentialBytes.buffer);
+              } catch (error) { __diag('兜底发送失败：' + (error && error.message)); }
+              return;
+            }
+            self.__lobbyTimer = setTimeout(function () {
+              if (!__loginPending[requestId]) return;
+              delete __loginPending[requestId];
+              __diag('/login/serverlist 原生 ' + __loginTimeoutMs + 'ms 未应答，退回页面自己发');
+              try {
+                self._native.open(self.__lobbyMethod, self.__lobbyURL);
+                self._native.setRequestHeader('Content-Type', 'application/octet-stream');
+                if (window.\(global).credentialEncoding) {
+                  self._native.setRequestHeader('O4e-Encoding', window.\(global).credentialEncoding);
+                }
+                self._native.send(__credentialBytes.buffer);
+              } catch (error) { __diag('兜底发送失败：' + (error && error.message)); }
+            }, __loginTimeoutMs);
+            return;
           }
           if (!this._fake) return this._native.send(body);
           var self = this;
           var requestId = 'q' + (++__loginSeq);
           self.__lobbyFinish = function (status, bytes, source) {
+            // serverList 的应答是原生回填的，不在 _native.response 里 —— 必须标成 fake。
+            self._fake = true;
             self._status = status; self._response = bytes; self._loginSource = source || '';
             self._readyState = 2; self._emit('readystatechange');
             self._readyState = 3; self._emit('readystatechange');
@@ -315,11 +354,14 @@ public enum BootstrapScriptBuilder {
           }, __loginTimeoutMs);
         };
         __bridgedXHR.prototype.abort = function() {
-          if (this._fake) {
+          if (this._fake || this._serverList) {
             if (this.__lobbyTimer) { clearTimeout(this.__lobbyTimer); this.__lobbyTimer = null; }
             for (var key in __loginPending) { if (__loginPending[key] === this) delete __loginPending[key]; }
-            this._readyState = 0; this._emit('abort'); this._emit('loadend');
-          } else this._native.abort();
+            if (this._fake) { this._readyState = 0; this._emit('abort'); this._emit('loadend'); }
+            // _serverList 的请求还没真正发出（等原生代发），直接丢弃即可。
+            return;
+          }
+          this._native.abort();
         };
         __bridgedXHR.prototype.setRequestHeader = function(name, value) { if (!this._fake) this._native.setRequestHeader(name, value); };
         __bridgedXHR.prototype.getAllResponseHeaders = function() { return this._fake ? 'Content-Type: application/octet-stream\\r\\n' : this._native.getAllResponseHeaders(); };

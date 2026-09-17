@@ -673,8 +673,8 @@ public final class GameViewportInstance: NSView {
             // 账号资料只读上报：直接归属到本实例自己的账号。
             // 落盘 + 拉头像由 store 负责（卡片从 store 读，不碰实例）。
             avatars?.record(snapshot, forAccountID: account.id)
-        case .loginAuth(let requestID, let bodyBase64):
-            respondToLoginRequest(requestID: requestID, bodyBase64: bodyBase64)
+        case .loginAuth(let kind, let requestID, let bodyBase64):
+            respondToLoginRequest(kind: kind, requestID: requestID, bodyBase64: bodyBase64)
         case .loginDiag(let message):
             // 页面侧的登录链路诊断：直接落盘。这条通道特意**不经过 console**
             // （游戏 boot 后会把 console 整个换掉，我们包装的那层会失效）。
@@ -714,14 +714,31 @@ public final class GameViewportInstance: NSView {
             + " 编码头 \(loginCredential?.encodingHeader ?? "（不发）")")
     }
 
-    /// 页面里的 `login_authuser` 请求：按请求体里的 `serverId` 现算一份应答回填。
+    /// 页面里的登录请求：按 `kind` 分派。
     ///
-    /// 任何失败路径都回预认证字节 —— 代理只能让事情**变好**，不能成为新的故障点。
-    private func respondToLoginRequest(requestID: String, bodyBase64: String) {
+    /// 任何失败路径都退回预认证字节 —— 代理只能让事情**变好**，不能成为新的故障点。
+    private func respondToLoginRequest(kind: String, requestID: String, bodyBase64: String) {
         guard let loginProxy else {
             completeLoginRequest(requestID: requestID,
                                  base64: authResponseBase64,
                                  source: "no-proxy")
+            return
+        }
+        // serverlist：页面发不出 `O4e-Encoding`（自定义 scheme 的跨源 XHR 会丢非安全头），
+        // 必须由宿主带凭据去发，响应才是游戏解得开的 `lx`。
+        if kind == "serverList" {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let answer = await loginProxy.serverListResponse()
+                guard !self.isStopped else { return }
+                LobbyLog.info("[login-proxy] serverlist 应答 %@（%ld 字节）",
+                              requestID, answer.bytes.count)
+                DiagnosticsLog.append("[login-proxy] serverlist 应答 \(requestID)"
+                    + "（来源=\(answer.source)，\(answer.bytes.count) 字节）")
+                self.completeLoginRequest(requestID: requestID,
+                                          base64: answer.bytes.base64EncodedString(),
+                                          source: answer.source)
+            }
             return
         }
         let body = Data(base64Encoded: bodyBase64)

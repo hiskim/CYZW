@@ -46,6 +46,13 @@ public final class LoginProxy {
     public private(set) var fallbackCount = 0
     public private(set) var lastSource = "-"
     public private(set) var lastServerID: Int64?
+    /// `/login/serverlist` 最近一次拿到的字节数（诊断用）。
+    public private(set) var lastServerListBytes = 0
+
+    /// serverlist 响应缓存：面板每次打开都会重新拉，几分钟内不会变。
+    private var serverListCache: Data?
+    /// 正在拉取的 serverlist（合并并发）。
+    private var serverListInflight: Task<Data, Error>?
 
     public init(credential: BinCredential, defaultResponse: Data) {
         self.credential = credential
@@ -87,6 +94,51 @@ public final class LoginProxy {
             + " | last=\(lastSource)"
             + " | req=\(lastServerID.map(String.init) ?? "-")"
             + " | derived=\(derivedCount) fallback=\(fallbackCount) cache=\(cache.count)"
+            + " | serverlist=\(lastServerListBytes)"
+    }
+
+    // MARK: - `/login/serverlist`
+
+    /// 由**宿主**去取 `/login/serverlist`（体 = 凭据本体，头 `O4e-Encoding: lx`）。
+    ///
+    /// ⚠️ 为什么必须宿主发，而不是让页面自己发：**页面发出去的自定义请求头会被 WebKit 丢掉**
+    /// （页面 origin 是自定义 scheme `ios2-game://`，跨源 XHR 的非安全头过不去），
+    /// 于是服务端看不到 `O4e-Encoding` → 回**裸 BON**（实测 3,879,411 字节），
+    /// 而游戏的 HTTP 客户端是按 `lx` 解响应的 → 解出一堆垃圾 → 「选择大区」空列表。
+    /// 同一个请求带上这个头就是 1,446,832 字节的 `lx` 信封（实测对照）。
+    ///
+    /// 失败时退回预认证字节：游戏会把它当 serverlist 响应解，拿不到 `serverList`，
+    /// 表现与改造前一致（列表空，但不会新增故障）。
+    public func serverListResponse() async -> Answer {
+        if let cached = serverListCache {
+            return finish(Answer(bytes: cached, source: "cached-serverlist"))
+        }
+        if let inflight = serverListInflight {
+            if let data = try? await inflight.value {
+                return finish(Answer(bytes: data, source: "cached-serverlist"))
+            }
+        }
+        do {
+            let login = try credential.loginBody(serverID: nil)
+            let task = Task<Data, Error> { [path = LobbyConfiguration.profileServerListPath] in
+                try await GameEndpointClient.post(path: path,
+                                                  body: login.bytes,
+                                                  encodingHeader: login.encodingHeader)
+            }
+            serverListInflight = task
+            defer { serverListInflight = nil }
+            let data = try await task.value
+            serverListCache = data
+            lastServerListBytes = data.count
+            let isEnvelope = data.count > 1 && data[data.startIndex] == 0x70
+            LobbyLog.info("[login-proxy] serverlist 应答 %ld 字节（%@）", data.count,
+                          isEnvelope ? "lx 信封" : "⚠️ 裸 BON，游戏解不开")
+            return finish(Answer(bytes: data, source: "native-serverlist"))
+        } catch {
+            LobbyLog.warn("[login-proxy] serverlist 拉取失败：%@", error.localizedDescription)
+            fallbackCount += 1
+            return finish(Answer(bytes: defaultResponse, source: "fallback"))
+        }
     }
 
     // MARK: - 内部

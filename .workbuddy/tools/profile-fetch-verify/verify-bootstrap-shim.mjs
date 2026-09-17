@@ -96,24 +96,28 @@ console.log(`引导脚本 ${script.length} 字符\n`);
   check('readyState 到 4 / status 200', auth.readyState === 4 && auth.status === 200,
         `readyState=${auth.readyState} status=${auth.status}`);
 
-  console.log('\n③ /login/serverlist 把体换成凭据（关键修复）');
+  console.log('\n③ /login/serverlist 由宿主代发（自定义头页面发不出去）');
   const list = new window.XMLHttpRequest();
   list.open('POST', base + '/login/serverlist?_seq=3');
+  list.responseType = 'arraybuffer';
   list.send(new Uint8Array([9, 9, 9]).buffer);
-  // ⚠️ 垫片把真 XHR 包在 `_native` 里，观测点必须在那一层。
-  const native = list._native;
-  check('确实发给了网络（不是走原生代理）', sent.includes(native), `sent=${sent.length}`);
-  check('URL / 方法原样保留', native.openedWith?.url === base + '/login/serverlist?_seq=3'
-        && native.openedWith?.method === 'POST', JSON.stringify(native.openedWith));
-  const credential = new TextDecoder().decode(new Uint8Array(native.body ?? new ArrayBuffer(0)));
-  check('体被换成了凭据本体', credential === 'CREDENTIAL-MARKER-0123456789', JSON.stringify(credential));
-  check('编码头与凭据匹配（lx）', native.headers['o4e-encoding'] === 'lx', JSON.stringify(native.headers));
-  check('Content-Type 是二进制', native.headers['content-type'] === 'application/octet-stream',
-        JSON.stringify(native.headers));
-  check('游戏自己的参数体没有被发出去', new Uint8Array(native.body).length !== 3);
-  check('诊断通过 postMessage 上报（不依赖 console）',
-        posts.some((m) => m.type === 'loginDiag' && /改用凭据体/.test(m.message || '')),
-        JSON.stringify(posts.map((m) => m.type)));
+  check('不落到网络（由原生代发）', !sent.includes(list._native), `sent=${sent.length}`);
+  check('上报里带 kind=serverList',
+        posts.some((m) => m.type === 'loginAuth' && m.kind === 'serverList'),
+        JSON.stringify(posts.filter((m) => m.type === 'loginAuth').map((m) => m.kind)));
+  const serverListPost = posts.find((m) => m.type === 'loginAuth' && m.kind === 'serverList');
+  check('上报里带 requestId', !!serverListPost?.requestId, JSON.stringify(serverListPost));
+
+  console.log('   原生回填 → XHR 拿到字节');
+  const forgedList = globalThis.btoa('SERVERLIST-BYTES-HERE');
+  const listDone = window.__LOBBY_LOGIN__.complete(serverListPost.requestId, forgedList, 'native-serverlist');
+  check('complete() 认领成功', listDone === true);
+  const listBytes = new Uint8Array(list.response ?? new ArrayBuffer(0));
+  check('XHR 拿到回填字节', listBytes.length === 'SERVERLIST-BYTES-HERE'.length, `length=${listBytes.length}`);
+  check('readyState=4 / status=200', list.readyState === 4 && list.status === 200,
+        `readyState=${list.readyState} status=${list.status}`);
+  check('响应头是二进制（游戏按 lx 解）',
+        /octet-stream/.test(list.getAllResponseHeaders() || ''), list.getAllResponseHeaders());
 
   console.log('\n④ 其它请求原样放行（body 一字不改）');
   const other = new window.XMLHttpRequest();
@@ -144,7 +148,7 @@ console.log(`引导脚本 ${script.length} 字符\n`);
   console.log('\n⑥ 诊断计数（出问题时唯一的判据就是它）');
   const stats = JSON.parse(window.__LOBBY_LOGIN__.stats());
   check('authXHR 计到 1（authuser 走过代理）', stats.authXHR === 1, JSON.stringify(stats));
-  check('credentialXHR 计到 1（serverlist 走了换体）', stats.credentialXHR === 1, JSON.stringify(stats));
+  check('serverListXHR 计到 1（serverlist 走了原生代发）', stats.serverListXHR === 1, JSON.stringify(stats));
   check('passthroughLoginXHR 为 0（没有漏网的 /login/*）', stats.passthroughLoginXHR === 0,
         JSON.stringify(stats));
   check('credentialBytes() = 凭据长度', window.__LOBBY_LOGIN__.credentialBytes() === 28,

@@ -105,7 +105,10 @@ public enum PageEvent: Sendable {
     ///
     /// 页面把原始请求体原样送上来（base64）——**体里带着游戏想去哪个区**
     /// （`serverId`），宿主据此重新认证，这是「游戏内选区」能生效的唯一依据。
-    case loginAuth(requestID: String, bodyBase64: String)
+    /// - `kind == "auth"`（缺省）：按 authuser 处理。
+    /// - `kind == "serverList"`：宿主去取 `/login/serverlist`（页面发不出
+    ///   `O4e-Encoding` 这个头，服务端会回裸 BON，游戏解不开）。
+    case loginAuth(kind: String, requestID: String, bodyBase64: String)
     /// 登录链路的诊断上报（**不走 console**）。
     ///
     /// 为什么不复用 console 桥：页面 boot 之后游戏会把 `console` 整个换掉，
@@ -187,7 +190,9 @@ public enum PageEvent: Sendable {
             ))
         case "loginAuth":
             guard let requestID = body["requestId"] as? String else { return .unknown(type: type) }
-            return .loginAuth(requestID: requestID, bodyBase64: body["body"] as? String ?? "")
+            return .loginAuth(kind: body["kind"] as? String ?? "auth",
+                              requestID: requestID,
+                              bodyBase64: body["body"] as? String ?? "")
         case "loginDiag":
             return .loginDiag(message: body["message"] as? String ?? "")
         default:
