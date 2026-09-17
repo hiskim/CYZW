@@ -13,8 +13,8 @@
 #
 # 产物
 # ────────────────────────────────────────────────────────────────────────────
-#   build/dist/GameLobby-<版本>.dmg
-#   build/dist/GameLobby-<版本>.dmg.sha256
+#   build/dist/<显示名>-<版本>.dmg          显示名读自 CFBundleDisplayName（当前：潮音之王）
+#   build/dist/<显示名>-<版本>.dmg.sha256
 #   build/logs/build-<时间戳>.log          xcodebuild 完整日志
 #
 # 为什么签名要脚本自己做（工程里 CODE_SIGNING_ALLOWED = NO）
@@ -33,7 +33,7 @@
 #      · 本机当前没有该证书；拿到证书后不用改脚本，自动升到这一档
 #   ② ad-hoc（codesign -s -）    本机自用 / 内测
 #      · 接收方首次打开要「右键 → 打开」，或先执行
-#        xattr -dr com.apple.quarantine /Applications/GameLobby.app
+#        xattr -dr com.apple.quarantine /Applications/潮音之王.app
 #
 # 为什么默认双架构
 # ────────────────────────────────────────────────────────────────────────────
@@ -57,7 +57,12 @@ REPO_DIR="$(cd "$PROJECT_DIR/.." && pwd)"                   # CYZW/
 PROJECT="$PROJECT_DIR/GameLobby.xcodeproj"
 RUNTIME_SRC="$REPO_DIR/ios-cocos/cocos-project"             # Copy WebRuntime 的输入
 SCHEME="GameLobby"
-APP_NAME="GameLobby.app"
+# 产物文件名 / 可执行文件名 = pbxproj 里 GameLobby target 的 PRODUCT_NAME。
+# ⚠️ 改 app 显示名时要同步两处：App/Info.plist 的 CFBundleDisplayName 和
+# pbxproj 的 PRODUCT_NAME；脚本这边只改 PRODUCT_NAME 这一行即可派生出
+# APP_NAME 和可执行文件路径。
+PRODUCT_NAME="潮音之王"
+APP_NAME="${PRODUCT_NAME}.app"
 
 WORK_DIR="$PROJECT_DIR/build"
 DERIVED_DIR="$WORK_DIR/DerivedData"
@@ -313,10 +318,17 @@ ok "签名校验通过"
 # ── 打包 DMG ────────────────────────────────────────────────────────────────
 step "打包 dmg"
 
-VOL_NAME="GameLobby $FINAL_VERSION"
+# 卷名 / dmg 文件名取 app 的**显示名**（CFBundleDisplayName），与 App/Info.plist
+# 同源：以后改名只要动 Info.plist，脚本不用跟着改。读不到（比如极老的产物）就
+# 退回 target 名，不让打包因此失败。
+# ⚠️ 别写成 `PlistBuddy ... | head`：见本脚本「提前退出的读端」那节，会静默退出。
+DISPLAY_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PLIST" 2>/dev/null || true)"
+[ -n "$DISPLAY_NAME" ] || DISPLAY_NAME="$PRODUCT_NAME"
+
+VOL_NAME="${DISPLAY_NAME} ${FINAL_VERSION}"
 arch_suffix=""
 [ "$ARCH_MODE" != "universal" ] && arch_suffix="-$ARCHS_VALUE"
-DMG_PATH="$OUTPUT_DIR/GameLobby-${FINAL_VERSION}${arch_suffix}.dmg"
+DMG_PATH="$OUTPUT_DIR/${DISPLAY_NAME}-${FINAL_VERSION}${arch_suffix}.dmg"
 
 # 舞台目录每次**新建**，不复用、也不先删旧的。
 # 刻意不用「固定目录 + rm -rf 重建」：本机沙箱对「单次批量删除 > 50 个文件」
@@ -430,7 +442,9 @@ fi
 
 # ── 汇总 ────────────────────────────────────────────────────────────────────
 dmg_size=$(du -h "$DMG_PATH" | awk '{print $1}')
-app_archs=$(lipo -archs "$APP_PATH/Contents/MacOS/GameLobby" 2>/dev/null || echo "未知")
+# 可执行文件名跟 PRODUCT_NAME 走（Xcode 26 的 Release 是单一静态可执行文件；
+# Debug 的主程序是空壳、代码在 .debug.dylib 里，架构以主程序为准即可）。
+app_archs=$(lipo -archs "$APP_PATH/Contents/MacOS/${PRODUCT_NAME}" 2>/dev/null || echo "未知")
 dmg_sha=$(awk '{print $1}' "$OUTPUT_DIR/$(basename "$DMG_PATH").sha256")
 
 echo

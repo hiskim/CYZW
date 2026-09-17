@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "C60000000000000000000001"
-               BuildableName = "GameLobby.app"
+               BuildableName = "&#x6f6e;&#x97f3;&#x4e4b;&#x738b;.app"
                BlueprintName = "GameLobby"
                ReferencedContainer = "container:GameLobby.xcodeproj">
             </BuildableReference>
@@ -114,7 +114,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C60000000000000000000001"
-            BuildableName = "GameLobby.app"
+            BuildableName = "&#x6f6e;&#x97f3;&#x4e4b;&#x738b;.app"
             BlueprintName = "GameLobby"
             ReferencedContainer = "container:GameLobby.xcodeproj">
          </BuildableReference>
@@ -132,7 +132,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C60000000000000000000001"
-            BuildableName = "GameLobby.app"
+            BuildableName = "&#x6f6e;&#x97f3;&#x4e4b;&#x738b;.app"
             BlueprintName = "GameLobby"
             ReferencedContainer = "container:GameLobby.xcodeproj">
          </BuildableReference>

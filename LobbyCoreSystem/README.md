@@ -47,15 +47,34 @@
 xcodebuild -project GameLobby.xcodeproj -scheme GameLobby -configuration Debug build
 
 # 产物（DerivedData）
-open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/GameLobby.app
+open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/潮音之王.app
 ```
 
 或直接用 Xcode 打开 `GameLobby.xcodeproj`，选 GameLobby scheme ⌘R。
 
+### App 名称：改名要动三处（第四处 Xcode 自己做）
+
+显示名「潮音之王」实际由 `PRODUCT_NAME` 决定，改名时同步这些地方：
+
+| 位置 | 键 / 变量 | 作用 |
+|---|---|---|
+| `GameLobby.xcodeproj`（**Debug + Release 两处**） | `PRODUCT_NAME` | 产物文件名 `潮音之王.app`、可执行文件 `MacOS/潮音之王`；`CFBundleName` / `CFBundleExecutable` 自动跟随 |
+| `App/Info.plist` | `CFBundleDisplayName` | Dock / 启动台 / 应用菜单 / 关于窗口显示的名字 |
+| `Scripts/build-dmg.sh` | `PRODUCT_NAME` | 派生 `APP_NAME` 与 `lipo` 读架构的路径 |
+| `GameLobby.xcscheme` | `BuildableName` | **Xcode 自动同步**，不用手改（中文会存成 `&#x6f6e;&#x97f3;…` 这样的 XML 数字字符引用，属正常） |
+
+> ⚠️ **只改 `CFBundleDisplayName` 不够**：Finder 显示的是 .app 的**文件系统名**，
+> 不动 `PRODUCT_NAME` 的话，看起来就还是旧名字。
+>
+> ⚠️ pbxproj 里还有一批 `PRODUCT_NAME = "$(TARGET_NAME)"`（那 5 个静态库），
+> 是给 `libLobbyDomain.a` 之类用的，**不要一起改**。
+>
+> 侧栏标题「游戏大厅」是功能区标题，**刻意不跟随** app 名。
+
 ### 打包 dmg 安装包
 
 ```bash
-./Scripts/build-dmg.sh                    # Release / 双架构 → build/dist/GameLobby-<版本>.dmg
+./Scripts/build-dmg.sh                    # Release / 双架构 → build/dist/潮音之王-<版本>.dmg
 ./Scripts/build-dmg.sh --arch native      # 只编本机架构（快一半）
 ./Scripts/build-dmg.sh -v 1.2.0 -b 42     # 指定版本号与构建号
 ./Scripts/build-dmg.sh --notarize         # Developer ID 签名 + 公证（需证书与凭据）
@@ -95,12 +114,12 @@ xcodebuild 都跑，Debug / Release 都带图标。`build-dmg.sh` 不再生成�
 
 ```bash
 # 1) 确认 icns 真在产物里且格式有效
-file .../GameLobby.app/Contents/Resources/AppIcon.icns   # 期望: Mac OS X icon … "ic12" type
-sips -g pixelWidth .../GameLobby.app/Contents/Resources/AppIcon.icns   # 期望: 1024
+file .../潮音之王.app/Contents/Resources/AppIcon.icns   # 期望: Mac OS X icon … "ic12" type
+sips -g pixelWidth .../潮音之王.app/Contents/Resources/AppIcon.icns   # 期望: 1024
 
 # 2) 重新向 LaunchServices 注册（这一步通常就够了，不重启任何进程）
 /System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/\
-LaunchServices.framework/Versions/Current/Support/lsregister -f -R .../GameLobby.app
+LaunchServices.framework/Versions/Current/Support/lsregister -f -R .../潮音之王.app
 ```
 
 上面两步行完若还不变，再重启承载图标的进程（会重开 Finder 窗口）：
@@ -139,7 +158,7 @@ WebRuntime（引擎壳工程）由 `Copy WebRuntime` 构建阶段往主资源包
 ## 模块拓扑（规格 §3 的等价实现）
 
 ```
-GameLobby.app（App target：装配根 + @main，唯一知道全部具体类型的地方）
+潮音之王.app（App target：装配根 + @main，唯一知道全部具体类型的地方）
  ├── LobbyUI      表现层：SwiftUI 大厅（毛玻璃六步配方 / 中控台侧栏 / 矩阵）+ 会话门面
  │                依赖 → Domain, Engine
  ├── LobbyEngine  引擎层：认证器 / 引导脚本 / HSDK 响应器 / 视口实例 / 实例池

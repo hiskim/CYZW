@@ -155,7 +155,8 @@ public struct LobbyRootView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
             // 顶部标题（36pt 顶部留白 = 交通灯 + 拖拽条的呼吸区，条带内无控件）。
-            Text("潮音之王")
+            // 刻意保留「游戏大厅」：这是侧栏功能区标题，不跟随 app 显示名改动。
+            Text("游戏大厅")
                 .font(.system(size: 17, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .padding(.top, 36)
