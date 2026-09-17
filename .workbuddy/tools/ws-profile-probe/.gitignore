@@ -1,0 +1,5 @@
+# setup.sh 生成物，不入库：
+#   bonProtocol.js —— 每次从助手仓（xyzw_web_helper）**现拷**，入库就必然漂移；
+#   node_modules   —— 指向托管 Node 工作区（那里装了 lz4js）的软链。
+bonProtocol.js
+node_modules
