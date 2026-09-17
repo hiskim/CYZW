@@ -12,6 +12,11 @@ import LobbyEngine
 public struct LobbyRootView: View {
     @ObservedObject public var session: LobbySessionModel
 
+    /// 构建指纹，当作版本号显示在窗口左下角。
+    /// **由装配根注入**——LobbyUI 不能反向依赖 App target，所以不能直接读
+    /// `LobbyComposition.buildTag`。
+    public let buildTag: String
+
     @State private var selectedSection: SidebarSection = .accounts
     @State private var sidebarVisible = true
 
@@ -22,8 +27,9 @@ public struct LobbyRootView: View {
     /// 红黄绿交通灯那一带的宽度（实测约 78pt，留余量取 96）。
     private static let trafficLightsClearance: CGFloat = 96
 
-    public init(session: LobbySessionModel) {
+    public init(session: LobbySessionModel, buildTag: String) {
         self.session = session
+        self.buildTag = buildTag
     }
 
     public enum SidebarSection: String, CaseIterable, Identifiable {
@@ -124,6 +130,17 @@ public struct LobbyRootView: View {
                 statusToast(message)
             }
         }
+        .overlay(alignment: .bottomLeading) {
+            // 版本号（构建指纹）。纯装饰，必须 allowsHitTesting(false)：
+            // 左下角看着是空白（侧栏底部有 Spacer），但侧栏可隐藏，那时这块
+            // 就压在矩阵画面上——不能让它吃掉任何点击。
+            Text("v\(buildTag)")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.34))
+                .padding(.leading, 14)
+                .padding(.bottom, 9)
+                .allowsHitTesting(false)
+        }
         .task {
             session.refresh()
             // 启动后补拉「还没有资料」的账号：不启动游戏，直接用 .bin 凭据问服务端。
@@ -138,7 +155,7 @@ public struct LobbyRootView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
             // 顶部标题（36pt 顶部留白 = 交通灯 + 拖拽条的呼吸区，条带内无控件）。
-            Text("游戏大厅")
+            Text("潮音之王")
                 .font(.system(size: 17, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .padding(.top, 36)
