@@ -42,6 +42,12 @@ struct AccountSidebarView: View {
                 remarkDraft = nil
             }
         }
+        // 选服：把一个 .bin 名下的其它区服角色落成独立账号副本。
+        .sheet(item: $session.rolePickerAccount) { account in
+            RolePickerSheet(session: session, account: account) {
+                session.dismissRolePicker()
+            }
+        }
         .confirmationDialog(
             "删除账号",
             isPresented: Binding(
@@ -596,6 +602,10 @@ struct AccountSidebarCard: View {
                 session.refreshProfiles([account], reason: "账号卡")
             }
             .disabled(isRunning)
+            // 一个 .bin 名下往往有十几个区服角色。这里把其它区服「落成副本账号」，
+            // 想看哪个区、想同时开哪几个区，都得先在大厅里把它变成一张卡。
+            // （纯 HTTP 查列表，不建会话，所以运行中也能点。）
+            Button("选择区服与角色…") { session.requestRoles(for: account) }
             moveActions
             Divider()
             Button("删除账号文件", role: .destructive) { session.requestDelete(account) }
@@ -721,10 +731,12 @@ struct AccountSidebarCard: View {
     }
 
     /// 战力的专用色：冷青，与运行态的 cyan 呼应但更弱，让数字在灰白文字里跳出来。
-    private static let powerTint = Color(red: 0.55, green: 0.86, blue: 1.0).opacity(0.92)
+    /// （非 private：选区面板复用同一套语言。）
+    static let powerTint = Color(red: 0.55, green: 0.86, blue: 1.0).opacity(0.92)
 
     /// 缩写只为了「放得下」，精确值放在 tooltip 与这个函数里。
-    private static func abridgedPower(_ value: Int) -> String {
+    /// （非 private：选区面板复用同一个口径，避免两处各缩一套。）
+    static func abridgedPower(_ value: Int) -> String {
         let amount = Double(value)
         if value >= 100_000_000 {
             let yi = amount / 100_000_000

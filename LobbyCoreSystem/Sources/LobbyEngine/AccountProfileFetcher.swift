@@ -77,8 +77,41 @@ public final class AccountProfileFetcher: Sendable {
     /// - Parameter binData: `.bin` 凭据文件的**原始字节**（原样 POST，不做任何转换）。
     public func fetch(binData: Data) async throws -> AccountProfileSnapshot {
         let credentials = try await authenticate(binData: binData)
-        return try await requestRoleInfo(roleToken: credentials.roleToken,
-                                        roleId: credentials.roleId)
+        return try await roleInfo(roleToken: credentials.roleToken, roleId: credentials.roleId)
+    }
+
+    /// 只用一对已有的凭据去问角色资料（不再打 authuser）。
+    ///
+    /// 用途：验证一份「现算出来的」认证响应到底落在哪个角色上——
+    /// 登录代理（`LoginProxy`）换服之后就靠它确认结果（`roleId` 是账号 uid，
+    /// 与区服无关，**不能**拿它判换服是否生效）。
+    public func roleInfo(roleToken: String, roleId: Int64) async throws -> AccountProfileSnapshot {
+        try await requestRoleInfo(roleToken: roleToken, roleId: roleId)
+    }
+
+    /// 从一份 `/login/authuser` 的**原始响应字节**里取出 `roleToken` / `roleId`。
+    ///
+    /// 换服之后要确认「真的到了目标角色」，就得能把响应解回凭据。
+    ///
+    /// ⚠️ 响应可能**自带信封**：编码跟随请求的 `O4e-Encoding`——宿主发 `lx`
+    /// 就收回 `70 6c` 开头的 LZ4 载荷，不发头就收回裸 BON（两种都实测过）。
+    /// 所以先按「可能带信封」解一次，再按裸 BON 兜底。
+    public static func credentials(fromAuthResponse data: Data) throws -> (roleToken: String, roleId: Int64) {
+        let plain = (try? BinCredential.plaintext(of: data).bytes) ?? data
+        let outer = try Bon.decode(plain)
+        guard case .binary(let bodyBytes)? = outer.objectValue?["body"] else {
+            throw FetchError.malformedAuthResponse(
+                "外层没有 body（字段：\(outer.objectValue?.keys.joined(separator: ",") ?? "-")）")
+        }
+        let inner = try Bon.decode(bodyBytes)
+        guard let token = inner.objectValue?["roleToken"]?.stringValue, !token.isEmpty else {
+            throw FetchError.malformedAuthResponse(
+                "没有 roleToken（字段：\(inner.objectValue?.keys.joined(separator: ",") ?? "-")）")
+        }
+        guard let roleId = inner.objectValue?["roleId"]?.intValue else {
+            throw FetchError.malformedAuthResponse("没有 roleId")
+        }
+        return (token, roleId)
     }
 
     // MARK: - 第一步：authuser

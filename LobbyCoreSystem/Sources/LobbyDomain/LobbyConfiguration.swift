@@ -36,6 +36,21 @@ public enum LobbyConfiguration {
     /// 这边要自己解出 roleToken）。改端点时两处一起改。
     public static let profileAuthUserPath = "/login/authuser?_seq=1"
 
+    /// `/login/serverlist` 的路径与查询串：`POST` 该 `.bin` 原字节 →
+    /// `{ areaList, serverList, roleCount, recommendId, roles }`。
+    /// `roles` 里每项含 `roleId` / `serverId` / `name`，是「选服选角色」的唯一数据源。
+    /// ⚠️ 它的 `power` 对非当前角色不可信（`level` 恒为 1），只用来取列表与名字；
+    /// `roleId` 是可信的（可与 WSS `role_getroleinfo` 逐字段对上）。
+    public static let profileServerListPath = "/login/serverlist?_seq=3"
+
+    /// 凭据/请求体的编码方案标记头。**值必须与实际字节一致，或者干脆不发**——
+    /// 实测「`x` 编码的体 + `lx` 头」会被服务端直接拒（无 roleToken）。
+    public static let payloadEncodingHeaderName = "O4e-Encoding"
+
+    /// `.bin`（`lx` = LZ4 帧 + 头部掩码）对应的标记值。
+    public static let payloadEncodingLX = "lx"
+
+
     /// 资料查询用的 WebSocket 端点。**从 `gameServerURL` 派生**（只换 scheme 与路径），
     /// 免得主机名在两处各写一遍、换服时漏改一处。
     public static let profileWebSocketBaseURL: URL = {

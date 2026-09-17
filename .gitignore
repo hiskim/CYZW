@@ -1,2 +1,4 @@
 # WorkBuddy 会话记忆：属于本机数据，不入库（工具类放在 .workbuddy/tools/ 可入库）
 .workbuddy/memory/
+# 另一套自动记忆（同一性质的本机会话数据，同样不入库）
+.workbuddy-ai/

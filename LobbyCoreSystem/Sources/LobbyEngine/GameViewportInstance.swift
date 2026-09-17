@@ -62,6 +62,14 @@ public final class GameViewportInstance: NSView {
     private var schemeHandler: GameResourceSchemeHandler!
     private lazy var webView: WKWebView = makeWebView()
     private var hsdkResponder: HSDKResponder?
+    /// 登录代理：页面里的 `login_authuser`（游戏内换服 / 回流选区）由它按请求的
+    /// `serverId` 现算应答。认证成功后装配；凭据解不开时为 nil（页面侧自动退回
+    /// 预认证字节，即改造前的行为）。
+    private var loginProxy: LoginProxy?
+    /// 预认证响应（base64）。代理不可用时页面靠它兜底，所以必须留在手上。
+    private var authResponseBase64 = ""
+    /// 给 `/login/serverlist` 这类「体必须是凭据」的端点用的体（与匹配的编码头）。
+    private var loginCredential: BinCredential.LoginBody?
 
     private let loadingOverlay = NSView()
     private let loadingSpinner = NSProgressIndicator()
@@ -150,6 +158,8 @@ public final class GameViewportInstance: NSView {
                 await self.resources.beginGameSession()
                 self.gameSessionStarted = true
                 self.authenticatedAccountID = authentication.accountID
+                self.authResponseBase64 = authentication.authResponseBase64
+                self.prepareLoginProxy(authentication: authentication)
                 self.schemeHandler.setBundleVersions(authentication.bundleVersions)
                 // 引导脚本每次进游戏前重新登记（视图是池化复用的，登记过期值会污染下一次装载）。
                 self.webView.configuration.userContentController.addUserScript(
@@ -586,7 +596,10 @@ public final class GameViewportInstance: NSView {
             manifestJSON: Self.normalizedManifest(authentication.manifestJSON),
             frameRate: TargetFrameRate.current().rawValue,
             qualityRawValue: RenderQuality.current().rawValue,
-            instanceCount: instanceCount
+            instanceCount: instanceCount,
+            credentialBase64: loginCredential?.bytes.base64EncodedString() ?? "",
+            credentialEncoding: loginCredential?.encodingHeader,
+            serverOrigin: LobbyConfiguration.gameServerURL.absoluteString
         ))
     }
 
@@ -615,6 +628,11 @@ public final class GameViewportInstance: NSView {
             case "warn": LobbyLog.warn("[js] %@", message)
             case "info": LobbyLog.info("[js] %@", message)
             default: LobbyLog.debug("[js] %@", message)
+            }
+            // 引导脚本 / 登录链路的诊断行额外落一份盘：控制台粘贴经常正好截掉
+            // 出问题的那几十行（已经因此白跑两轮），落盘之后可以直接读文件。
+            if message.contains("[lobby]") {
+                DiagnosticsLog.append("[js] \(message)")
             }
         case .error(let message):
             LobbyLog.error("[instance] JS error: %@", message)
@@ -655,9 +673,82 @@ public final class GameViewportInstance: NSView {
             // 账号资料只读上报：直接归属到本实例自己的账号。
             // 落盘 + 拉头像由 store 负责（卡片从 store 读，不碰实例）。
             avatars?.record(snapshot, forAccountID: account.id)
+        case .loginAuth(let requestID, let bodyBase64):
+            respondToLoginRequest(requestID: requestID, bodyBase64: bodyBase64)
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
         }
+    }
+
+    // MARK: - 登录代理
+
+    /// 装配登录代理。
+    ///
+    /// 只在凭据**能解开**时装：解不开就没有「按 serverId 重算」的原料，退回页面侧的
+    /// 预认证字节兜底（= 改造前的行为）比分发出一个半残的代理安全。
+    private func prepareLoginProxy(authentication: AuthResult) {
+        guard let credential = try? BinCredential(data: authentication.binData),
+              let response = Data(base64Encoded: authentication.authResponseBase64),
+              response.count > 4 else {
+            loginProxy = nil
+            loginCredential = nil
+            LobbyLog.warn("[instance] 凭据无法解析，登录代理停用（游戏内选区将退回原区服）：%@",
+                          account.fileName)
+            return
+        }
+        loginProxy = LoginProxy(credential: credential, defaultResponse: response)
+        // 页面侧还有一类请求需要「体 = 凭据本身」（`/login/serverlist`）：
+        // 游戏自己发的是参数体，服务端只会回一个空列表 —— 「选择大区」因此是空的。
+        loginCredential = try? credential.loginBody(serverID: nil)
+        LobbyLog.info("[instance] 登录代理就绪：凭据区服 serverId=%lld（凭据体 %ld 字节，编码头 %@）",
+                      credential.serverID ?? 0,
+                      loginCredential?.bytes.count ?? 0,
+                      loginCredential?.encodingHeader ?? "（不发）")
+        DiagnosticsLog.append("[agent] \(account.fileName) 凭据 serverId=\(credential.serverID.map(String.init) ?? "无")"
+            + " 凭据体 \(loginCredential?.bytes.count ?? 0) 字节"
+            + " 编码头 \(loginCredential?.encodingHeader ?? "（不发）")")
+    }
+
+    /// 页面里的 `login_authuser` 请求：按请求体里的 `serverId` 现算一份应答回填。
+    ///
+    /// 任何失败路径都回预认证字节 —— 代理只能让事情**变好**，不能成为新的故障点。
+    private func respondToLoginRequest(requestID: String, bodyBase64: String) {
+        guard let loginProxy else {
+            completeLoginRequest(requestID: requestID,
+                                 base64: authResponseBase64,
+                                 source: "no-proxy")
+            return
+        }
+        let body = Data(base64Encoded: bodyBase64)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let answer = await loginProxy.respond(gameRequestBody: body)
+            guard !self.isStopped else { return }
+            LobbyLog.info("[login-proxy] 应答 %@（来源=%@，%ld 字节）",
+                          requestID, answer.source, answer.bytes.count)
+            DiagnosticsLog.append("[login-proxy] 应答 \(requestID)（来源=\(answer.source)，\(answer.bytes.count) 字节）")
+            self.completeLoginRequest(requestID: requestID,
+                                      base64: answer.bytes.base64EncodedString(),
+                                      source: answer.source)
+        }
+    }
+
+    private func completeLoginRequest(requestID: String, base64: String, source: String) {
+        let script = "window.__LOBBY_LOGIN__ && window.__LOBBY_LOGIN__.complete("
+            + jsonLiteral(requestID) + "," + jsonLiteral(base64) + "," + jsonLiteral(source) + ")"
+        webView.evaluateJavaScript(script) { _, error in
+            if let error {
+                // 页面侧本来就有 15s 超时兜底，这里只记一条便于定位。
+                LobbyLog.warn("[login-proxy] 回填失败 %@：%@", requestID, error.localizedDescription)
+            }
+        }
+    }
+
+    /// Swift 字符串 → JS 字符串字面量（用 JSONEncoder，避免手写转义出错）。
+    private func jsonLiteral(_ text: String) -> String {
+        guard let data = try? JSONEncoder().encode(text),
+              let literal = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return literal
     }
 
     /// 脚本经 GM_openInTab 请求打开外链。只放行 http/https：脚本是第三方来源，
@@ -838,6 +929,28 @@ extension GameViewportInstance: WKNavigationDelegate {
         applyEnhancements()
         // 就绪后先按「非焦点」降帧静音；焦点仲裁由会话模型在 ready 后统一重放。
         applyEnergyPolicy(isFocused: false)
+        scheduleLoginStatsSnapshots()
+    }
+
+    /// 定时把页面侧的登录链路计数捞回来。
+    ///
+    /// 为什么需要：这条链路出问题时**界面只是空着**，没有异常、没有报错，
+    /// 「有没有发过那条请求 / 走的哪条通道」是最关键的判据，而它只在页面里。
+    /// 页面自己的 `console.warn` 已经会回传，这里是「不用翻日志也能一眼看到」的备份。
+    private func scheduleLoginStatsSnapshots() {
+        for delay in [10.0, 25.0, 40.0, 60.0, 90.0, 150.0] {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, !self.isStopped else { return }
+                self.webView.evaluateJavaScript(
+                    "window.__LOBBY_LOGIN__ ? window.__LOBBY_LOGIN__.stats() : 'no-login-shim'"
+                ) { result, _ in
+                    let text = (result as? String) ?? "?"
+                    LobbyLog.info("[login-stats] +%lds %@", Int(delay), text)
+                    DiagnosticsLog.append("[login-stats] +\(Int(delay))s \(text)")
+                }
+            }
+        }
     }
 
     // MARK: - 页面导出的下载通道

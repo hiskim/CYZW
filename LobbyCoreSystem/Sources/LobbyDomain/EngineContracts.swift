@@ -10,6 +10,12 @@ import Foundation
 public struct AuthResult: Sendable {
     /// 认证服务原始响应（base64，注入页面后由 XHR 拦截器喂给游戏的登录请求）。
     public let authResponseBase64: String
+    /// 本次实际使用的凭据原文（`.bin` 字节）。
+    ///
+    /// 为什么要把凭据也带出来：页面里的游戏会**再**发一次 `login_authuser`
+    /// （换服 / 回流选区都走它），宿主必须拿着凭据**按它要的 serverId 现算应答**，
+    /// 而不是拿一份固定字节糊弄过去。凭据本体是宿主侧唯一能重新认证的原料。
+    public let binData: Data
     /// 账号 SDK 身份（前缀 + bin 内容 SHA256，跨启动稳定）。
     public let accountID: String
     /// 资源清单 JSON 原文（注入页面供 WebRuntime 使用）。
@@ -17,9 +23,10 @@ public struct AuthResult: Sendable {
     /// bundle 名 → 版本号（方案处理器改写 bundle URL 用）。
     public let bundleVersions: [String: String]
 
-    public init(authResponseBase64: String, accountID: String,
+    public init(authResponseBase64: String, binData: Data, accountID: String,
                 manifestJSON: String, bundleVersions: [String: String]) {
         self.authResponseBase64 = authResponseBase64
+        self.binData = binData
         self.accountID = accountID
         self.manifestJSON = manifestJSON
         self.bundleVersions = bundleVersions
@@ -45,6 +52,10 @@ public protocol AccountStoring: Sendable {
     /// 实现内部自行处理安全作用域授权与同名冲突（默认自动重命名）。
     @discardableResult
     func importBin(from sourceURL: URL) throws -> String
+    /// 写入一份**由调用方给出内容**的凭据（例如「选服派生」出来的那份），
+    /// 返回库内实际保存的文件名（= 账号稳定 ID）。
+    @discardableResult
+    func writeBin(_ data: Data, preferredName: String) throws -> String
     /// 枚举库内全部账号文件（修改时间新 → 旧，再按文件名字典序）。
     func listAccountFiles() throws -> [AccountBinFileInfo]
     /// 读取某个账号 .bin 的原始内容（登录认证使用）。

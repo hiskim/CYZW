@@ -98,6 +98,30 @@ public final class AccountBinStore: AccountStoring, @unchecked Sendable {
         try importBin(from: sourceURL, conflict: .rename)
     }
 
+    /// 写入一份**由调用方给出内容**的凭据，返回库内实际保存的文件名。
+    ///
+    /// 用途是「选服派生」：把原 `.bin` 里的 `serverId` 换掉后重新编码得到的那份凭据
+    /// 落盘成文件。因为**账号 ID = 文件内容的 SHA256**，内容一变它天然就是另一个账号——
+    /// 实例、`WKWebsiteDataStore`、localStorage、头像、分组全部自动隔离，
+    /// 这里不需要（也不应该）知道「派生」这回事，只当普通写入。
+    @discardableResult
+    public func writeBin(_ data: Data, preferredName: String) throws -> String {
+        guard !data.isEmpty else { throw StoreError.unreadableFile }
+        return try ioQueue.sync { [self] in
+            try ensureDirectory()
+            let destination = destinationURL(forPreferredName: Self.safeBinName(preferredName),
+                                             conflict: .rename)
+            do {
+                try data.write(to: destination, options: .atomic)
+            } catch {
+                logger.error("write bin failed: \(error.localizedDescription, privacy: .public)")
+                throw StoreError.copyFailed(underlying: error.localizedDescription)
+            }
+            logger.info("bin written: \(destination.lastPathComponent, privacy: .public)")
+            return destination.lastPathComponent
+        }
+    }
+
     /// 枚举库内全部 .bin 文件。排序：修改时间新 → 旧，再按文件名字典序，保证稳定。
     public func listAccountFiles() throws -> [AccountBinFileInfo] {
         try ensureDirectory()

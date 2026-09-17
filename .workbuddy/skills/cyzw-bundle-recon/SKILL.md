@@ -396,12 +396,76 @@ func w(_ s: String) -> Double { Double((s as NSString).size(withAttributes: [.fo
 - `/login/authuser?_seq=1` → `{roleToken, roleId}`；拼成
   `JSON.stringify({...data, sessId, connId, isRestore:0})` 当 WSS 的 `p=`；
   然后 `role_getroleinfo` → `role.headImg` / `power` / `levelId` / `name`。
+  ⚠️ **这里的 `roleId` 是账号 uid，不是游戏角色 ID**（同一账号恒为同一个值，
+  与请求里的 `serverId` 无关）。**别拿它判「换服有没有生效」**——会得到
+  「服务端忽略 serverId」的完全错误结论（已踩）。判据只能是 WSS 侧 `role.name` / `role.roleId`。
 - 帧格式 = BON 编码 + **x 方案**（4 字节头 + 单字节 XOR，密钥藏在头里）；
   HTTP 响应没有加密信封。报文体是**外层 BON 里再嵌一段 BON**，要解两层。
+- `.bin` 本体编码是 **`lx`**（首两字节 `70 6c`）＝ **LZ4 压缩 + 头掩码**，
+  解开后是 `{platform, platformExt, info, serverId, scene, referrerInfo}`——
+  **就是一次 `login_authuser` 的请求参数**。`serverId` 决定落在哪个区服角色：
+  区服号 = `serverId - 27`，`≥1e6 / ≥2e6` = 第 1/2 个小号位。
+  → **改 `serverId` 再按 `lx` 重编码，换服就成立了**（实测 4/5 命中，见
+  `probe-pick-role.mjs`）。Swift 侧实现见 `LobbyEngine/BinCredential.swift`。
+  ⚠️ **不要**去手搓「游戏式参数体」（`{platform, oriPlatform, platformExt, info, serverId,
+  scene, referrerInfo, deviceUniqueId}`）：`serverViewId` 会跟着 `serverId` 走，
+  但角色是空的（`name=111`、`levelId=1`、`gold=10`、uid 变成另一个），缺 SDK 会话上下文。
+- ⚠️ **两条只能靠实测发现、且都会静默失败的协议事实**（详见
+  `BIN登录认证优化方案.md` §8.2）：
+  1. **响应编码跟随请求的 `O4e-Encoding`**：发 `lx` 就收回 `70 6c` 包着的 BON，
+     不发就收回裸 BON（首字节 `08`）。所以「宿主喂给游戏的响应」与「请求体」必须同编码——
+     游戏的 HTTP 客户端把编码写死成 `lx`，给它裸 BON 会解不开。
+  2. **服务端会校验 LZ4 帧头校验和（HC）**：自己封的 LZ4 帧里 HC 必须用 XXH32 真算；
+     写 0 的表现是 `error=指令解析错误`（HTTP 200、长度正常、就是没有 roleToken）。
+     「只存不压」的块（块头最高位置 1）是合法的，可以省掉压缩器。
+     三向对照：`probe-lx-variants.mjs`。
 - ⚠️ **`/login/serverlist` 的 `power` 是错的**（与该账号当前角色对不上、level 恒为 1）——
-  它只能取「区服 / 角色列表」。**先量再信**：拿一个已知账号把两条路的数值对一下。
+  它只能取「区服 / 角色列表」；但 `roles[].roleId` 是**可信**的（可与 WSS 逐字段对上）。
+  另外 `role.serverName` 在合服区不一定等于 `serverId - 27`，展示区服号请用后者。
+- ⚠️ **`/login/*` 家族只认「体 = 凭据本身」**：游戏自己发的是**参数体**
+  （`LoginService.serverList({platform, oriPlatform, platformExt, info, areaId})`），
+  服务端回一个**空的 200**（105 字节 / 0 区 / 0 角色 / 连 `error` 都没有）。
+  补 `_raw`（上号器 hook 里的字段名）也没用。一次一变量：
+  `probe-serverlist-params.mjs` / `probe-raw-field.mjs`。
+  → 要拿到数据，**必须**把请求体换成凭据本体（宿主的做法见
+  `BootstrapScriptBuilder` 的 XHR 垫片第三种去向）。
+- ⚠️ **但光有数据还不够：响应缺字段会让游戏解析器当场中断，而且没有任何报错。**
+  实测 `/login/serverlist` 的响应只有
+  `{areaList, serverList, roleCount, recommendId, roles}`，而
+  `SelectServerModule._parseFirstServerList` 需要 **`deletedRoles`（必须是 `Map`）**
+  与 **`maxViewId`** —— 缺第一个就 `e.deletedRoles.forEach(...)` 抛 TypeError，
+  后面的 `BigServerConf.map.forEach(...)`（真正填 `bigServerList` 的那段）永远到不了，
+  表现就是「选择大区」**面板空白、没有报错**。
+  另外 `serverList` 在 BON 里是**数组（tag 9）**不是 map；`maxViewId` = 最大
+  `serverList[].viewId`。
+  → 修法是**在数据进解析器之前补这两个字段**（打 `SelectServerModule.prototype`
+  的两个 `_parse*` 方法）——不需要 BON 解码器、不需要搬大包、失败就不补（无回归）。
+  **教训：补丁尽量靠近消费方**；「页面里没有任何报错、就是空的」先怀疑必需字段缺失。
+- ⚠️ **引导脚本里的 console 桥必须最先安装**：它原来挂在 `makeScript` 产物末尾，
+  于是引导脚本更早的 `console.*` 全部回不到宿主 —— 「日志里没出现 = 没发生」这个
+  推论会**错**（我为此刻意踩了两轮）。
+- ⚠️⚠️ **垫在游戏既有调用路径上的垫片（XHR / 原型方法 / 事件监听）必须异常安全。**
+  这类地方抛异常不会变成「功能失效」，而是**静默卡死**——因为调用方几乎都在 promise 链里，
+  异常被吞掉，页面就停在「正在加载游戏场景」之类的地方，日志里什么都没有。
+  真实事故：往统计对象里加了个字段却漏了初始化，`undefined.indexOf` 抛在
+  `__bridgedXHR.prototype.open()` 里，`/login/*` 的每次 open 都炸 → 加载任务被打断。
+  所以：① 整个 entry 包 `try/catch` 且兜底动作是「原样放行」；
+  ② 诊断/统计代码**再单独包一层** `try/catch`；
+  ③ 加断言「诊断结构的字段必须全部存在」+ 「一串 URL 的 open/send 一个都不许抛」；
+  ④ **改完先 dump 产物脚本看一眼**（初始化行 + `new Function(src)` 过语法），比开游戏快得多。
+- 排查入口：登录链路的关键行会落盘到
+  `~/Library/Application Support/GameLobby/diagnostics.log`（`LobbyStorage/DiagnosticsLog.swift`），
+  **不要让用户从几千行控制台里挑行粘贴**——两次都恰好截在关键处之前。
 - ⚠️ **绝不能对正在运行的账号做**：会建立第二个会话，很可能顶掉大厅里的实例。
   宿主侧必须先判「该账号无运行实例」，并且**顺序 + 间隔**，不要并发。
+  （例外：`/login/serverlist` 是纯 HTTP，**不建会话**，运行中也能查。）
+- 要搜「游戏自己怎么调这些端点」，用 `.workbuddy/tools/cdn-bundle/scan-login-cmds.mjs`
+  （一次解密**全部** CDN bundle 并搜关键词，`DUMP_DIR=` 导出明文）——
+  `decrypt.js` 只导 game+launcher，而命令枚举与 `LoginService` 真身在
+  **`TEST_REMOTE_MODULE`** 里（`login_authuser` / `login_serverlist` / `login_selectserver`…）。
+- 页面里 `/login/authuser` 的**唯一调用方是游戏自己**（`HSDK.app.min.js` 与
+  `ios2-web-*.js` 都不碰这个端点）——所以「换服」这件事必须由**宿主**来回答，
+  放行给游戏自己会让它拿不到凭据。实现见 `LobbyEngine/LoginProxy.swift`。
 
 **移植时的验证方式：与参考实现逐字节对拍**（`.workbuddy/tools/profile-fetch-verify/run.sh`）。
 BON 解析是**静默失败**的——解码器与编码器共享一张字符串表，漏一次 push 之后所有

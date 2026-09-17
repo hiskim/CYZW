@@ -12,6 +12,7 @@
 		C10000000000000000000003 /* MatrixLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* MatrixLayout.swift */; };
 		C10000000000000000000004 /* EngineContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* EngineContracts.swift */; };
 		C10000000000000000000005 /* LobbyLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* LobbyLog.swift */; };
+		C1000000000000000000002F /* GameRole.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000002F /* GameRole.swift */; };
 		C10000000000000000000006 /* PageEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000006 /* PageEvent.swift */; };
 		C10000000000000000000007 /* AccountBinStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000007 /* AccountBinStore.swift */; };
 		C10000000000000000000008 /* GameSettingsMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000008 /* GameSettingsMirror.swift */; };
@@ -39,16 +40,23 @@
 		C10000000000000000000027 /* GameEnhancementStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000027 /* GameEnhancementStore.swift */; };
 		C10000000000000000000028 /* GameEnhancementScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000028 /* GameEnhancementScript.swift */; };
 		C10000000000000000000029 /* GameEnhancementSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000029 /* GameEnhancementSectionView.swift */; };
+		C10000000000000000000035 /* RolePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000035 /* RolePickerSheet.swift */; };
 		C1000000000000000000002A /* AccountProfileScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000002A /* AccountProfileScript.swift */; };
 		C1000000000000000000002B /* AccountAvatarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000002B /* AccountAvatarStore.swift */; };
 		C1000000000000000000002C /* BonCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000002C /* BonCodec.swift */; };
 		C1000000000000000000002D /* XorFrameCipher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000002D /* XorFrameCipher.swift */; };
 		C1000000000000000000002E /* AccountProfileFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000002E /* AccountProfileFetcher.swift */; };
+		C10000000000000000000030 /* Lz4Frame.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000030 /* Lz4Frame.swift */; };
+		C10000000000000000000031 /* BinCredential.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000031 /* BinCredential.swift */; };
+		C10000000000000000000032 /* GameEndpointClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000032 /* GameEndpointClient.swift */; };
+		C10000000000000000000033 /* AccountRoleCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000033 /* AccountRoleCatalog.swift */; };
+		C10000000000000000000034 /* LoginProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000034 /* LoginProxy.swift */; };
 		C10000000000000000000017 /* libLobbyDomain.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C20000000000000000000019 /* libLobbyDomain.a */; };
 		C10000000000000000000018 /* libLobbyIPC.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001A /* libLobbyIPC.a */; };
 		C10000000000000000000019 /* libLobbyStorage.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001B /* libLobbyStorage.a */; };
 		C1000000000000000000001A /* libLobbyEngine.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001C /* libLobbyEngine.a */; };
 		C1000000000000000000001B /* libLobbyUI.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001D /* libLobbyUI.a */; };
+		C1000000000000000000001E /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001E /* DiagnosticsLog.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -144,6 +152,7 @@
 		C20000000000000000000003 /* MatrixLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatrixLayout.swift; sourceTree = "<group>"; };
 		C20000000000000000000004 /* EngineContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineContracts.swift; sourceTree = "<group>"; };
 		C20000000000000000000005 /* LobbyLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyLog.swift; sourceTree = "<group>"; };
+		C2000000000000000000002F /* GameRole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameRole.swift; sourceTree = "<group>"; };
 		C20000000000000000000006 /* PageEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageEvent.swift; sourceTree = "<group>"; };
 		C20000000000000000000007 /* AccountBinStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountBinStore.swift; sourceTree = "<group>"; };
 		C20000000000000000000008 /* GameSettingsMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameSettingsMirror.swift; sourceTree = "<group>"; };
@@ -171,11 +180,17 @@
 		C20000000000000000000027 /* GameEnhancementStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEnhancementStore.swift; sourceTree = "<group>"; };
 		C20000000000000000000028 /* GameEnhancementScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEnhancementScript.swift; sourceTree = "<group>"; };
 		C20000000000000000000029 /* GameEnhancementSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEnhancementSectionView.swift; sourceTree = "<group>"; };
+		C20000000000000000000035 /* RolePickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RolePickerSheet.swift; sourceTree = "<group>"; };
 		C2000000000000000000002A /* AccountProfileScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountProfileScript.swift; sourceTree = "<group>"; };
 		C2000000000000000000002B /* AccountAvatarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountAvatarStore.swift; sourceTree = "<group>"; };
 		C2000000000000000000002C /* BonCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonCodec.swift; sourceTree = "<group>"; };
 		C2000000000000000000002D /* XorFrameCipher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XorFrameCipher.swift; sourceTree = "<group>"; };
 		C2000000000000000000002E /* AccountProfileFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountProfileFetcher.swift; sourceTree = "<group>"; };
+		C20000000000000000000030 /* Lz4Frame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lz4Frame.swift; sourceTree = "<group>"; };
+		C20000000000000000000031 /* BinCredential.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BinCredential.swift; sourceTree = "<group>"; };
+		C20000000000000000000032 /* GameEndpointClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEndpointClient.swift; sourceTree = "<group>"; };
+		C20000000000000000000033 /* AccountRoleCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountRoleCatalog.swift; sourceTree = "<group>"; };
+		C20000000000000000000034 /* LoginProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginProxy.swift; sourceTree = "<group>"; };
 		C20000000000000000000017 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C20000000000000000000018 /* GameLobby.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GameLobby.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C20000000000000000000019 /* libLobbyDomain.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLobbyDomain.a; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -183,6 +198,7 @@
 		C2000000000000000000001B /* libLobbyStorage.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLobbyStorage.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000000000000000000001C /* libLobbyEngine.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLobbyEngine.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000000000000000000001D /* libLobbyUI.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLobbyUI.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		C2000000000000000000001E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsLog.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -250,6 +266,7 @@
 				C20000000000000000000021 /* InputSyncRouting.swift */,
 				C20000000000000000000004 /* EngineContracts.swift */,
 				C20000000000000000000005 /* LobbyLog.swift */,
+				C2000000000000000000002F /* GameRole.swift */,
 			);
 			path = LobbyDomain;
 			sourceTree = "<group>";
@@ -270,6 +287,7 @@
 				C20000000000000000000008 /* GameSettingsMirror.swift */,
 				C20000000000000000000009 /* CDNAssetStore.swift */,
 				C20000000000000000000026 /* DownloadStore.swift */,
+				C2000000000000000000001E /* DiagnosticsLog.swift */,
 				C2000000000000000000000A /* GameResourceSchemeHandler.swift */,
 			);
 			path = LobbyStorage;
@@ -290,6 +308,11 @@
 				C2000000000000000000002C /* BonCodec.swift */,
 				C2000000000000000000002D /* XorFrameCipher.swift */,
 				C2000000000000000000002E /* AccountProfileFetcher.swift */,
+				C20000000000000000000030 /* Lz4Frame.swift */,
+				C20000000000000000000031 /* BinCredential.swift */,
+				C20000000000000000000032 /* GameEndpointClient.swift */,
+				C20000000000000000000033 /* AccountRoleCatalog.swift */,
+				C20000000000000000000034 /* LoginProxy.swift */,
 				C2000000000000000000000E /* GameViewportInstance.swift */,
 				C2000000000000000000000F /* GameInstancePool.swift */,
 			);
@@ -307,6 +330,7 @@
 				C20000000000000000000029 /* GameEnhancementSectionView.swift */,
 				C20000000000000000000015 /* MatrixStageView.swift */,
 				C20000000000000000000025 /* ScriptSidebarView.swift */,
+				C20000000000000000000035 /* RolePickerSheet.swift */,
 			);
 			path = LobbyUI;
 			sourceTree = "<group>";
@@ -532,6 +556,7 @@
 				C10000000000000000000021 /* InputSyncRouting.swift in Sources */,
 				C10000000000000000000004 /* EngineContracts.swift in Sources */,
 				C10000000000000000000005 /* LobbyLog.swift in Sources */,
+				C1000000000000000000002F /* GameRole.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -552,6 +577,7 @@
 				C10000000000000000000008 /* GameSettingsMirror.swift in Sources */,
 				C10000000000000000000009 /* CDNAssetStore.swift in Sources */,
 				C10000000000000000000026 /* DownloadStore.swift in Sources */,
+				C1000000000000000000001E /* DiagnosticsLog.swift in Sources */,
 				C1000000000000000000000A /* GameResourceSchemeHandler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -572,6 +598,11 @@
 				C1000000000000000000002C /* BonCodec.swift in Sources */,
 				C1000000000000000000002D /* XorFrameCipher.swift in Sources */,
 				C1000000000000000000002E /* AccountProfileFetcher.swift in Sources */,
+				C10000000000000000000030 /* Lz4Frame.swift in Sources */,
+				C10000000000000000000031 /* BinCredential.swift in Sources */,
+				C10000000000000000000032 /* GameEndpointClient.swift in Sources */,
+				C10000000000000000000033 /* AccountRoleCatalog.swift in Sources */,
+				C10000000000000000000034 /* LoginProxy.swift in Sources */,
 				C1000000000000000000000E /* GameViewportInstance.swift in Sources */,
 				C1000000000000000000000F /* GameInstancePool.swift in Sources */,
 			);
@@ -589,6 +620,7 @@
 				C10000000000000000000015 /* MatrixStageView.swift in Sources */,
 				C10000000000000000000025 /* ScriptSidebarView.swift in Sources */,
 				C10000000000000000000029 /* GameEnhancementSectionView.swift in Sources */,
+				C10000000000000000000035 /* RolePickerSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

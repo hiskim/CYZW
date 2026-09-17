@@ -371,6 +371,104 @@ public final class LobbySessionModel: ObservableObject {
         refresh()
     }
 
+    // MARK: - 选服（一个 .bin 名下的多个区服角色）
+
+    /// 正在选服选的账号（非 nil = 弹选区面板）。
+    @Published public var rolePickerAccount: GameAccount?
+    /// 选区面板的数据状态。
+    @Published public private(set) var rolePickerState: RolePickerState = .idle
+    /// 正在派生的角色（按钮转圈用；同时挡住重复点击）。
+    @Published public private(set) var derivingRoleID: Int64?
+
+    public enum RolePickerState: Equatable, Sendable {
+        case idle
+        case loading
+        case loaded(AccountRoleList)
+        case failed(String)
+    }
+
+    /// 区服角色目录（纯 HTTP，不建会话）。
+    private let roleCatalog = AccountRoleCatalog()
+
+    /// 打开选区面板并拉取该账号名下的区服角色。
+    ///
+    /// ⚠️ 与 `refreshProfiles` 不同：`/login/serverlist` **不会建立游戏会话**，
+    /// 所以运行中的账号也能查（不会顶号）。
+    public func requestRoles(for account: GameAccount) {
+        rolePickerAccount = account
+        rolePickerState = .loading
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let binData = try self.bins.readBinData(for: account.fileName)
+                let list = try await self.roleCatalog.roles(binData: binData)
+                // 面板可能已经被换到别的账号上，别把结果投错。
+                guard self.rolePickerAccount?.id == account.id else { return }
+                self.rolePickerState = .loaded(list)
+            } catch {
+                guard self.rolePickerAccount?.id == account.id else { return }
+                self.rolePickerState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    public func dismissRolePicker() {
+        rolePickerAccount = nil
+        rolePickerState = .idle
+        derivingRoleID = nil
+    }
+
+    /// 某个 `.bin` 文件当前落在哪个区服（解不开返回 nil）。
+    public func serverID(ofFileName fileName: String) -> Int64? {
+        guard let data = try? bins.readBinData(for: fileName),
+              let credential = try? BinCredential(data: data) else { return nil }
+        return credential.serverID
+    }
+
+    /// 把「切到这个区服」落成一份**派生凭据**并入库，返回新账号文件名（失败 nil）。
+    ///
+    /// 因为账号 ID = 文件内容的 SHA256，派生出来的凭据天然就是另一个账号：
+    /// 实例、`WKWebsiteDataStore`、localStorage、头像、分组全部自动隔离，
+    /// **存储层一行都不用改**。原凭据一字不动，随时可以退回原区服。
+    ///
+    /// 幂等：同一个区服重复点不会堆出 `X-2.bin`、`X-3.bin`。
+    @discardableResult
+    public func deriveAccount(from account: GameAccount, role: GameRole) -> String? {
+        guard derivingRoleID == nil else { return nil }
+        derivingRoleID = role.roleID
+        defer { derivingRoleID = nil }
+
+        let preferredName = role.derivedBinFileName(basedOn: account.fileName)
+        if bins.contains(fileName: preferredName), serverID(ofFileName: preferredName) == role.serverID {
+            statusMessage = "「\(preferredName)」已经在 \(role.serverNumber) 服了，没有重复生成。"
+            return preferredName
+        }
+
+        do {
+            let binData = try bins.readBinData(for: account.fileName)
+            let credential = try BinCredential(data: binData)
+            let derived = try credential.derivedBinData(serverID: role.serverID)
+            let fileName = try bins.writeBin(derived, preferredName: preferredName)
+            // 派生账号留在原账号所在的分组里：用户的组织意图要延续过去。
+            let groupID = groupID(forAccountID: account.id)
+            if groupID != AccountGroup.ungroupedID,
+               groupDefinitions.contains(where: { $0.id == groupID }) {
+                assignments[fileName] = groupID
+                persistGroups()
+            }
+            refresh()
+            statusMessage = "已生成「\(fileName)」（\(role.displayName)）。原账号未改动，可直接启动。"
+            // 新账号还没跑过游戏，资料先走服务端直取（纯 HTTP + 一次 WSS，不建实例）。
+            if let created = accounts.first(where: { $0.id == fileName }) {
+                refreshProfiles([created], reason: "选服派生")
+            }
+            return fileName
+        } catch {
+            statusMessage = "生成账号副本失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
     // MARK: - 账号资料（服务端直取，不启动游戏）
 
     /// 自动补拉「还没有资料」的账号。启动后调一次。

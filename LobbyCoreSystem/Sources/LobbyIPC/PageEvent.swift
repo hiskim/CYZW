@@ -101,6 +101,11 @@ public enum PageEvent: Sendable {
     case downloadURL(url: String, name: String)
     /// 账号资料上报（只读探针 `AccountProfileScript` 发的；账号卡显示用）。
     case accountProfile(AccountProfileSnapshot)
+    /// 游戏的 `login_authuser` 请求需要宿主现算应答（登录代理）。
+    ///
+    /// 页面把原始请求体原样送上来（base64）——**体里带着游戏想去哪个区**
+    /// （`serverId`），宿主据此重新认证，这是「游戏内选区」能生效的唯一依据。
+    case loginAuth(requestID: String, bodyBase64: String)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -174,6 +179,9 @@ public enum PageEvent: Sendable {
                 level: integer(body["level"]),
                 vip: integer(body["vip"])
             ))
+        case "loginAuth":
+            guard let requestID = body["requestId"] as? String else { return .unknown(type: type) }
+            return .loginAuth(requestID: requestID, bodyBase64: body["body"] as? String ?? "")
         default:
             return .unknown(type: type)
         }

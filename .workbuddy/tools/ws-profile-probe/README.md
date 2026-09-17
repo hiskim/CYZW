@@ -82,3 +82,41 @@ node probe-serverlist.mjs '11不不.bin'        # 看 serverlist 的 role 列表
 ```
 
 依赖：托管 Node（`~/.workbuddy/binaries/node`）+ 工作区里的 `lz4js`。
+
+---
+
+## 选服 / 换角色专题（2026-09-17 新增）
+
+结论与方案见仓库根 `BIN登录认证优化方案.md`。这里只列工具与**必须记住的两条**：
+
+```bash
+NODE_PATH=/Users/gg/.workbuddy/binaries/node/workspace/node_modules \
+/Users/gg/.workbuddy/binaries/node/versions/22.22.2-2/bin/node <脚本>
+```
+
+| 脚本 | 用途 |
+|---|---|
+| `dump-bin.mjs <bin>…` | 解出 `.bin` 明文（`pl`/`lx` = LZ4 + 头掩码）→ `{platform, platformExt, info, serverId, scene, referrerInfo}` |
+| `probe-relogin.mjs <bin>` | 批量改 `serverId` 打 authuser。**用来演示下面第 1 条坑** |
+| `probe-pick-role.mjs <bin> <serverId>…` | ⭐ 改 bin 的 `serverId` 重编码 → authuser → WSS 取角色，与 serverlist 逐字段对照 |
+| `probe-header-variants.mjs <bin> <serverId>` | body 编码（`lx`/`x`）× `O4e-Encoding` 头 的 4 种组合 |
+| `probe-lx-variants.mjs <bin> <serverId>` | ⭐ **服务端会校验 LZ4 帧头校验和**：真压缩帧 / 只存不压+抄来的 HC / 只存不压+HC=0 三向对照 |
+| `probe-switch-server.mjs <bin> <serverId>…` | 反面教材：手搓"游戏式参数体"会拿到空角色 |
+| `probe-auth-compare.mjs <bin> <serverId>` | SDK 式（body=.bin）vs 游戏式（body=BON 参数）逐字段对照 |
+| `probe-deviceid.mjs <bin> <serverId>` | `deviceUniqueId` 取值 / `info` 形态的影响 |
+| `probe-o4e-token.mjs <bin> <serverId>` | 补 `O4e-Token` / `O4e-Version` 头有没有用 |
+
+### ⚠️ 三条反直觉的坑（都踩过）
+
+1. **`/login/authuser` 响应里的 `roleId` 是账号 uid，与区服无关**（同一个账号恒为同一个值）。
+   拿它判"换服有没有生效"会得到"服务端忽略 serverId"的完全错误结论。
+   判据只能是 **WSS `role_getroleinfo` 的 `role.name` / `role.roleId`**。
+2. **换服的正解是改 bin 明文里的 `serverId` 再重新编码**（`lx` 或 `x` 都行）。
+   千万不要去手搓"游戏式参数体"——`serverViewId` 会跟着 `serverId` 走，但角色是空的
+   （`name=111`、`levelId=1`、`gold=10`、uid 变成另一个），缺的是 SDK 会话上下文。
+3. **响应编码跟随请求的 `O4e-Encoding`**，而且**服务端校验 LZ4 帧头校验和**：
+   - 发 `O4e-Encoding: lx` → 收回 `70 6c` 包着的 BON；不发 → 收回裸 BON（首字节 `08`）。
+   - 「`x` body + `lx` 头」会被拒；「只存不压的 LZ4 帧 + HC 写 0」也会被拒
+     （`error=指令解析错误`，HTTP 200 但没 roleToken）。
+   所以宿主自己造 `lx` 载荷时，HC 必须用 XXH32 真算——见 `probe-lx-variants.mjs`。
+
