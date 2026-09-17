@@ -88,6 +88,31 @@ xcodebuild 都跑，Debug / Release 都带图标。`build-dmg.sh` 不再生成�
 后缀）；codesign 时图标已经在 Resources 里，签名覆盖整个 Resources，所以图标
 跟着签名。换图标也要重签（codesign 覆盖了 Resource 的内容摘要）。
 
+#### 换了图标但 Finder / Dock 还显示旧的（甚至默认图标）
+
+`AppIcon.icns` 明明在 bundle 里，系统却还按**旧的 LaunchServices 注册信息**取
+图标——这是 macOS 的图标缓存，不是构建问题。先确认文件没问题：
+
+```bash
+# 1) 确认 icns 真在产物里且格式有效
+file .../GameLobby.app/Contents/Resources/AppIcon.icns   # 期望: Mac OS X icon … "ic12" type
+sips -g pixelWidth .../GameLobby.app/Contents/Resources/AppIcon.icns   # 期望: 1024
+
+# 2) 重新向 LaunchServices 注册（这一步通常就够了，不重启任何进程）
+/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/\
+LaunchServices.framework/Versions/Current/Support/lsregister -f -R .../GameLobby.app
+```
+
+上面两步行完若还不变，再重启承载图标的进程（会重开 Finder 窗口）：
+
+```bash
+killall Finder; killall Dock
+```
+
+排查时别被「bytes 数」误导：不同 app 的 `NSWorkspace.icon(forFile:)`
+TIFF 常常**字节数完全相同**（representations 的尺寸集合是标准的），
+要判有没有自定义图标得比 **md5**，不能比大小。
+
 > ⚠️ 本工程刻意**不使用 SwiftPM**（含本地包）：本机环境 SwiftPM 的
 > `sandbox_apply` 被系统拒绝（`sandbox-exec: sandbox_apply: Operation not permitted`），
 > 任何含包的 xcodebuild 都无法完成解析。模块拓扑改用**五个 Swift 静态库 target**
