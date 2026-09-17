@@ -238,50 +238,19 @@ if [ -n "$VERSION" ] || [ -n "$BUILD_NUMBER" ]; then
 fi
 note "版本 ${FINAL_VERSION}（build ${FINAL_BUILD}）"
 
-# ── 签名 ────────────────────────────────────────────────────────────────────
-# ── 应用图标 ──────────────────────────────────────────────────────────────────
-# 源图在 App/Assets/AppIcon-source.jpg（git 入库），脚本每次构建都从它重新生成
-# 多尺寸 PNG → iconutil 打 icns → 拷进 .app/Contents/Resources/AppIcon.icns。
-# 必须放在签名之前：codesign 覆盖整个 bundle，签名后改 Resources 等于改签名。
-# Info.plist 的 CFBundleIconFile 已在 App/Info.plist 里写好为 "AppIcon"。
-ICON_SRC="$PROJECT_DIR/App/Assets/AppIcon-source.jpg"
-if [ -f "$ICON_SRC" ]; then
-    step "生成图标"
-    # iconutil 要求目录名以 `.iconset` 结尾——mktemp 的模板又必须以 XXXX 结尾，
-    # 所以套一层：mktemp 出临时父目录，里面再建 AppIcon.iconset。
-    ICON_PARENT="$(mktemp -d "$WORK_DIR/.iconset-parent.XXXXXX")" || fail "无法创建图标临时目录"
-    ICONSET="$ICON_PARENT/AppIcon.iconset"
-    mkdir -p "$ICONSET"
-    # iconutil 约定的 10 个文件：16、16@2x、32、32@2x、128、128@2x、256、256@2x、512、512@2x
-    for spec in "16|icon_16x16.png" \
-                "32|icon_16x16@2x.png" \
-                "32|icon_32x32.png" \
-                "64|icon_32x32@2x.png" \
-                "128|icon_128x128.png" \
-                "256|icon_128x128@2x.png" \
-                "256|icon_256x256.png" \
-                "512|icon_256x256@2x.png" \
-                "512|icon_512x512.png" \
-                "1024|icon_512x512@2x.png"; do
-        px="${spec%|*}"
-        fn="${spec#*|}"
-        # `-s format png` 必加：sips 不会按扩展名自动转格式，源是 JPEG 时只换名不换格式
-        sips -s format png -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/$fn" >/dev/null
-    done
-    ICNS_OUT="$WORK_DIR/AppIcon.icns"
-    iconutil -c icns "$ICONSET" -o "$ICNS_OUT"
-    # 清理失败不该让已经做好的图标白做（临时目录在 build/ 下，本就是可弃物）
-    rm -rf "$ICONSET" 2>/dev/null || true
-    rm -rf "$ICON_PARENT" 2>/dev/null || true
-    mkdir -p "$APP_PATH/Contents/Resources"
-    cp "$ICNS_OUT" "$APP_PATH/Contents/Resources/AppIcon.icns"
-    icon_bytes=$(stat -f%z "$APP_PATH/Contents/Resources/AppIcon.icns" 2>/dev/null || echo 0)
-    note "图标已写入（${icon_bytes} 字节）"
+# ── 应用图标（由 Xcode 构建阶段生成，这里只校验）─────────────────────────────
+# 图标**不能**只在本脚本里生成：Xcode 直接 ⌘R / xcodebuild 不过本脚本，那样编出来
+# 的 .app 就没有图标。所以照 Copy WebRuntime 的模式挂成 Xcode 构建阶段
+# （Generate AppIcon → Scripts/make-appicon.sh），每次编译都跑。
+# 本脚本只确认产物里确实有 icns——没有就说明构建阶段没跑或被摘掉了。
+ICNS_IN_APP="$APP_PATH/Contents/Resources/AppIcon.icns"
+if [ -f "$ICNS_IN_APP" ]; then
+    note "图标已就位（$(stat -f%z "$ICNS_IN_APP" 2>/dev/null || echo 0) 字节）"
 else
-    note "未找到 ${ICON_SRC}，跳过图标（系统会用默认 app icon）"
+    warn "产物里没有 AppIcon.icns —— 检查 GameLobby target 的 Generate AppIcon 构建阶段是否还在"
 fi
 
-# ── 签名 ──────────────────────────────────────────────────────────────────────
+# ── 签名 ────────────────────────────────────────────────────────────────────
 step "代码签名"
 
 SIGN_KIND=""

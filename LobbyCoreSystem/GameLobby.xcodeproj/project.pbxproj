@@ -359,6 +359,7 @@
 				C30000000000000000000007 /* Frameworks */,
 				C30000000000000000000002 /* Resources */,
 				C30000000000000000000008 /* Copy WebRuntime */,
+				C3000000000000000000000A /* Generate AppIcon */,
 			);
 			buildRules = (
 			);
@@ -533,6 +534,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -eu\n# 白名单拷贝逻辑见 Scripts/copy-webruntime.sh（本地 JSB 路径专用的 js 不再入包）。\nexec /bin/sh \"${SRCROOT}/Scripts/copy-webruntime.sh\"\n";
+		};
+		C3000000000000000000000A /* Generate AppIcon */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Scripts/make-appicon.sh",
+				"$(SRCROOT)/App/Assets/AppIcon-source.jpg",
+			);
+			name = "Generate AppIcon";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppIcon.icns",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\n# 图标生成逻辑见 Scripts/make-appicon.sh（每次编译都跑，Xcode 直接跑也有图标）。\nexec /bin/sh \"${SRCROOT}/Scripts/make-appicon.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
