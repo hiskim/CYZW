@@ -981,3 +981,26 @@ if (__loginStats.passthroughPaths.indexOf(match[1]) < 0) { … }
 - **往诊断结构里加字段时，初始化、读取、写入三处要一起改**，并且要有
   「字段必须存在」的断言兜住（这次就是漏了初始化，且没断言）。
 - 改完**先 dump 产物脚本看一眼**（初始化行 / 语法），比开游戏试快得多。
+
+---
+
+# 14. 收口（2026-09-17 18:10）：三件收尾
+
+| 问题 | 根因 | 修法 |
+|---|---|---|
+| 选大区还是空 | 页面 origin 是自定义 scheme，跨源 XHR 的非安全头被 WebKit 丢掉 → `login/serverlist` 没带上 `O4e-Encoding` → 服务端回**裸 BON**（3,879,411 字节 vs 正确的 1,446,832），游戏按 `lx` 解不开 | `login/serverlist` 也交给**宿主代发**（`LoginProxy.serverListResponse`，凭据体 + lx 头），响应经垫片回填 |
+| 游戏内切服后，重启原 bin 就登到新区 | 游戏切服会往账号自己的 localStorage 写 `serverId/uid/puid`，localStorage 按 bin 隔离 ⇒ 原 bin 归属被改掉 | 引导脚本在**会话首次加载**时把 `localStorage.serverId` 钉回凭据自带的区（sessionStorage 打标记，只做一次）；本次会话内切服照常生效 |
+| 切服后**账号卡**被刷成新区角色 | 资料探针只认「运行中的页面」，切服后页面里的 `ROLE` 是新区角色 | 探针（agent v2）上报 `ROLE.serverID`；`AccountProfileSnapshot` 加 `serverID`；宿主收到资料时若 serverID 与凭据区**不一致则拦下**（账号卡保持原区资料），切回原区自动恢复 |
+
+经验（都写进 skill）：
+- **垫在游戏调用路径上的代码必须异常安全** —— 异常在 promise 链里被吞，表现是静默卡死
+  而不是报错（.19 的卡死就是统计字段漏初始化导致 `open()` 抛异常）；
+- **页面侧诊断不能依赖 console** —— 游戏 boot 后会把 console 整个换掉，
+  关键诊断要走专用 postMessage 通道（`__diag` → `PageEvent.loginDiag` → diagnostics.log）；
+- 垫片里的全局对象必须**显式** `window.*`（`localStorage` / `sessionStorage` /
+  `XMLHttpRequest` 裸写在沙箱/别的宿主里就是 ReferenceError）；
+- 离线回归（`profile-fetch-verify/run.sh`，9 段）已经能在不开游戏的情况下把
+  垫片行为、协议字节、账号归属全部钉死 —— 本轮 .24→.25 的回归就是它拦下的。
+
+`buildTag` → 2026-09-17.27（用户已复测通过：列表显示 ✓、切服登录 ✓、
+原 bin 归属不变 ✓、账号卡不被污染 ✓）。

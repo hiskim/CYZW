@@ -278,7 +278,10 @@ public final class AccountProfileFetcher: Sendable {
             name: role["name"]?.stringValue ?? "",
             power: Int(max(0, role["power"]?.intValue ?? 0)),
             level: Int(max(0, level)),
-            vip: Int(max(0, role["vip"]?.intValue ?? 0))
+            vip: Int(max(0, role["vip"]?.intValue ?? 0)),
+            // 服务端直取用的是**这个 bin 自己的凭据**，所以这里的 serverId
+            // 必然就是账号归属的区（与页面探针的上报不同，不存在切服污染）。
+            serverID: Int(max(0, role["serverId"]?.intValue ?? 0))
         )
     }
 }

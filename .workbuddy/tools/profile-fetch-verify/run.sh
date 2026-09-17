@@ -162,7 +162,8 @@ cp "$HERE/dump-bootstrap.swift" "$WORK/main.swift"
 xcrun swiftc -O -o "$WORK/dump-bootstrap" \
     "$SRC/LobbyDomain/LobbyConfiguration.swift" \
     "$WORK/Bootstrap.swift" "$WORK/main.swift"
-(cd "$WORK" && ./dump-bootstrap > bootstrap.js && ./dump-bootstrap --no-credential > bootstrap-nocred.js)
+(cd "$WORK" && ./dump-bootstrap --server-id 14028 > bootstrap.js \
+                         && ./dump-bootstrap --no-credential > bootstrap-nocred.js)
 cp "$HERE/verify-bootstrap-shim.mjs" "$WORK/verify-bootstrap-shim.mjs"
 (cd "$WORK" && "$NODE" ./verify-bootstrap-shim.mjs bootstrap.js bootstrap-nocred.js)
 

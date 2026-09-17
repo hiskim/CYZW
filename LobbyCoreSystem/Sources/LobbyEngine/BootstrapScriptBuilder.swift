@@ -30,6 +30,9 @@ public enum BootstrapScriptBuilder {
         /// 游戏服务端 origin（如 `https://xxz-xyzw.hortorgames.com`）。
         /// 页面侧的 `serverList` 兜底要自己发 HTTP 请求，需要它。
         public let serverOrigin: String
+        /// 凭据自带的 `serverId`。页面侧用它把 `localStorage.serverId` 固定回
+        /// 凭据自己的区 —— 否则游戏内切服会把原 bin 的归属改掉（见下）。
+        public let credentialServerID: Int64?
 
         public init(instanceID: String,
                     accountName: String,
@@ -40,7 +43,8 @@ public enum BootstrapScriptBuilder {
                     instanceCount: Int,
                     credentialBase64: String = "",
                     credentialEncoding: String? = nil,
-                    serverOrigin: String = "") {
+                    serverOrigin: String = "",
+                    credentialServerID: Int64? = nil) {
             self.instanceID = instanceID
             self.accountName = accountName
             self.authResponseBase64 = authResponseBase64
@@ -51,6 +55,7 @@ public enum BootstrapScriptBuilder {
             self.credentialBase64 = credentialBase64
             self.credentialEncoding = credentialEncoding
             self.serverOrigin = serverOrigin
+            self.credentialServerID = credentialServerID
         }
     }
 
@@ -70,6 +75,7 @@ public enum BootstrapScriptBuilder {
           credential: \(jsonString(configuration.credentialBase64)),
           credentialEncoding: \(jsonString(configuration.credentialEncoding ?? "")),
           serverOrigin: \(jsonString(configuration.serverOrigin)),
+          credentialServerID: \(configuration.credentialServerID.map(String.init) ?? "null"),
           frameRate: \(configuration.frameRate),
           qualitySingle: '\(configuration.qualityRawValue)',
           qualityMulti: '\(configuration.qualityRawValue)',
@@ -134,6 +140,28 @@ public enum BootstrapScriptBuilder {
           for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
           return bytes.buffer;
         }
+        // 把 bin 的「区服归属」钉回凭据自带的 serverId。
+        //
+        // 背景：游戏内「选择大区」切服时，游戏会往**这个账号自己的 localStorage** 写
+        //   serverId / uid / puid（game.js `SelectServerDialog` 确认回调）。
+        // localStorage 是按账号隔离的（= 按 bin 内容隔离），于是原 bin 下次启动
+        // 就直接登到新区 —— 用户看到的就是「之前的 bin 被替换成了新区」。
+        // 这里在每次会话第一次加载时把它改回凭据自带的区：
+        //   · 本次会话内切服照常生效（游戏自己会再写一次）；
+        //   · 下次启动回到 bin 自己的区 —— 原 bin 不被换区。
+        // 只做一次（sessionStorage 打标记）：游戏中途可能有重载，不能把会话内的
+        // 切服也冲掉。凭据没有 serverId（少数 bin）时不碰。
+        try {
+          var __serverId = window.\(global).credentialServerID;
+          // ⚠️ 显式走 window.localStorage / window.sessionStorage：
+          // 裸标识符在浏览器里恰好是全局，但那是隐式依赖（换宿主就是 ReferenceError）。
+          if (__serverId !== null && __serverId !== undefined
+              && !window.sessionStorage.getItem('__lobbyServerIdPinned')) {
+            window.localStorage.setItem('serverId', String(__serverId));
+            window.sessionStorage.setItem('__lobbyServerIdPinned', '1');
+            __diag('serverId 已固定为凭据自带区 ' + __serverId + '（bin 归属不随游戏内切服改变）');
+          }
+        } catch (pinError) { __diag('固定 serverId 失败：' + (pinError && pinError.message)); }
         // 登录代理：游戏的 login_authuser 请求体里带着它想去哪个区（serverId），
         // 宿主据此现算应答 —— 这才是「游戏内选区」能生效的关键。
         // 从前这里是无状态地一律回预认证字节，于是选区永远回到原角色。
@@ -256,8 +284,12 @@ public enum BootstrapScriptBuilder {
                 }
               }
             } catch (statsError) { __diag('统计失败（不影响请求）：' + (statsError && statsError.message)); }
+            // serverlist 也必须让真 XHR open：游戏随后会调 setRequestHeader，
+            // 打在一个「没 open 过」的原生 XHR 上会抛 InvalidStateError ——
+            // 异常发生在游戏自己的调用链里，请求就再也发不出去了（.24 的回归，实测踩过）。
+            // 真请求是否发出由 send() 决定：原生代发成功就不再用这条 _native 请求。
             if (this._fake) { this._readyState = 1; this._emit('readystatechange'); }
-            else if (!this._serverList) this._native.open.apply(this._native, arguments);
+            else this._native.open.apply(this._native, arguments);
           } catch (error) {
             __diag('XHR open 垫片异常，降级为原样放行：' + (error && error.message));
             try { this._fake = false; this._serverList = false; this._native.open.apply(this._native, arguments); } catch (ignored) {}
@@ -363,7 +395,9 @@ public enum BootstrapScriptBuilder {
           }
           this._native.abort();
         };
-        __bridgedXHR.prototype.setRequestHeader = function(name, value) { if (!this._fake) this._native.setRequestHeader(name, value); };
+                __bridgedXHR.prototype.setRequestHeader = function(name, value) {
+          try { if (!this._fake) this._native.setRequestHeader(name, value); } catch (ignored) {}
+        };
         __bridgedXHR.prototype.getAllResponseHeaders = function() { return this._fake ? 'Content-Type: application/octet-stream\\r\\n' : this._native.getAllResponseHeaders(); };
         __bridgedXHR.prototype.getResponseHeader = function(name) { return this._fake && String(name).toLowerCase() === 'content-type' ? 'application/octet-stream' : (this._fake ? null : this._native.getResponseHeader(name)); };
         __bridgedXHR.prototype.overrideMimeType = function(value) { if (!this._fake && this._native.overrideMimeType) this._native.overrideMimeType(value); };

@@ -27,17 +27,27 @@ function makeHarness() {
       this.body = undefined;
     }
     open(method, url) { this.openedWith = { method, url }; this.readyState = 1; }
-    setRequestHeader(name, value) { this.headers[String(name).toLowerCase()] = value; }
+    // ⚠️ 与 WebKit 一致：没 open 就 setRequestHeader 会抛 InvalidStateError。
+    // 垫片在 serverlist 上曾踩过这个坑（open 时跳过 _native.open，
+    // 游戏随后 setRequestHeader 就炸，请求永远发不出去）—— 用它把这个回归钉死。
+    setRequestHeader(name, value) {
+      if (!this.openedWith) throw new Error('InvalidStateError: setRequestHeader before open');
+      this.headers[String(name).toLowerCase()] = value;
+    }
     send(body) { this.body = body; sent.push(this); }
     abort() { this.aborted = true; }
     getAllResponseHeaders() { return ''; }
     getResponseHeader() { return null; }
   }
   const window = {
+    __lobbyPinnedServerIds: [],
+    __lobbySessionFlags: [],
     XMLHttpRequest: FakeXHR,
     addEventListener() {},
     webkit: { messageHandlers: { ios2Game: { postMessage: (message) => posts.push(message) } } },
-    localStorage: { getItem: () => null, setItem() {} },
+    // 记录钉区动作，供断言检查
+    localStorage: { getItem: () => '9365', setItem(k, v) { if (k === 'serverId') window.__lobbyPinnedServerIds.push(String(v)); } },
+    sessionStorage: { getItem: () => null, setItem(k) { window.__lobbySessionFlags.push(k); } },
   };
   window.window = window;
   return { window, sent, posts };
@@ -107,6 +117,11 @@ console.log(`引导脚本 ${script.length} 字符\n`);
         JSON.stringify(posts.filter((m) => m.type === 'loginAuth').map((m) => m.kind)));
   const serverListPost = posts.find((m) => m.type === 'loginAuth' && m.kind === 'serverList');
   check('上报里带 requestId', !!serverListPost?.requestId, JSON.stringify(serverListPost));
+
+  // 游戏在 open 之后、send 之前会 setRequestHeader —— 垫片绝不能在这里抛。
+  check('open 之后的 setRequestHeader 不抛（真 XHR 已 open）',
+        (() => { try { list.setRequestHeader('Content-Type', 'application/octet-stream'); return true; }
+                 catch (e) { console.log('      [throw]', e.message); return false; } })());
 
   console.log('   原生回填 → XHR 拿到字节');
   const forgedList = globalThis.btoa('SERVERLIST-BYTES-HERE');
@@ -237,6 +252,22 @@ console.log(`引导脚本 ${script.length} 字符\n`);
   check('未接管的 /login/* 被记进 passthroughPaths',
         (after.passthroughPaths || []).includes('dataversion'), JSON.stringify(after.passthroughPaths));
   check('计数与路径一致', after.passthroughLoginXHR >= (after.passthroughPaths || []).length);
+}
+
+// ── ⑨ bin 的区服归属：游戏内切服不许改掉原 bin 的归属 ─────────────────────
+// 游戏内切服会往账号自己的 localStorage 写 serverId / uid / puid —— localStorage
+// 按 bin 隔离，于是原 bin 下次启动就登到新区（用户看到的「bin 被替换」）。
+// 垫片在会话首次加载时把 serverId 钉回凭据自带的区。
+{
+  console.log('\n⑨ serverId 钉回凭据自带区');
+  const harness = run(script);
+  const w = harness.window;
+  // 模拟一个「游戏内切过服」的账号：localStorage 里存的是新区 9365
+  check('把 localStorage 里的 serverId 钉回凭据自带区',
+        (w.__lobbyPinnedServerIds || []).includes('14028'),
+        JSON.stringify(w.__lobbyPinnedServerIds || []));
+  check('sessionStorage 打了「本会话只钉一次」的标记',
+        (w.__lobbySessionFlags || []).includes('__lobbyServerIdPinned'));
 }
 
 console.log(failed === 0 ? '\n✅ 引导脚本垫片全部通过' : `\n❌ ${failed} 项不通过`);

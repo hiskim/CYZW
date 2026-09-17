@@ -18,6 +18,8 @@ guard let binData = FileManager.default.contents(atPath: path) else {
     print("读不到 \(path)"); exit(2)
 }
 print("凭据：\(name)（\(binData.count) 字节）")
+// 凭据自带的区服（快照的 serverID 应与它一致）
+let credentialServerID = (try? BinCredential(data: binData))?.serverID
 
 // 已知值（页面内探针抓到的）——同名账号能自动对上就带上期望值
 var expectedLevel: Int?
@@ -72,6 +74,11 @@ if let failure {
     if let expectedPower {
         check("power 与已知值一致（\(expectedPower)）", snapshot.power == expectedPower,
               "本实现 \(snapshot.power)")
+    }
+    // 资料快照现在带 serverID：服务端直取用的是 bin 自己的凭据，必然等于凭据区。
+    if snapshot.serverID > 0 {
+        check("快照 serverId 与凭据一致（\(snapshot.serverID)）",
+              Int(credentialServerID ?? -1) == snapshot.serverID, "本实现 \(snapshot.serverID)")
     }
 } else {
     check("fetch 有结果", false, "既没结果也没错误")

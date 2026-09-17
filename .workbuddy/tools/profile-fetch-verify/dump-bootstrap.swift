@@ -5,6 +5,12 @@
 import Foundation
 
 let noCredential = CommandLine.arguments.contains("--no-credential")
+let serverIDIndex = CommandLine.arguments.firstIndex(of: "--server-id")
+let credentialServerID: Int64? = serverIDIndex.flatMap { index -> Int64? in
+    let next = index + 1
+    guard next < CommandLine.arguments.count else { return nil }
+    return Int64(CommandLine.arguments[next])
+}
 let encodingIndex = CommandLine.arguments.firstIndex(of: "--encoding")
 let encoding = encodingIndex.flatMap { index -> String? in
     let next = index + 1
@@ -25,7 +31,8 @@ let script = BootstrapScriptBuilder.makeScript(configuration: .init(
     instanceCount: 1,
     credentialBase64: noCredential ? "" : credential.base64EncodedString(),
     credentialEncoding: noCredential ? nil : (encoding ?? LobbyConfiguration.payloadEncodingLX),
-    serverOrigin: LobbyConfiguration.gameServerURL.absoluteString
+    serverOrigin: LobbyConfiguration.gameServerURL.absoluteString,
+    credentialServerID: credentialServerID
 ))
 
 FileHandle.standardOutput.write(Data(script.utf8))

@@ -34,7 +34,7 @@ import LobbyDomain
 //   实例重新导航时会再执行一次，不挡就会叠定时器。
 public enum AccountProfileScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**（诊断串里带 `v=`）。
-    public static let agentVersion = "1"
+    public static let agentVersion = "2"
 
     /// 快档轮询间隔 / 上限（等待登录完成）。
     private static let fastIntervalMs = 400
@@ -108,9 +108,12 @@ public enum AccountProfileScript {
             const power = num(role.power);
             const level = num(role.levelId);
             const vip = num(role.vip);
+            // 上报时角色所在的区（`ROLE.serverID`）：游戏内切服之后它会变，
+            // 宿主要靠它判断「这条资料是不是这个 bin 自己的」（见 GameViewportInstance）。
+            const serverID = num(role.serverID);
             // 去重键：整份可用资料一起比。任一字段变了才上报，
             // 免得慢档每 5s 把同一条消息刷进原生日志。
-            const key = headImg + '|' + name + '|' + power + '|' + level + '|' + vip;
+            const key = headImg + '|' + name + '|' + power + '|' + level + '|' + vip + '|' + serverID;
             if (key === state.lastKey) { state.note = 'unchanged'; return true; }
             // ⚠️ `lastKey` 必须在**投递成功之后**才提交。先提交再发的话，
             // 一旦 postMessage 抛异常（原生 handler 被摘掉 / 页面正在被拆），
@@ -123,7 +126,8 @@ public enum AccountProfileScript {
                 name: name,
                 power: power,
                 level: level,
-                vip: vip
+                vip: vip,
+                serverID: serverID
               });
             } catch (error) {
               state.note = 'post-failed';

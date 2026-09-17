@@ -70,6 +70,8 @@ public final class GameViewportInstance: NSView {
     private var authResponseBase64 = ""
     /// 给 `/login/serverlist` 这类「体必须是凭据」的端点用的体（与匹配的编码头）。
     private var loginCredential: BinCredential.LoginBody?
+    /// 已拦下切服后资料上报的标记（只记一次诊断，不刷屏）。
+    private var skippedProfileForServerMismatch = false
 
     private let loadingOverlay = NSView()
     private let loadingSpinner = NSProgressIndicator()
@@ -599,7 +601,8 @@ public final class GameViewportInstance: NSView {
             instanceCount: instanceCount,
             credentialBase64: loginCredential?.bytes.base64EncodedString() ?? "",
             credentialEncoding: loginCredential?.encodingHeader,
-            serverOrigin: LobbyConfiguration.gameServerURL.absoluteString
+            serverOrigin: LobbyConfiguration.gameServerURL.absoluteString,
+            credentialServerID: loginProxy?.credentialServerID
         ))
     }
 
@@ -670,6 +673,23 @@ public final class GameViewportInstance: NSView {
         case .downloadURL(let url, let name):
             downloadExportedFile(url: url, name: name)
         case .accountProfile(let snapshot):
+            // 资料探针只认「运行中的页面」，不认「账号归属」：游戏内切服之后，
+            // 页面里的 ROLE 是**新区**的角色。若照单全收，原账号卡会被刷成新区角色，
+            // 用户就分不清这张卡是旧 bin 还是新区 —— 所以只接受「归属一致」的资料：
+            //   · 快照没带 serverID（旧探针 / 字段缺失）→ 放行（保持旧兼容）；
+            //   · 凭据没有 serverId（少数 bin，归属本身未知）→ 放行；
+            //   · 其余：不一致 = 游戏内切服产生的新区资料 → 拦下（只记一条诊断）。
+            if let expected = loginProxy?.credentialServerID, expected != 0,
+               snapshot.serverID != 0, snapshot.serverID != Int(expected) {
+                if !skippedProfileForServerMismatch {
+                    skippedProfileForServerMismatch = true
+                    LobbyLog.info("[instance] 拦下切服后的资料上报（页面 serverId=%ld ≠ 凭据 %lld），账号卡保持原区资料",
+                                  snapshot.serverID, expected)
+                    DiagnosticsLog.append("[instance] 拦下切服后的资料上报"
+                        + "（页面 serverId=\(snapshot.serverID) ≠ 凭据 \(expected)）——账号卡保持原区资料")
+                }
+                return
+            }
             // 账号资料只读上报：直接归属到本实例自己的账号。
             // 落盘 + 拉头像由 store 负责（卡片从 store 读，不碰实例）。
             avatars?.record(snapshot, forAccountID: account.id)

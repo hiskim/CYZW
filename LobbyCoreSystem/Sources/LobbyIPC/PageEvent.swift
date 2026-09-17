@@ -54,13 +54,20 @@ public struct AccountProfileSnapshot: Sendable, Equatable {
     public let level: Int
     /// VIP 等级。
     public let vip: Int
+    /// 上报时角色所在的内部区服 id（`ROLE.serverID`）。0 = 未知（旧探针 / 字段缺失）。
+    ///
+    /// 为什么要有它：游戏内切服之后，页面里的 `ROLE` 是**新区**的角色，
+    /// 而账号卡必须始终显示 bin 自己的区 —— 宿主据此把「切服后」的资料拦下来。
+    public let serverID: Int
 
-    public init(headImg: String, name: String, power: Int, level: Int, vip: Int) {
+    public init(headImg: String, name: String, power: Int, level: Int, vip: Int,
+                serverID: Int = 0) {
         self.headImg = headImg
         self.name = name
         self.power = power
         self.level = level
         self.vip = vip
+        self.serverID = serverID
     }
 
     /// 整份资料是否为空（没有头像 URL 就没有显示价值）。
@@ -186,7 +193,8 @@ public enum PageEvent: Sendable {
                 name: body["name"] as? String ?? "",
                 power: integer(body["power"]),
                 level: integer(body["level"]),
-                vip: integer(body["vip"])
+                vip: integer(body["vip"]),
+                serverID: integer(body["serverID"])
             ))
         case "loginAuth":
             guard let requestID = body["requestId"] as? String else { return .unknown(type: type) }
