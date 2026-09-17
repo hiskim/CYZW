@@ -39,15 +39,10 @@ struct EnhancementsSidebarView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                // 页面大标题：标签页上是短名「增强」，这里放全称。
+                // 分节子标题：与「全部账号」「JS 脚本管理器」同规格（12pt semibold secondary）。
                 Text("游戏增强")
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("改写游戏内行为，改档即时下发到存活实例")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, -6)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
 
                 nightmareCard
                 chatCard
