@@ -1009,13 +1009,13 @@ extension GameViewportInstance: WKNavigationDelegate {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard let self, !self.isStopped else { return }
-                self.webView.evaluateJavaScript(
+                // 用 async 版（completionHandler 版在新 SDK 的 async 上下文里会告警）。
+                let result = try? await self.webView.evaluateJavaScript(
                     "window.__LOBBY_LOGIN__ ? window.__LOBBY_LOGIN__.stats() : 'no-login-shim'"
-                ) { result, _ in
-                    let text = (result as? String) ?? "?"
-                    LobbyLog.info("[login-stats] +%lds %@", Int(delay), text)
-                    DiagnosticsLog.append("[login-stats] +\(Int(delay))s \(text)")
-                }
+                )
+                let text = (result as? String) ?? "?"
+                LobbyLog.info("[login-stats] +%lds %@", Int(delay), text)
+                DiagnosticsLog.append("[login-stats] +\(Int(delay))s \(text)")
             }
         }
     }
