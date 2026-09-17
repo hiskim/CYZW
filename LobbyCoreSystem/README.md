@@ -71,6 +71,15 @@ open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/Game
 
 产物落在 `build/dist/`（已被 `.gitignore` 忽略），日志在 `build/logs/`。
 
+### 应用图标
+
+源图在 `App/Assets/AppIcon-source.jpg`（git 入库），构建时脚本会用 `sips` 切出
+10 个尺寸的 PNG（16/32/64/128/256/512/1024 含 `@2x`），`iconutil` 打成 `AppIcon.icns`
+后拷进 `.app/Contents/Resources/`。换图标只换源图即可。
+
+`Info.plist` 的 `CFBundleIconFile = AppIcon`，签名时图标已经在 bundle 里，codesign
+覆盖整个 Resources 所以图标也跟着签名。
+
 > ⚠️ 本工程刻意**不使用 SwiftPM**（含本地包）：本机环境 SwiftPM 的
 > `sandbox_apply` 被系统拒绝（`sandbox-exec: sandbox_apply: Operation not permitted`），
 > 任何含包的 xcodebuild 都无法完成解析。模块拓扑改用**五个 Swift 静态库 target**

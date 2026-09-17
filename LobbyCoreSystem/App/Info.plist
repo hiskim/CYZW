@@ -8,6 +8,8 @@
 	<string>GameLobby</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -24,17 +26,12 @@
 	<string>26.0</string>
 	<key>LSMultipleInstancesProhibited</key>
 	<false/>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<!-- 第三方脚本的卡密 / 设备认证接口普遍是「明文 HTTP + IP 直连」，不走 HTTPS。
-	     ATS 默认拦掉非 HTTPS 请求，脚本就拿不到认证 token，UI 不会挂载
-	     （表现为「脚本不启动、游戏内没有图标」）。
-	     上一代宿主（proj.ios_mac 的 ios/mac 两份 Info.plist）同样开着该开关，
-	     这里保持一致：不放开 = 所有依赖明文接口的脚本一律失效。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 </dict>
 </plist>
