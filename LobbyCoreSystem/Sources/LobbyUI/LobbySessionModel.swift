@@ -446,7 +446,7 @@ public final class LobbySessionModel: ObservableObject {
         }
     }
 
-    // MARK: - 游戏加强下发（十殿加速）
+    // MARK: - 游戏加强下发（十殿加速 / 聊天窗口显隐）
 
     /// 十殿加速开关变更：落盘（store 内 didSet）+ 下发全部存活实例。
     /// 唯一写入路径——不让 UI 直接改 store，避免「改了值但没下发」的静默状态。
@@ -464,14 +464,24 @@ public final class LobbySessionModel: ObservableObject {
         broadcastEnhancements()
     }
 
+    /// 聊天窗口显隐变更：落盘 + 下发全部存活实例。
+    /// 关掉（显示）时页面侧会把当初被压住的面板放回来，不需要重载实例。
+    public func setChatPanelHidden(_ hidden: Bool) {
+        guard enhancements.chatPanelHidden != hidden else { return }
+        enhancements.chatPanelHidden = hidden
+        broadcastEnhancements()
+    }
+
     /// 把当前游戏加强设置推给所有存活实例。
     /// 新启动的实例不在这里管：它在文档就绪时自行下发一次。
     public func broadcastEnhancements() {
         let surfaces = pool.allSurfaces
         let settings = enhancements.settings
-        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld): %ld instance(s)",
+        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld chat=%@): %ld instance(s)",
                       settings.nightmareSpeedEnabled ? "on" : "off",
-                      settings.nightmareSpeedMultiplier, surfaces.count)
+                      settings.nightmareSpeedMultiplier,
+                      settings.chatPanelHidden ? "hidden" : "shown",
+                      surfaces.count)
         for instance in surfaces {
             instance.applyEnhancements()
         }

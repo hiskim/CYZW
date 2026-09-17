@@ -127,5 +127,7 @@ public enum LobbyConfiguration {
         public static let enhanceNightmareSpeedEnabled = "lobby.enhance.nightmareSpeed.enabled"
         /// 十殿加速倍率（Int，1...1000；默认 100）。
         public static let enhanceNightmareSpeedMultiplier = "lobby.enhance.nightmareSpeed.multiplier"
+        /// 隐藏游戏内聊天窗口（默认 false = 保持游戏原样的显示）。
+        public static let enhanceChatHidden = "lobby.enhance.chat.hidden"
     }
 }

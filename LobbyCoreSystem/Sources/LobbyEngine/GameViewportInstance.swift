@@ -30,6 +30,16 @@ public final class GameViewportInstance: NSView {
     /// 非焦点省电帧率（白名单内最低档；规格的「20 FPS」不在白名单内，取 15）。
     private static let idleFrameRate = TargetFrameRate.idleFallback
 
+    /// 加强下发未落实时的重试节奏：**快档 3s × 20 次**（≈1min，覆盖冷启动 + 装 game bundle），
+    /// 之后转**慢档 15s × 60 次**（≈15min）。
+    /// 慢档的意义不是「还能修好」，而是**让配置页那行回执一直活着**——
+    /// 用户可以随时打开/关掉聊天窗口，看着回执从 `chat=1/0` 变成 `chat=1/1`，
+    /// 不必再去捞日志、也不用来回问「到底有没有生效」。
+    private static let enhancementRetryFastCount = 20
+    private static let enhancementRetryFastNanos: UInt64 = 3_000_000_000
+    private static let enhancementRetrySlowNanos: UInt64 = 15_000_000_000
+    private static let enhancementRetryLimit = 80
+
     public let account: GameAccount
     public let environment: InstanceEnvironment
     public let instanceID = UUID().uuidString
@@ -57,6 +67,9 @@ public final class GameViewportInstance: NSView {
     private var gameSessionStarted = false
     private var startupTask: Task<Void, Never>?
     private var storageSyncTask: Task<Void, Never>?
+    /// 加强下发的确认重试（见 `sendEnhancementApply`）。
+    private var enhancementRetryTask: Task<Void, Never>?
+    private var enhancementAttempt = 0
     private var isStopped = false
     private var renderBadSamples = 0
     /// 在途下载的代理。`WKDownload.delegate` 是弱引用，不自己持有就会被提前释放，
@@ -216,6 +229,8 @@ public final class GameViewportInstance: NSView {
         startupTask = nil
         storageSyncTask?.cancel()
         storageSyncTask = nil
+        enhancementRetryTask?.cancel()
+        enhancementRetryTask = nil
         // 关闭前的 scheme 任务收尾：仍在途的任务正常报错结束，之后凡是 WebKit
         // 已停止的任务一律静默丢弃（见 GameResourceSchemeHandler.stopAll）。
         schemeHandler.stopAll()
@@ -257,23 +272,80 @@ public final class GameViewportInstance: NSView {
         webView.evaluateJavaScript(script) { _, error in completion?(error) }
     }
 
-    /// 下发游戏加强设置（十殿加速开关 + 倍率）。幂等，可重复调用。
-    /// 两条触发路径：① 文档就绪时补一次（代理已在 atDocumentStart 装好，
-    /// 此刻只差配置）；② 用户在设置页改档，由会话模型广播到全部存活实例。
+    /// 下发游戏加强设置（十殿加速开关 + 倍率 / 聊天窗口显隐）。
+    ///
+    /// 幂等，可重复调用。三条触发路径：① 文档就绪（`didFinish`）；② 页面的启动沉降
+    /// 结束（`ready`，这时游戏才真的装好）；③ 用户改档，由会话模型广播。
+    ///
+    /// 因为「下发那一刻页面还没装好游戏」是常态（实测 `didFinish` 时
+    /// `window.fgui` / `__require` 都还不存在），这里再做一层**确认重试**：
+    /// 回执没落实就每 3s 重发一次（最多 20 次 ≈ 60s），顺便把界面上的回执刷新成活的。
     public func applyEnhancements() {
-        guard let enhancements else { return }
+        enhancementAttempt = 0
+        sendEnhancementApply()
+    }
+
+    /// 一次下发 + 校验回执；未落实则排下一次。
+    private func sendEnhancementApply() {
+        guard let enhancements, !isStopped,
+              enhancementAttempt < Self.enhancementRetryLimit else { return }
         let settings = enhancements.settings
         let script = GameEnhancementScript.apply(enabled: settings.nightmareSpeedEnabled,
-                                                speed: settings.nightmareSpeedMultiplier)
-        webView.evaluateJavaScript(script) { result, error in
+                                                speed: settings.nightmareSpeedMultiplier,
+                                                hideChat: settings.chatPanelHidden)
+        // 闭包会逃逸（evaluateJavaScript 的 completion 是 @escaping），
+        // 所以只捕获值 + weak self，不把实例吊住。
+        let accountName = account.nickname
+        let attempt = enhancementAttempt
+        webView.evaluateJavaScript(script) { [weak self] result, error in
             if let error {
+                // 失败也要回执：只进日志的话，用户实测「没反应」时界面上什么都没变，
+                // 分不清是「没下发」还是「下发失败」。
                 LobbyLog.warn("[instance] enhancement apply failed: %@", error.localizedDescription)
-            } else {
-                // 诊断串形如 `running=1 speed=100 hook=1 panel=1 note=running-live`。
-                // no-handler = 代理脚本没进页面（构建产物未更新）。
-                LobbyLog.info("[instance] enhancement apply -> %@",
-                              (result as? String) ?? String(describing: result))
+                enhancements.notePageReport("apply-error: \(error.localizedDescription)",
+                                            account: accountName)
+                return
             }
+            // 诊断串形如
+            // `running=1 speed=100 hook=1 panel=1 chat=0/0 skin=0/0 root=groot note=running-live chatNote=idle`；
+            // 一个面板都没命中时还会自动附上结构探针（`probe env … roots=…`）。
+            // no-handler = 代理脚本没进页面（构建产物未更新）。
+            let diagnostic = (result as? String) ?? String(describing: result)
+            // 统一前缀便于捞：控制台筛 `[enhance]` 即可看到全部下发回执。
+            LobbyLog.info("[enhance] %@", diagnostic)
+            // 同时回执给设置页：用户实测「没生效」时不用捞日志。
+            enhancements.notePageReport(diagnostic, account: accountName)
+
+            guard let self, !self.isStopped else { return }
+            let settled = Self.enhancementIsSettled(diagnostic: diagnostic, settings: settings)
+            guard !settled else {
+                if attempt > 0 {
+                    LobbyLog.info("[instance] enhancement settled after %ld attempt(s)", attempt + 1)
+                }
+                return
+            }
+            self.scheduleEnhancementRetry()
+        }
+    }
+
+    /// 回执是否已落实：代理不在（页面没装）或聊天窗口还没被压住，都还要再试。
+    private static func enhancementIsSettled(diagnostic: String,
+                                             settings: GameEnhancementSettings) -> Bool {
+        guard !diagnostic.contains("no-handler") else { return false }
+        if settings.chatPanelHidden, !diagnostic.contains("chat=1/1") { return false }
+        return true
+    }
+
+    private func scheduleEnhancementRetry() {
+        enhancementAttempt += 1
+        let nanos = enhancementAttempt <= Self.enhancementRetryFastCount
+            ? Self.enhancementRetryFastNanos
+            : Self.enhancementRetrySlowNanos
+        enhancementRetryTask?.cancel()
+        enhancementRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled else { return }
+            self?.sendEnhancementApply()
         }
     }
 
@@ -541,6 +613,11 @@ public final class GameViewportInstance: NSView {
             LobbyLog.info("[instance] ready: elapsed=%ldms stable=%@",
                           readiness.elapsedMs, readiness.stable ? "yes" : "no")
             pool?.noteInstanceReady(accountID: account.id)
+            // 再补一次加强下发。`didFinish` 只是**文档**加载完，此时 WebRuntime 往往
+            // 还没把游戏 bundle 装起来（`window.fgui` / `__require` 都还不存在），
+            // 那一刻下发等于空转——实测就是这样：日志里只有一条 `waiting-require` 的
+            // 空下发，页面侧拿不到任何可操作的对象。`ready` 才是「游戏真的跑起来了」。
+            applyEnhancements()
         case .render(let sample):
             handleRenderIntegrity(sample)
         case .webGLFatal:
