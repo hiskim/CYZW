@@ -94,7 +94,12 @@ fail()  { printf '%serror:%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
 ok()    { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_OFF"; }
 
 usage() {
-    sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//'
+    # 动态打印文件头部的连续注释块（跳过 shebang），**不要**写死行号：
+    # 原来用 `sed -n '2,40p'`，头部注释一增删就会截断或错位（实测已截掉末行）。
+    awk 'NR == 1        { next }                 # shebang
+         /^#/           { sub(/^# ?/, ""); print; next }
+         /^[[:space:]]*$/ { next }               # 注释块里的空行
+         { exit }' "${BASH_SOURCE[0]}"            # 第一条真代码 → 停
     exit 0
 }
 
