@@ -33,13 +33,14 @@ public struct LobbyRootView: View {
     }
 
     public enum SidebarSection: String, CaseIterable, Identifiable {
-        case accounts, scripts, settings
+        case accounts, scripts, enhancements, settings
         public var id: String { rawValue }
 
         var title: String {
             switch self {
             case .accounts: return "账号"
             case .scripts: return "脚本"
+            case .enhancements: return "增强"
             case .settings: return "设置"
             }
         }
@@ -48,6 +49,7 @@ public struct LobbyRootView: View {
             switch self {
             case .accounts: return "person.2"
             case .scripts: return "puzzlepiece.extension"
+            case .enhancements: return "sparkles.rectangle.stack"
             case .settings: return "gearshape"
             }
         }
@@ -168,6 +170,8 @@ public struct LobbyRootView: View {
                 AccountSidebarView(session: session)
             case .scripts:
                 ScriptSidebarView(session: session)
+            case .enhancements:
+                EnhancementsSidebarView(session: session)
             case .settings:
                 SidebarSettingsView(session: session)
             }
