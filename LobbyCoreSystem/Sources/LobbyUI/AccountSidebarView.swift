@@ -477,7 +477,7 @@ struct AccountSidebarCard: View {
     }
 
     var body: some View {
-        // 行内间距 9（原 10）、按钮 24（原 26）：侧栏文字列只有 ~126pt，
+        // 行内间距 9（原 10）、按钮 24（原 26）：侧栏文字列只有 ~167pt，
         // 这里每抠出 1pt 都直接变成「等级 / 战力」的可读空间（见 statsView 的宽度账）。
         // 24pt 的圆形按钮与 26pt 肉眼几乎无差，换来的是一整档数值不至于退让。
         HStack(spacing: 9) {
@@ -505,10 +505,12 @@ struct AccountSidebarCard: View {
                 // 第三行：分组名（分组色）+ 游戏内等级 / 战力（右对齐，拿到资料才有）。
                 //
                 // ⚠️ 宽度是这里最稀缺的资源，实测账（可用 `Scripts/stats-width-probe.sh` 复算）：
-                //  304 侧栏 − 32 侧栏内边距 − 20 卡片内边距 − 28 头像 − 4×9 行内间距
-                //  − 24×2 按钮 − 6 本行 Spacer 下限 = **文字列 134pt**。
+                //  304 侧栏 − 32 侧栏内边距 − 20 卡片内边距 − 28 头像 − 3×9 行内间距
+                //  − 24×1 按钮 − 6 本行 Spacer 下限 = **文字列 167pt**。
                 // （原先「运行中」胶囊还会再吃掉 60pt、只剩 74pt —— 胶囊已经删掉，
-                //   它的功能由青色头像环 + 红色停止按钮承担，见 avatarBadge 与上方注释。）
+                //   它的功能由青色头像环 + 红色停止按钮承担，见 avatarBadge 与上方注释；
+                //   行尾的删除按钮也已移除——右键菜单里本就有「删除账号文件」，
+                //   按钮版是同一动作的第二入口，白占 24pt + 9pt 间距，只留右键这一条。）
                 // 而 `Lv9090 · 21.8亿` 实测 82pt（10pt monospacedDigit），所以常规情况
                 // 一行放得下，只有**分组名很长**时才会挤压。三层应对：
                 //  ① 不该占字的分组名不显示（未分组 = 本来就没有分组；已在按该分组
@@ -550,19 +552,6 @@ struct AccountSidebarCard: View {
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 12, intensity: 0.12)
             .help(isRunning ? "关闭实例" : "启动并登录")
-
-            Button {
-                session.requestDelete(account)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.white.opacity(0.05)))
-            }
-            .buttonStyle(.plain)
-            .lobbyHoverHighlight(cornerRadius: 12, intensity: 0.12)
-            .help("删除账号文件")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -592,7 +581,7 @@ struct AccountSidebarCard: View {
                 Button("重新登录") { session.reload(account) }
                 Button("关闭实例") { session.close(account) }
             } else {
-                Button("启动并登录") { session.launch(account) }
+                Button("登录") { session.launch(account) }
             }
             Divider()
             Button("编辑备注…") { onEditRemark() }
@@ -672,7 +661,7 @@ struct AccountSidebarCard: View {
     ///  ④ 只留战力（多开/搬砖时最常横向比较的那个数）
     ///  ⑤ 什么都不画（宽度连一项都塞不进时）
     /// 实测宽度（10pt monospacedDigit）：① ~82pt ② ~76pt ③ ~37pt ④ ~34pt；
-    /// 文字列可用宽度 **134pt**（运行态与空闲态相同——「运行中」胶囊已删）。
+    /// 文字列可用宽度 **167pt**（运行态与空闲态相同——「运行中」胶囊与行尾删除按钮都已删）。
     /// 所以常规账号永远走①；只有**分组名很长**时才会退到②，退到③的概率极低。
     /// 保留这套档位是因为分组名长度不可控（用户可以建任意长的分组名）。
     private func statsView(_ profile: AccountAvatarStore.Record) -> some View {

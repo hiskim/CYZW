@@ -263,6 +263,31 @@ public final class GameViewportInstance: NSView {
             let resources = self.resources
             Task { await resources.endGameSession() }
         }
+        releaseWebView()
+    }
+
+    /// stop() 的收尾：把整局游戏连同 WebView 一起放掉。
+    ///
+    /// 为什么必须放掉，而不是「留着一个已停止的 WebView 不管」：
+    /// **SwiftUI 的懒容器不会释放它创建过的平台视图**（实测：把子项移出 `ForEach`、
+    /// 换 identity、改窗口尺寸，10 轮下来一个 `deinit` 都没有），而矩阵格子的平台
+    /// 视图就是本实例。于是「关闭实例」之后这个实例仍被格子的缓存吊着——只要它手里
+    /// 还攥着那个装着整局游戏的 `WKWebView`，就等于没关：WebContent 进程、
+    /// 十几 MB 游戏字节码、纹理与 WebGL 上下文全留在内存里。同一个机制也解释了
+    /// 「重新登录」为什么越点越胖：`reloadRevision` 换掉的是格子身份，被换掉的旧格子
+    /// 连同旧实例一起留在缓存里。
+    ///
+    /// 换成一个从不导航的空壳之后，旧 WebView 立刻失去最后一个强引用（关窗前的
+    /// 配置快照任务自己持有一份，它拿完即放），进程与游戏内存随之归还系统。
+    /// 空壳同时是一道安全网：stop() 之后任何迟到的回调（`didFinish`、能量策略、
+    /// 群控注入、加强下发重试）打在它身上都是无害的 no-op，不会再碰已停止的页面。
+    private func releaseWebView() {
+        // 遮罩还在转的话，被缓存的死实例会一直空转烧 CPU。
+        loadingSpinner.stopAnimation(nil)
+        loadingOverlay.isHidden = true
+        let retired = webView
+        retired.removeFromSuperview()
+        webView = WKWebView(frame: bounds)
     }
 
     /// 运行时切换画质：调用页面桥 `__LOBBY_QUALITY__.set()`，

@@ -22,6 +22,21 @@ public final class LobbySessionModel: ObservableObject {
     /// 兜底重载请求计数：矩阵视图监听它强制重建对应格子。
     @Published public private(set) var reloadRevision = 0
 
+    /// 每个账号的「启动代次」：每次 `launch` 自增，矩阵格子身份里带上它。
+    ///
+    /// 为什么必须有这个计数（实测事故）：矩阵格子一旦被 SwiftUI 记住，**关掉实例
+    /// 再把同一个账号启动起来时，格子不会被重建** —— 把子项从 `ForEach` 里移出再
+    /// 放回同一 identity，SwiftUI 既不调 `dismantleNSView`，也不再调 `makeNSView`
+    /// （只补一次 `updateNSView`）。而实例是懒创建的：唯一创建入口就是格子
+    /// `makeNSView` 里的 `pool.surface(for:)`。于是「退出 → 再点登录」时：
+    /// 卡片回来了，但池里根本没有新实例，格子上挂的还是那个已被 `destroy`
+    /// 从视图树里摘掉、`stop()` 过的旧 WKWebView —— 游戏区一片空白，
+    /// 用户看到的就是「点了登录没反应 / 无法登录」。
+    ///
+    /// 代次进格子身份 → 每次启动都换身份 → SwiftUI 必定重建格子 → 必定新建实例。
+    /// （与 `reloadRevision` 同一套思路，区别是它按账号记账，不会连累其它格子。）
+    @Published public private(set) var launchGenerations: [String: Int] = [:]
+
     // MARK: 分组状态
 
     /// 自定义分组定义（已按 sortOrder + 名称排序，不含伪分组）。
@@ -561,10 +576,18 @@ public final class LobbySessionModel: ObservableObject {
             return
         }
         runningAccountIDs.append(account.id)
+        // 启动代次自增：格子身份随之变化，保证「关掉再启动」也一定会重建格子
+        // （否则 SwiftUI 复用旧格子 → 不调 makeNSView → 池里不新建实例，见属性注释）。
+        launchGenerations[account.id, default: 0] += 1
         if focusedAccountID == nil {
             focus(account.id)
         }
         // 实例懒创建：矩阵格子下一帧 makeNSView 时经池 surface(for:) 建立。
+    }
+
+    /// 该账号的启动代次（矩阵格子身份用；0 = 从未启动过）。
+    public func launchGeneration(forAccountID accountID: String) -> Int {
+        launchGenerations[accountID] ?? 0
     }
 
     /// 关闭实例（账号级：群控参与/主控随账号退休）。

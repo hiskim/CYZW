@@ -448,7 +448,15 @@ struct MatrixStageView: View {
                                      onHeaderDrag: headerDrag(_:),
                                      onHeaderDragEnded: headerDragEnded)
                         .frame(width: layout.cardWidth, height: layout.cardHeight)
-                        .id("\(account.id)#\(session.reloadRevision)")
+                        // 格子身份 = 账号 + 重载代次 + **启动代次**。
+                        // 后两者都是「强制重建」开关，各自对应一类必须换实例的动作：
+                        // · reloadRevision：重新登录（格子不消失，只能靠改身份换格子）；
+                        // · launchGeneration：关闭后再启动（格子消失过，但 SwiftUI 会
+                        //   按 identity 复用旧格子——实测移出再放回同一 identity 既
+                        //   不调 dismantleNSView 也不再调 makeNSView，于是池里永远
+                        //   不新建实例，卡片上是那个已被拆除的旧 WebView = 空白）。
+                        // 缺了启动代次，「退出 → 再登录」就是必现的「无法登录」。
+                        .id("\(account.id)#\(session.reloadRevision)#\(session.launchGeneration(forAccountID: account.id))")
                 }
             }
             .padding(MatrixCanvasMetrics.inner)
