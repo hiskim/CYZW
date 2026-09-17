@@ -131,16 +131,27 @@ struct AccountSidebarView: View {
         }
     }
 
-    /// 分组筛选条：横向胶囊（全部 / 未分组 / 自定义分组…），右键出快捷操作。
+    /// 分组筛选条：**换行**流式胶囊（全部 / 未分组 / 自定义分组…），右键出快捷操作。
+    ///
+    /// ⚠️ 这里必须换行，不能横向滚动：侧栏固定 304pt、内容列只有 272pt，
+    /// 4–5 个分组就超出可视宽度。原先的 `ScrollView(.horizontal, showsIndicators: false)`
+    /// 把多出来的胶囊裁在右边界外——鼠标用户既看不到滚动条、也没有横向滚轮，
+    /// 后面的分组等于点不到（实测该条高度与分组数无关、恒为一行 24pt：
+    /// 3 / 6 / 9 / 12 个分组都是 24pt，见 `/tmp/swiftui-flow-probe` 的探针）。
+    /// 换成 `LobbyFlowLayout` 后按可用宽度换行，分组再多也全部可见可点。
+    ///
+    /// 条高随分组数自然增长（272pt 宽一行放 3–4 个，一行 22pt + 5pt 间距），
+    /// 这正是「全部可见」的代价。刻意**不**给它套
+    /// `ScrollView + fixedSize + frame(maxHeight:)` 去封顶——实测那个组合会让
+    /// SwiftUI 的布局高度（104pt）与真实 NSScrollView 的高度（348pt 且未被裁剪）
+    /// 对不上，多出来的胶囊会画到账号列表上（比不封顶更糟）。
     private var groupFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                ForEach(session.groupTree) { group in
-                    groupChip(group)
-                }
+        LobbyFlowLayout(horizontalSpacing: 5, verticalSpacing: 5) {
+            ForEach(session.groupTree) { group in
+                groupChip(group)
             }
-            .padding(.vertical, 1)
         }
+        .padding(.vertical, 1)
     }
 
     private func groupChip(_ group: AccountGroup) -> some View {
@@ -155,6 +166,11 @@ struct AccountSidebarView: View {
                     .frame(width: 7, height: 7)
                 Text(group.groupName)
                     .font(.system(size: 11, weight: .semibold))
+                    // 单行 + 尾部截断：分组名由用户自定，可以长到超过整条侧栏。
+                    // 不给上限的话，换行布局量到的自然宽度会顶出容器（回到「点不到」），
+                    // 给上限则退化为省略号，最坏情况仍是一个可点的完整胶囊。
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 // 分组同步中：青色链接角标（点击分组右键可关闭组内同步）。
                 if !group.isSynthetic, sync.isGroupSyncEnabled(group.id) {
                     Image(systemName: "link.circle.fill")
@@ -173,6 +189,8 @@ struct AccountSidebarView: View {
         }
         .buttonStyle(.plain)
         .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.10)
+        // 分组名过长时胶囊会截断成省略号，悬停给出全名（也顺带说明右键有菜单）。
+        .help("\(group.groupName)（右键：分组操作）")
         .contextMenu { groupActions(group) }
     }
 

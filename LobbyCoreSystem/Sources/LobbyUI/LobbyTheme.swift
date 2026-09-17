@@ -296,6 +296,71 @@ extension View {
     }
 }
 
+// MARK: - 流式（换行）布局
+
+/// 按可用宽度排布、放不下就换行的流式布局（侧栏胶囊条用）。
+///
+/// 为什么用 `Layout` 协议而不是自己算行：胶囊宽度由文字决定，字体、动态类型、
+/// 本地化都会改变它，只有让 SwiftUI 逐个量出子视图的真实尺寸，换行点才是准的。
+///
+/// 宽度收紧：单个子视图比容器还宽时，按容器宽度摆放（配合 `lineLimit(1)`
+/// 由子视图自己截断），避免又把内容顶到容器右边界外——那正是本布局要修的病。
+struct LobbyFlowLayout: Layout {
+    var horizontalSpacing: CGFloat = 5
+    var verticalSpacing: CGFloat = 5
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var widestRow: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var isRowEmpty = true
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let width = min(size.width, maxWidth)
+            if !isRowEmpty, rowWidth + horizontalSpacing + width > maxWidth {
+                widestRow = max(widestRow, rowWidth)
+                totalHeight += rowHeight + verticalSpacing
+                rowWidth = 0
+                rowHeight = 0
+                isRowEmpty = true
+            }
+            rowWidth += (isRowEmpty ? 0 : horizontalSpacing) + width
+            rowHeight = max(rowHeight, size.height)
+            isRowEmpty = false
+        }
+        return CGSize(width: max(widestRow, rowWidth), height: totalHeight + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        let maxWidth = bounds.width
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        var isRowEmpty = true
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let width = min(size.width, maxWidth)
+            if !isRowEmpty, x + horizontalSpacing + width > bounds.maxX {
+                y += rowHeight + verticalSpacing
+                x = bounds.minX
+                rowHeight = 0
+                isRowEmpty = true
+            }
+            if !isRowEmpty { x += horizontalSpacing }
+            subview.place(at: CGPoint(x: x, y: y),
+                          anchor: .topLeading,
+                          proposal: ProposedViewSize(width: width, height: size.height))
+            x += width
+            rowHeight = max(rowHeight, size.height)
+            isRowEmpty = false
+        }
+    }
+}
+
 // MARK: - 通用按钮样式
 
 /// 深色玻璃主按钮样式（tint == .white 为「白色玻璃」特殊档：白 16% 填充 + 黑字）。
