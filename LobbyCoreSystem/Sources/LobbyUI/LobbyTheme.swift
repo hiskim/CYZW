@@ -395,28 +395,37 @@ struct LobbyStatusCapsule: View {
     var fillsWidth: Bool = false
 
     var body: some View {
-        // 逐段拆子表达式：整条链一次写完编译器类型检查超时（12 段修饰符 + 三元）。
+        // ⚠️ 本 body 必须保持「全拆」写法：每条子表达式 ≤ 2 段链，三元只许出现在
+        // 显式类型标注的 let 上。历史上两种写法（12 段原始链、部分拆分）都在
+        // Xcode GUI 高负载构建时报 type-check 超时（CLI 同机可过——超时是墙钟
+        // 敏感的，机器负载决定成败，改回紧凑写法前先想清楚）。
         let horizontalPadding: CGFloat = fillsWidth ? 5 : 9
-        let font: Font = .system(size: 11, weight: .semibold).monospacedDigit()
         let maxWidth: CGFloat? = fillsWidth ? .infinity : nil
-        let fill = Capsule(style: .continuous)
-            .fill(isSelected ? tint.opacity(0.9) : Color.white.opacity(0.05))
-        let stroke = Capsule(style: .continuous)
-            .strokeBorder(isSelected ? Color.white.opacity(0.25) : tint.opacity(0.45), lineWidth: 1)
+        let font: Font = .system(size: 11, weight: .semibold).monospacedDigit()
+        let foreground: Color = isSelected ? Color.white : tint
+        let fillColor: Color = isSelected ? tint.opacity(0.9) : Color.white.opacity(0.05)
+        let strokeColor: Color = isSelected ? Color.white.opacity(0.25) : tint.opacity(0.45)
         let shadowColor: Color = isSelected ? tint.opacity(0.35) : .clear
 
-        let label = Text(text)
+        let capsule = Capsule(style: .continuous)
+
+        let content = Text(text)
             .font(font)
-            .foregroundStyle(isSelected ? Color.white : tint)
+            .foregroundStyle(foreground)
             .lineLimit(1)
             .fixedSize()
+
+        let shaped = content
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 4)
             .frame(maxWidth: maxWidth)
 
-        return label
-            .background(fill)
-            .overlay(stroke)
+        let fillShape = capsule.fill(fillColor)
+        let strokeShape = capsule.strokeBorder(strokeColor, lineWidth: 1)
+
+        return shaped
+            .background(fillShape)
+            .overlay(strokeShape)
             .shadow(color: shadowColor, radius: 6, y: 1)
     }
 }
