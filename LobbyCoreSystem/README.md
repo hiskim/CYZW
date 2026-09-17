@@ -52,6 +52,25 @@ open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/Game
 
 或直接用 Xcode 打开 `GameLobby.xcodeproj`，选 GameLobby scheme ⌘R。
 
+### 打包 dmg 安装包
+
+```bash
+./Scripts/build-dmg.sh                    # Release / 双架构 → build/dist/GameLobby-<版本>.dmg
+./Scripts/build-dmg.sh --arch native      # 只编本机架构（快一半）
+./Scripts/build-dmg.sh -v 1.2.0 -b 42     # 指定版本号与构建号
+./Scripts/build-dmg.sh --notarize         # Developer ID 签名 + 公证（需证书与凭据）
+```
+
+流程：xcodebuild → 写版本号 → codesign → hdiutil 打包 → 校验并输出 SHA256。
+
+签名档位由脚本自动选择：本机若有 `Developer ID Application` 证书就走正式签名
+（hardened runtime + 时间戳，可公证）；否则退回 **ad-hoc**。工程里
+`CODE_SIGNING_ALLOWED = NO` 是给日常开发用的，但 dmg 要分发——arm64 可执行文件
+必须有签名，`.app` 外壳没有 bundle 签名则接收方 Gatekeeper 直接报「已损坏」，
+所以这一步不能省。ad-hoc 档位下接收方首次打开需「右键 → 打开」。
+
+产物落在 `build/dist/`（已被 `.gitignore` 忽略），日志在 `build/logs/`。
+
 > ⚠️ 本工程刻意**不使用 SwiftPM**（含本地包）：本机环境 SwiftPM 的
 > `sandbox_apply` 被系统拒绝（`sandbox-exec: sandbox_apply: Operation not permitted`），
 > 任何含包的 xcodebuild 都无法完成解析。模块拓扑改用**五个 Swift 静态库 target**
