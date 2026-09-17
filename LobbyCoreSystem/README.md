@@ -73,12 +73,20 @@ open ~/Library/Developer/Xcode/DerivedData/GameLobby-*/Build/Products/Debug/Game
 
 ### 应用图标
 
-源图在 `App/Assets/AppIcon-source.jpg`（git 入库），构建时脚本会用 `sips` 切出
-10 个尺寸的 PNG（16/32/64/128/256/512/1024 含 `@2x`），`iconutil` 打成 `AppIcon.icns`
-后拷进 `.app/Contents/Resources/`。换图标只换源图即可。
+源图 `App/Assets/AppIcon-source.jpg` 入库（git LFS 不需要，体量小）。**图标由 Xcode
+构建阶段自动生成**（GameLobby target → `Generate AppIcon` →
+`Scripts/make-appicon.sh`），与 `Copy WebRuntime` 同一机制：每次 Xcode ⌘R 或
+xcodebuild 都跑，Debug / Release 都带图标。`build-dmg.sh` 不再生成图标，只做
+产物校验。
 
-`Info.plist` 的 `CFBundleIconFile = AppIcon`，签名时图标已经在 bundle 里，codesign
-覆盖整个 Resources 所以图标也跟着签名。
+脚本做的事：`sips` 把源图切成 10 个 PNG（16 / 16@2x / 32 / 32@2x / 128 / 128@2x /
+256 / 256@2x / 512 / 512@2x），`iconutil` 合成 `AppIcon.icns` 后写到
+`Contents/Resources/AppIcon.icns`。**换图标直接换源图**后重新编译即可，
+下一次构建自动重新生成。
+
+`Info.plist` 的 `CFBundleIconFile = AppIcon`（AppKit 约定，**不带** `.icns`
+后缀）；codesign 时图标已经在 Resources 里，签名覆盖整个 Resources，所以图标
+跟着签名。换图标也要重签（codesign 覆盖了 Resource 的内容摘要）。
 
 > ⚠️ 本工程刻意**不使用 SwiftPM**（含本地包）：本机环境 SwiftPM 的
 > `sandbox_apply` 被系统拒绝（`sandbox-exec: sandbox_apply: Operation not permitted`），
