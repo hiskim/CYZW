@@ -78,6 +78,23 @@ struct AccountSidebarView: View {
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.tertiary)
             Spacer()
+            // 刷新资料：不启动游戏，直接从服务端把「当前筛选范围」内账号的资料拉回来。
+            // 运行中的账号会被自动跳过（见 LobbySessionModel.refreshProfiles 的注释）。
+            Button {
+                session.refreshProfiles(filteredAccounts, reason: "侧栏")
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.18)))
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 11, intensity: 0.15)
+            .disabled(session.profileRefreshInFlight.isEmpty == false)
+            .help("刷新资料：直接从服务端取这些账号的头像 / 昵称 / 等级 / 战力（跳过运行中的）")
+
             Button {
                 draft = GroupDraft()
             } label: {
@@ -169,6 +186,9 @@ struct AccountSidebarView: View {
             Divider()
         }
         let liveCount = session.accounts(inGroupID: group.id).filter { session.isRunning($0) }.count
+        Button("刷新本组资料（跳过运行中）") {
+            session.refreshProfiles(session.accounts(inGroupID: group.id), reason: "分组")
+        }
         Button("启动组内全部账号（\(session.accounts(inGroupID: group.id).count)）") {
             for account in session.accounts(inGroupID: group.id) {
                 session.launch(account)
@@ -570,6 +590,12 @@ struct AccountSidebarCard: View {
             }
             Divider()
             Button("编辑备注…") { onEditRemark() }
+            // 不启动游戏，直接从服务端把这个账号的资料拉回来（头像 / 昵称 / 等级 / 战力）。
+            // 运行中的账号会被跳过——那会顶掉正在跑的实例，且运行中本来就有页面上报。
+            Button(isRunning ? "刷新资料（运行中，已跳过）" : "刷新资料") {
+                session.refreshProfiles([account], reason: "账号卡")
+            }
+            .disabled(isRunning)
             moveActions
             Divider()
             Button("删除账号文件", role: .destructive) { session.requestDelete(account) }
@@ -590,7 +616,12 @@ struct AccountSidebarCard: View {
         return ZStack {
             Circle()
                 .fill(groupColor.opacity(0.14))
-            if let image = avatars.image(forAccountID: account.id) {
+            if session.isRefreshingProfile(account) {
+                // 正在从服务端拉资料：转圈优先于头像（此时头像可能正要被替换）。
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+            } else if let image = avatars.image(forAccountID: account.id) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -605,7 +636,7 @@ struct AccountSidebarCard: View {
         .frame(width: 28, height: 28)
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(ringColor, lineWidth: 1))
-        .help(account.nickname)
+        .help(session.isRefreshingProfile(account) ? "正在拉取资料…" : account.nickname)
     }
 
     /// 第三行要不要显示分组名。

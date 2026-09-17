@@ -26,6 +26,30 @@ public enum LobbyConfiguration {
     public static let gameID = "xyzw_mix"
     public static let hortorSDKVersion = "1.4.0"
 
+    // MARK: - 服务端资料查询（不启动游戏，直接用 .bin 凭据问服务端）
+    //
+    // 链路与实测数据见 `.workbuddy/tools/ws-profile-probe/README.md`。
+    // 这三项都是**服务端契约**，与助手仓共用同一套值，改则静默失效。
+
+    /// `/login/authuser` 的路径与查询串。
+    /// ⚠️ 与 `AccountAuthenticator` 打的是同一个端点（那边把响应原样交给页面，
+    /// 这边要自己解出 roleToken）。改端点时两处一起改。
+    public static let profileAuthUserPath = "/login/authuser?_seq=1"
+
+    /// 资料查询用的 WebSocket 端点。**从 `gameServerURL` 派生**（只换 scheme 与路径），
+    /// 免得主机名在两处各写一遍、换服时漏改一处。
+    public static let profileWebSocketBaseURL: URL = {
+        var components = URLComponents(url: gameServerURL, resolvingAgainstBaseURL: false)
+            ?? URLComponents()
+        components.scheme = "wss"
+        components.path = "/agent"
+        components.query = nil
+        return components.url ?? gameServerURL
+    }()
+
+    /// `role_getroleinfo` 请求体里的客户端版本（助手仓里的同名字段）。
+    public static let profileClientVersion = "2.10.3-f10a39eaa0c409f4-wx"
+
     // MARK: - 页面桥契约（外部约束，勿改）
 
     /// 自定义 URL 方案。规格书写的是 `game-res`，但 WebRuntime 页面侧

@@ -126,6 +126,10 @@ public struct LobbyRootView: View {
         }
         .task {
             session.refresh()
+            // 启动后补拉「还没有资料」的账号：不启动游戏，直接用 .bin 凭据问服务端。
+            // 延迟几秒再开始——别跟窗口首帧、CDN 预热抢带宽；运行中的账号会被自动跳过。
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            session.autoRefreshMissingProfiles()
         }
     }
 

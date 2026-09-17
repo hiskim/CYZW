@@ -42,6 +42,17 @@ public final class LobbySessionModel: ObservableObject {
     /// 待确认删除的分组是否连成员一起删（确认框选项）。
     @Published public var deleteGroupMembers = false
 
+    /// 正在抓资料的账号 ID（账号卡上显示进度圈用）。
+    ///
+    /// 与「页面内探针」的分工：运行中的账号由页面探针实时上报（免费、无需联网动作），
+    /// 这个集合只覆盖「没在运行、由服务端直取」的那些账号。
+    @Published public private(set) var profileRefreshInFlight: Set<String> = []
+
+    /// 资料刷新的串行任务（非 nil = 有批次在跑，用于挡住重复触发）。
+    private var profileRefreshTask: Task<Void, Never>?
+    /// 账号之间的间隔：服务端不是靶子，别把 30 多个账号一股脑并发出去。
+    private static let profileRefreshGapNanos: UInt64 = 400_000_000
+
     // MARK: 依赖
 
     public let bins: AccountStoring
@@ -52,6 +63,9 @@ public final class LobbySessionModel: ObservableObject {
     public let enhancements: GameEnhancementStore
     /// 账号资料库（头像 / 游戏内昵称 / 等级战力）。账号卡直接观察它取图。
     public let avatars: AccountAvatarStore
+    /// 资料抓取器：**不启动游戏**，直接用 `.bin` 凭据问服务端（见 `AccountProfileFetcher`）。
+    public let profileFetcher = AccountProfileFetcher()
+
     private let groupStore: GroupStoring
 
     public init(bins: AccountStoring,
@@ -355,6 +369,89 @@ public final class LobbySessionModel: ObservableObject {
             statusMessage = "删除失败：\(error.localizedDescription)"
         }
         refresh()
+    }
+
+    // MARK: - 账号资料（服务端直取，不启动游戏）
+
+    /// 自动补拉「还没有资料」的账号。启动后调一次。
+    ///
+    /// 只补**缺失**的（不刷已有资料：那需要联网动作，应该由用户主动触发），
+    /// 且**跳过正在运行的账号**——运行中由页面探针负责，而且对运行中的账号再建
+    /// 一次会话很可能把大厅里的窗口顶掉。
+    public func autoRefreshMissingProfiles() {
+        let missing = accounts.filter { avatars.profile(forAccountID: $0.id) == nil }
+        guard !missing.isEmpty else {
+            LobbyLog.debug("[session] 资料补拉：没有缺失（%ld 个账号都已有资料）", accounts.count)
+            return
+        }
+        LobbyLog.info("[session] 资料补拉：%ld 个账号缺资料", missing.count)
+        refreshProfiles(missing, reason: "补拉")
+    }
+
+    /// 手动 / 自动刷新账号资料。
+    ///
+    /// - Parameter targets: 要刷的账号；传 nil = 全部账号。
+    /// - Parameter reason: 只用于日志与提示文案。
+    ///
+    /// 三条硬约束（都是踩过的）：
+    /// ① **跳过正在运行的账号**——对运行中的账号再建一次游戏会话，很可能顶掉大厅实例；
+    /// ② **串行 + 间隔**（每个账号 400ms 之后才发下一个），不把服务端当靶子；
+    /// ③ **同一时刻只允许一个批次**，避免连点几十次刷出几十个并发会话。
+    public func refreshProfiles(_ targets: [GameAccount]? = nil, reason: String = "手动") {
+        guard profileRefreshTask == nil else {
+            statusMessage = "资料刷新正在进行中，请稍候。"
+            return
+        }
+        let requested = targets ?? accounts
+        guard !requested.isEmpty else { return }
+        let candidates = requested.filter { !runningAccountIDs.contains($0.id) }
+        let skipped = requested.count - candidates.count
+        guard !candidates.isEmpty else {
+            statusMessage = skipped > 0 ? "这些账号都在运行中，已跳过（运行中的账号由游戏内自动上报）" : "没有可刷新的账号。"
+            return
+        }
+        LobbyLog.info("[session] 资料刷新(%@)：%ld 个待刷，跳过 %ld 个运行中的",
+                      reason, candidates.count, skipped)
+        statusMessage = "正在刷新 \(candidates.count) 个账号的资料…"
+
+        profileRefreshTask = Task { @MainActor [weak self] in
+            var succeeded = 0
+            var failed = 0
+            for account in candidates {
+                guard let self, !Task.isCancelled else { return }
+                self.profileRefreshInFlight.insert(account.id)
+                do {
+                    let binData = try self.bins.readBinData(for: account.fileName)
+                    let snapshot = try await self.profileFetcher.fetch(binData: binData)
+                    self.avatars.record(snapshot, forAccountID: account.id)
+                    succeeded += 1
+                    LobbyLog.info("[session] 资料刷新成功：%@ → %@ Lv%ld",
+                                  account.fileName, snapshot.name, snapshot.level)
+                } catch {
+                    failed += 1
+                    // 单个账号失败不该中断整批（凭据过期 / 网络抖动都只影响那一个）。
+                    LobbyLog.warn("[session] 资料刷新失败：%@ — %@",
+                                  account.fileName, String(describing: error))
+                }
+                self.profileRefreshInFlight.remove(account.id)
+                // 间隔（最后一个不用等）。
+                if succeeded + failed < candidates.count {
+                    try? await Task.sleep(nanoseconds: Self.profileRefreshGapNanos)
+                }
+            }
+            guard let self else { return }
+            self.profileRefreshTask = nil
+            var summary = "资料刷新完成：成功 \(succeeded)"
+            if failed > 0 { summary += "，失败 \(failed)" }
+            if skipped > 0 { summary += "，跳过运行中 \(skipped)" }
+            self.statusMessage = summary
+            LobbyLog.info("[session] %@", summary)
+        }
+    }
+
+    /// 该账号是否正在抓资料（卡片显示进度圈）。
+    public func isRefreshingProfile(_ account: GameAccount) -> Bool {
+        profileRefreshInFlight.contains(account.id)
     }
 
     // MARK: - 实例生命周期

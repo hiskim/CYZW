@@ -10,7 +10,7 @@ import SwiftUI
 enum LobbyComposition {
     /// 构建指纹。排查「改了但没重装 / 跑的是旧版」这一类别时，看启动第一行日志即可。
     /// **每次改动宿主侧行为就 bump 一次。**
-    static let buildTag = "2026-09-17.12"
+    static let buildTag = "2026-09-17.13"
 
     /// 组装会话门面（窗口级单例）。主线程执行（实例池 / 会话门面均为 MainActor 类型）。
     @MainActor
@@ -18,7 +18,7 @@ enum LobbyComposition {
         // 排查锚点：先确认「现在跑的是哪一版」，再谈别的。
         // 这行是 info 级，默认就能看到；Web Inspector 开关也一并带出来
         // （它是唯一会额外制造 WebKit 噪音的开关）。
-        LobbyLog.info("[lobby] build %@ | scriptRuntime=on downloadDelegate=on openURL=on accountProfile=on | webInspector=%@",
+        LobbyLog.info("[lobby] build %@ | scriptRuntime=on downloadDelegate=on openURL=on accountProfile=on serverProfile=on | webInspector=%@",
                       buildTag,
                       UserDefaults.standard.bool(forKey: LobbyConfiguration.PreferenceKey.webInspector) ? "on" : "off")
         let bins = AccountBinStore()
