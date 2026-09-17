@@ -50,6 +50,8 @@ public final class LobbySessionModel: ObservableObject {
     public let scripts: ScriptStore
     /// 游戏加强设置库（十殿加速等）。
     public let enhancements: GameEnhancementStore
+    /// 账号资料库（头像 / 游戏内昵称 / 等级战力）。账号卡直接观察它取图。
+    public let avatars: AccountAvatarStore
     private let groupStore: GroupStoring
 
     public init(bins: AccountStoring,
@@ -57,13 +59,15 @@ public final class LobbySessionModel: ObservableObject {
                 sync: InputSyncController,
                 groupStore: GroupStoring,
                 scripts: ScriptStore,
-                enhancements: GameEnhancementStore) {
+                enhancements: GameEnhancementStore,
+                avatars: AccountAvatarStore) {
         self.bins = bins
         self.pool = pool
         self.sync = sync
         self.groupStore = groupStore
         self.scripts = scripts
         self.enhancements = enhancements
+        self.avatars = avatars
         pool.delegate = self
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()
@@ -230,6 +234,8 @@ public final class LobbySessionModel: ObservableObject {
                 try? bins.deleteBin(named: account.fileName)
             }
             accounts.removeAll { member in members.contains(where: { $0.id == member.id }) }
+            // 账号没了，头像快照与缓存图一起清掉（否则会一直躺着几十张孤儿图）。
+            avatars.forget(accountIDs: members.map(\.id))
         }
         for account in members where !deletingMembers {
             assignments.removeValue(forKey: account.id)
@@ -300,6 +306,10 @@ public final class LobbySessionModel: ObservableObject {
                 account.groupName = groupName(forAccountID: account.id)
                 return account
             }
+            // 剪掉不在库里的资料残留（用户在 Finder 里手删 .bin 的情况）。
+            // ⚠️ 只在**扫描成功**时剪：扫描失败时 `accounts` 可能还是空的，
+            // 那一刻 prune 会把所有头像快照误删。
+            avatars.prune(keeping: Set(accounts.map(\.id)))
         } catch {
             statusMessage = "读取账号库失败：\(error.localizedDescription)"
         }
@@ -339,6 +349,7 @@ public final class LobbySessionModel: ObservableObject {
             assignments.removeValue(forKey: account.id)
             sync.retire(accountID: account.id)
             removeOrderEntries(for: [account.id])
+            avatars.forget(accountIDs: [account.id])
             persistGroups()
         } catch {
             statusMessage = "删除失败：\(error.localizedDescription)"

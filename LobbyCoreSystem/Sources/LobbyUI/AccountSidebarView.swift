@@ -416,14 +416,27 @@ struct RemarkEditorSheet: View {
     }
 }
 
-/// 侧栏账号卡片（含分组着色、「移动到分组」菜单与原生拖拽排序）。
+/// 侧栏账号卡片（含头像、分组着色、「移动到分组」菜单与原生拖拽排序）。
 struct AccountSidebarCard: View {
     @ObservedObject var session: LobbySessionModel
+    /// 账号资料库（头像 / 游戏内昵称 / 等级战力）。单独观察，取到图就刷新。
+    @ObservedObject private var avatars: AccountAvatarStore
     let account: GameAccount
     /// 拖拽排序的分组上下文（当前筛选视图的分组 ID，「全部」= allID）。
     let groupContextID: String
     /// 编辑备注回调（状态由外层 AccountSidebarView 持有）。
     let onEditRemark: () -> Void
+
+    init(session: LobbySessionModel,
+         account: GameAccount,
+         groupContextID: String,
+         onEditRemark: @escaping () -> Void) {
+        _session = ObservedObject(wrappedValue: session)
+        _avatars = ObservedObject(wrappedValue: session.avatars)
+        self.account = account
+        self.groupContextID = groupContextID
+        self.onEditRemark = onEditRemark
+    }
 
     private var isRunning: Bool { session.isRunning(account) }
     private var isFocused: Bool { session.focusedAccountID == account.id }
@@ -433,48 +446,67 @@ struct AccountSidebarCard: View {
     private var remarkText: String {
         session.remark(forAccountID: account.id)
     }
+    private var profile: AccountAvatarStore.Record? {
+        avatars.profile(forAccountID: account.id)
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // 28×28 图标磁贴（卡片头统一配方），底色随分组色相。
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(isRunning ? Color.cyan : Color.white.opacity(0.55))
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(red: swatch.0, green: swatch.1, blue: swatch.2).opacity(0.14))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-                )
+        // 行内间距 9（原 10）、按钮 24（原 26）：侧栏文字列只有 ~126pt，
+        // 这里每抠出 1pt 都直接变成「等级 / 战力」的可读空间（见 statsView 的宽度账）。
+        // 24pt 的圆形按钮与 26pt 肉眼几乎无差，换来的是一整档数值不至于退让。
+        HStack(spacing: 9) {
+            avatarBadge
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(account.nickname)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                // 第二行：用户自己写的备注优先（那是刻意记的），没有才退到游戏内昵称。
                 if !remarkText.isEmpty {
                     Text(remarkText)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color(red: 1.0, green: 0.78, blue: 0.30).opacity(0.9))
                         .lineLimit(1)
                         .help(remarkText)
+                } else if let name = profile?.name, !name.isEmpty {
+                    Text(name)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.62))
+                        .lineLimit(1)
+                        .help(name)
                 }
-                Text(session.groupName(forAccountID: account.id))
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color(red: swatch.0, green: swatch.1, blue: swatch.2).opacity(0.85))
-                    .lineLimit(1)
+                // 第三行：分组名（分组色）+ 游戏内等级 / 战力（右对齐，拿到资料才有）。
+                //
+                // ⚠️ 宽度是这里最稀缺的资源，实测账（可用 `Scripts/stats-width-probe.sh` 复算）：
+                //  304 侧栏 − 32 侧栏内边距 − 20 卡片内边距 − 28 头像 − 4×9 行内间距
+                //  − 24×2 按钮 − 6 本行 Spacer 下限 = **文字列 134pt**。
+                // （原先「运行中」胶囊还会再吃掉 60pt、只剩 74pt —— 胶囊已经删掉，
+                //   它的功能由青色头像环 + 红色停止按钮承担，见 avatarBadge 与上方注释。）
+                // 而 `Lv9090 · 21.8亿` 实测 82pt（10pt monospacedDigit），所以常规情况
+                // 一行放得下，只有**分组名很长**时才会挤压。三层应对：
+                //  ① 不该占字的分组名不显示（未分组 = 本来就没有分组；已在按该分组
+                //     筛选时 chip 上已经写着，卡片再写一遍是纯噪音）→ 省下 30–40pt；
+                //  ② 数值缩写到 4–5 字符（`21.81亿` → `21.8亿`、`5253.4万` → `5253万`）；
+                //  ③ `ViewThatFits` 四档退让（见 `statsView`）——**先换行、后丢项**，
+                //     所以既不会出现被截断的半截数字，也不会真的少一个数。
+                HStack(spacing: 4) {
+                    if showsGroupLabel {
+                        Text(session.groupName(forAccountID: account.id))
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color(red: swatch.0, green: swatch.1, blue: swatch.2).opacity(0.85))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 4)
+                    if let profile, profile.level > 0 || profile.power > 0 {
+                        statsView(profile)
+                            .help(Self.exactStatsHelp(level: profile.level, power: profile.power))
+                    }
+                }
             }
 
             Spacer(minLength: 6)
-
-            if isRunning {
-                LobbyStatusCapsule(text: isFocused ? "焦点" : "运行中",
-                                   tint: isFocused ? .yellow : .cyan,
-                                   isSelected: isFocused)
-            }
 
             Button {
                 if isRunning {
@@ -486,11 +518,11 @@ struct AccountSidebarCard: View {
                 Image(systemName: isRunning ? "stop.fill" : "play.fill")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(isRunning ? Color(red: 1.0, green: 0.45, blue: 0.42) : Color.green)
-                    .frame(width: 26, height: 26)
+                    .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.white.opacity(0.07)))
             }
             .buttonStyle(.plain)
-            .lobbyHoverHighlight(cornerRadius: 13, intensity: 0.12)
+            .lobbyHoverHighlight(cornerRadius: 12, intensity: 0.12)
             .help(isRunning ? "关闭实例" : "启动并登录")
 
             Button {
@@ -499,11 +531,11 @@ struct AccountSidebarCard: View {
                 Image(systemName: "trash")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .frame(width: 26, height: 26)
+                    .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.white.opacity(0.05)))
             }
             .buttonStyle(.plain)
-            .lobbyHoverHighlight(cornerRadius: 13, intensity: 0.12)
+            .lobbyHoverHighlight(cornerRadius: 12, intensity: 0.12)
             .help("删除账号文件")
         }
         .padding(.horizontal, 10)
@@ -515,8 +547,16 @@ struct AccountSidebarCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .strokeBorder(
-                    LinearGradient(colors: [Color.white.opacity(0.14), Color.white.opacity(0.06)],
-                                   startPoint: .top, endPoint: .bottom),
+                    // 焦点态的弱信号：焦点卡片的描边偏暖黄（与矩阵卡的黄色光晕同一套语言）。
+                    // 这里**刻意不做胶囊/文字**——「运行中」胶囊已经删掉了（运行态在本卡上
+                    // 有三重冗余表达：青色头像环 + 红色停止按钮 + 更亮的卡底，胶囊只是噪音，
+                    // 还白占 ~60pt 横向空间）。焦点是另一件事，用 1pt 描边带过即可。
+                    LinearGradient(
+                        colors: isFocused
+                            ? [Color(red: 1.0, green: 0.78, blue: 0.30).opacity(0.42),
+                               Color(red: 1.0, green: 0.78, blue: 0.30).opacity(0.14)]
+                            : [Color.white.opacity(0.14), Color.white.opacity(0.06)],
+                        startPoint: .top, endPoint: .bottom),
                     lineWidth: 1
                 )
         )
@@ -534,6 +574,146 @@ struct AccountSidebarCard: View {
             Divider()
             Button("删除账号文件", role: .destructive) { session.requestDelete(account) }
         }
+    }
+
+    /// 28×28 圆形头像。拿到真实头像就显示，没拿到时回落原图标磁贴
+    /// （冷启动 / 这个账号还没跑过 → 库里有账号但没资料，这是常态）。
+    ///
+    /// 描边承担两件事，所以它是这个卡片里信息密度最高的 1pt：
+    /// · **运行态**：青色（头像上没法 tint，只能靠环色表达）；
+    /// · **空闲态**：分组色。第三行已经不写分组名了（未分组没信息量、
+    ///   按分组筛选时 chip 上写着），分组信息改由环色承担——颜色本来就是
+    ///   分组色板存在的意义，比重复一遍文字更省宽度。
+    private var avatarBadge: some View {
+        let groupColor = Color(red: swatch.0, green: swatch.1, blue: swatch.2)
+        let ringColor = isRunning ? Color.cyan : groupColor.opacity(0.6)
+        return ZStack {
+            Circle()
+                .fill(groupColor.opacity(0.14))
+            if let image = avatars.image(forAccountID: account.id) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 28, height: 28)
+                    .clipShape(Circle())
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(ringColor, lineWidth: 1))
+        .help(account.nickname)
+    }
+
+    /// 第三行要不要显示分组名。
+    ///
+    /// 两种情况不显示——它们都不是「有分组信息但被省略」，而是**本来就没有信息量**：
+    /// · 未分组：没有分组 = 事实上的缺席，写「未分组」只是占字；
+    /// · 当前正在按该分组筛选：分组 chip 已经高亮着，每张卡再重复一遍纯属噪音。
+    /// 省下来的宽度全给「等级 / 战力」。
+    private var showsGroupLabel: Bool {
+        let accountGroupID = session.groupID(forAccountID: account.id)
+        guard accountGroupID != AccountGroup.ungroupedID else { return false }
+        return accountGroupID != groupContextID
+    }
+
+    /// 等级 / 战力的自适应退让（4 档有内容 + 1 档空白）。
+    /// `ViewThatFits` 取**第一个放得下的**变体，一个都放不下时用最后一个（空）——
+    /// 所以设计上不存在「显示成 `…`」这一档。
+    ///
+    /// 退让顺序刻意是「**先换行、后丢项**」：
+    ///  ① `Lv9090 · 21.8亿`（带空格，最好读）
+    ///  ② `Lv9090·21.8亿`（去空格，省 6pt）
+    ///  ③ 竖排两行 `Lv9090` / `21.8亿`（卡片长高 ~12pt，但**一个数都不少**）
+    ///  ④ 只留战力（多开/搬砖时最常横向比较的那个数）
+    ///  ⑤ 什么都不画（宽度连一项都塞不进时）
+    /// 实测宽度（10pt monospacedDigit）：① ~82pt ② ~76pt ③ ~37pt ④ ~34pt；
+    /// 文字列可用宽度 **134pt**（运行态与空闲态相同——「运行中」胶囊已删）。
+    /// 所以常规账号永远走①；只有**分组名很长**时才会退到②，退到③的概率极低。
+    /// 保留这套档位是因为分组名长度不可控（用户可以建任意长的分组名）。
+    private func statsView(_ profile: AccountAvatarStore.Record) -> some View {
+        ViewThatFits(in: .horizontal) {
+            statsRow(profile, spacing: 4)
+            statsRow(profile, spacing: 2)
+            statsStacked(profile)
+            // 只剩一个位置时留**战力**：多开/搬砖场景下它是用来横向比较账号的那个数。
+            powerOnly(profile)
+            EmptyView()
+        }
+    }
+
+    private func statsRow(_ profile: AccountAvatarStore.Record, spacing: CGFloat) -> some View {
+        HStack(spacing: spacing) {
+            if profile.level > 0 {
+                Text("Lv\(profile.level)")
+                    .foregroundStyle(Color.white.opacity(0.42))
+            }
+            if profile.level > 0, profile.power > 0 {
+                Text("·").foregroundStyle(Color.white.opacity(0.32))
+            }
+            if profile.power > 0 {
+                Text(Self.abridgedPower(profile.power))
+                    .foregroundStyle(Self.powerTint)
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .monospacedDigit()
+        .lineLimit(1)
+    }
+
+    /// 竖排退让档：宽 37pt 就能放下，代价只是卡片高 12pt。
+    private func statsStacked(_ profile: AccountAvatarStore.Record) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            if profile.level > 0 {
+                Text("Lv\(profile.level)")
+                    .foregroundStyle(Color.white.opacity(0.42))
+            }
+            if profile.power > 0 {
+                Text(Self.abridgedPower(profile.power))
+                    .foregroundStyle(Self.powerTint)
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .monospacedDigit()
+        .lineLimit(1)
+    }
+
+    private func powerOnly(_ profile: AccountAvatarStore.Record) -> some View {
+        Text(profile.power > 0 ? Self.abridgedPower(profile.power) : "Lv\(profile.level)")
+            .font(.system(size: 10, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(profile.power > 0 ? Self.powerTint : Color.white.opacity(0.42))
+            .lineLimit(1)
+    }
+
+    /// 战力的专用色：冷青，与运行态的 cyan 呼应但更弱，让数字在灰白文字里跳出来。
+    private static let powerTint = Color(red: 0.55, green: 0.86, blue: 1.0).opacity(0.92)
+
+    /// 缩写只为了「放得下」，精确值放在 tooltip 与这个函数里。
+    private static func abridgedPower(_ value: Int) -> String {
+        let amount = Double(value)
+        if value >= 100_000_000 {
+            let yi = amount / 100_000_000
+            // ≥100 亿 时小数位没有意义，砍掉换宽度（123.4亿 → 123亿）。
+            return yi >= 100 ? String(format: "%.0f亿", yi) : String(format: "%.1f亿", yi)
+        }
+        if value >= 10_000 {
+            // 万档一律取整：`5253.4万` 比 `5253万` 多一个字符却不提供任何决策信息。
+            return String(format: "%.0f万", amount / 10_000)
+        }
+        return String(value)
+    }
+
+    private static func exactStatsHelp(level: Int, power: Int) -> String {
+        var parts: [String] = []
+        if level > 0 { parts.append("等级 \(level)") }
+        if power > 0 {
+            parts.append("战力 \(power.formatted(.number.grouping(.automatic)))")
+        }
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder

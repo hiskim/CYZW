@@ -38,6 +38,35 @@ public struct InstanceReadiness: Sendable {
     }
 }
 
+/// 账号在游戏里的资料（账号卡显示用）。
+///
+/// 来源是页面里的 `window.ROLE`（游戏 `ServerData.createServerData()` 挂到
+/// globalThis 上的角色数据视图）。**原生存的是快照，不是真源**——真源永远在
+/// 页面侧，这里只在页面主动上报变化时更新。
+public struct AccountProfileSnapshot: Sendable, Equatable {
+    /// 头像远端 URL（微信 / QQ qlogo 或游戏自建 CDN）。
+    public let headImg: String
+    /// 游戏内角色名。
+    public let name: String
+    /// 战力。
+    public let power: Int
+    /// 角色等级（页面侧字段名是 `levelId`）。
+    public let level: Int
+    /// VIP 等级。
+    public let vip: Int
+
+    public init(headImg: String, name: String, power: Int, level: Int, vip: Int) {
+        self.headImg = headImg
+        self.name = name
+        self.power = power
+        self.level = level
+        self.vip = vip
+    }
+
+    /// 整份资料是否为空（没有头像 URL 就没有显示价值）。
+    public var isEmpty: Bool { headImg.isEmpty }
+}
+
 /// 页面事件。
 public enum PageEvent: Sendable {
     /// HSDK（游戏 SDK 桥）请求，requestJSON 为原文。
@@ -70,6 +99,8 @@ public enum PageEvent: Sendable {
     case downloadFile(name: String, mimeType: String, base64: String)
     /// 脚本导出的是远端 URL（`<a download href="https://…">`），由原生代下。
     case downloadURL(url: String, name: String)
+    /// 账号资料上报（只读探针 `AccountProfileScript` 发的；账号卡显示用）。
+    case accountProfile(AccountProfileSnapshot)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -130,9 +161,34 @@ public enum PageEvent: Sendable {
         case "downloadurl":
             guard let url = body["url"] as? String else { return .unknown(type: type) }
             return .downloadURL(url: url, name: body["name"] as? String ?? "")
+        case "avatar":
+            // 没有头像 URL 的上报没有显示价值（`ROLE` 刚建、`headImg` 还没填）。
+            // 这样的消息当未识别事件丢掉，不往会话层送半成品。
+            guard let headImg = body["headImg"] as? String, !headImg.isEmpty else {
+                return .unknown(type: type)
+            }
+            return .accountProfile(AccountProfileSnapshot(
+                headImg: headImg,
+                name: body["name"] as? String ?? "",
+                power: integer(body["power"]),
+                level: integer(body["level"]),
+                vip: integer(body["vip"])
+            ))
         default:
             return .unknown(type: type)
         }
+    }
+
+    /// 宽松取整：页面侧可能送 Int / Double / String（`role.power` 是普通字段，
+    /// 没有类型保证），任何一种都不要把整条事件判成非法。
+    private static func integer(_ value: Any?) -> Int {
+        if let number = value as? Int { return max(0, number) }
+        if let number = value as? Double { return number.isFinite ? max(0, Int(number)) : 0 }
+        if let number = value as? NSNumber { return max(0, number.intValue) }
+        if let text = value as? String, let parsed = Double(text) {
+            return parsed.isFinite ? max(0, Int(parsed)) : 0
+        }
+        return 0
     }
 
     private static func stringified(_ value: Any?) -> String {

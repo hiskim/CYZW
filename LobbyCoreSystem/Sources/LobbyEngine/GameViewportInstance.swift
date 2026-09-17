@@ -53,6 +53,8 @@ public final class GameViewportInstance: NSView {
     public weak var scripts: ScriptStore?
     /// 游戏加强设置库（十殿加速等；文档就绪时下发，改档由会话模型广播）。
     public weak var enhancements: GameEnhancementStore?
+    /// 账号资料库（头像 / 游戏内昵称 / 等级战力；页面探针上报后写入）。
+    public weak var avatars: AccountAvatarStore?
 
     private let authenticator: GameAuthenticating
     private let resources: ResourceProviding
@@ -88,7 +90,8 @@ public final class GameViewportInstance: NSView {
                 settingsMirror: GameSettingsMirror,
                 sync: InputSyncController? = nil,
                 scripts: ScriptStore? = nil,
-                enhancements: GameEnhancementStore? = nil) {
+                enhancements: GameEnhancementStore? = nil,
+                avatars: AccountAvatarStore? = nil) {
         self.account = account
         self.environment = environment
         self.authenticator = authenticator
@@ -97,6 +100,7 @@ public final class GameViewportInstance: NSView {
         self.sync = sync
         self.scripts = scripts
         self.enhancements = enhancements
+        self.avatars = avatars
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -488,6 +492,13 @@ public final class GameViewportInstance: NSView {
             WKUserScript(source: GameEnhancementScript.agent,
                          injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
+        // ⑤ 账号资料探针（只读 `window.ROLE` → 头像 / 昵称 / 等级战力）。
+        // 没有开关：它是纯读的，代价是三次属性读取 + 首次上报后每 5s 一次比对，
+        // 而且不预注入就永远补不上（账号卡的头像要等下一次导航才有）。
+        contentController.addUserScript(
+            WKUserScript(source: AccountProfileScript.agent,
+                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
 
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(schemeHandler, forURLScheme: LobbyConfiguration.gameURLScheme)
@@ -640,6 +651,10 @@ public final class GameViewportInstance: NSView {
             saveExportedFile(base64: base64, name: name, mimeType: mimeType)
         case .downloadURL(let url, let name):
             downloadExportedFile(url: url, name: name)
+        case .accountProfile(let snapshot):
+            // 账号资料只读上报：直接归属到本实例自己的账号。
+            // 落盘 + 拉头像由 store 负责（卡片从 store 读，不碰实例）。
+            avatars?.record(snapshot, forAccountID: account.id)
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
         }

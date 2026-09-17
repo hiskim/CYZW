@@ -92,6 +92,48 @@ open('/tmp/recon/mod.js','w').write(s[idx:end+12])
    两条都试、都不命中时才报「没有面板」，并在诊断串里写明命中的是哪条（`root=groot|scene`）
    以及是「连根都没有」(`no-root`) 还是「有根没面板」(`no-panel`)。
 
+## 3.5 读**数据**（不是 UI）：找字段的真实出处
+
+需求常常是「把某个游戏数据拿到宿主用」（例：账号卡要显示真实头像 → 要 `ROLE.headImg`）。
+同样是取证，不猜字段名。三步：
+
+1. **数次数，定范围**：`s.count('headImg')` 之类先看规模（本例 528 次，太多不能肉眼扫）。
+2. **枚举唯一上下文**（最有效的一招）——同一字段的 528 次命中其实只有 ~20 种周边，
+   归纳出来就能一眼看出「谁是权威定义、谁是消费者」：
+
+   ```python
+   import re, collections
+   s = open('/tmp/recon/game.js', encoding='utf-8', errors='replace').read()
+   ctx = collections.Counter()
+   for m in re.finditer('headImg', s):
+       ctx[s[max(0,m.start()-90):m.end()+90]] += 1
+   for k, v in ctx.most_common(30): print(v, repr(k))
+   ```
+
+3. **找「挂到全局」的那一处**：数据类模块的权威写法是
+   `globalThis.X = …`（同一段里通常还有 `X = SERVER_DATA.x` 与 `clearX()`）。
+   搜 `\.ROLE\s*=` 定位到 `ServerData` 模块：
+
+   ```
+   createServerData=function(){… i.SERVER_DATA=new c; i.ROLE=i.SERVER_DATA.role;
+     globalThis.SERVER_DATA=…; globalThis.ROLE=i.ROLE; …}
+   ```
+
+   → **`window.ROLE` 是游戏自己挂的**，宿主的注入脚本直接读即可。
+   再搜 `模块名:\[function` 找到数据视图类（如 `RoleDataView`），
+   末尾的 `t.decorate(n,{headImg:t.observable,name:t.observable,power:…})`
+   就是**可用字段的完整清单**（mobx observable），比逐个猜名字快得多。
+
+4. **外部资源型字段要单独试 URL 变体**。头像/图标这类字段是 URL，
+   末段往往是尺寸参数：`thirdwx.qlogo.cn/…/132` 里 `/0`=原图(1080)、`/46 /64 /96 /132`
+   都可用、`/640` 返回 400。用 `curl -o /dev/null -w '%{http_code} %{size_download}'` 逐个试，
+   并确认**直连不需要 cookie**（qlogo 实测 200）。别把「游戏内能显示」当成「宿主能下载」。
+
+> 反例提醒：本例的 `ROLE.headImg` 与第三方脚本宿主那份笔记不冲突——
+> 游戏 WebRuntime 里有 `window.ROLE`；`IOS2ScriptWebView` 那个独立脚本宿主里没有，
+> 靠兼容层 `__ios2ReadRole()` 从 `__require('ServerData').ROLE` 补。
+> **两套宿主别混为一谈。**
+
 ## 4. 落地「游戏加强」项（六步固定接法）
 
 | 步骤 | 文件 |
@@ -246,6 +288,100 @@ cd /Users/gg/915/CYZW/LobbyCoreSystem && \
 
 > 经验：先把**旧版** agent 拿去跑新测试，能复现真实故障（这里是「外壳还在」）才算测试有效；
 > 否则只是自我感觉良好。
+
+### 5.1 导出 agent 字符串的两个细节（踩过）
+
+`agent` 是 Swift 多行字符串，里面有 `\(插值)`。直接 `print` 得到的是**运行时文本**，
+但要喂给 node 通常是在不能编译整个工程的场合做的，于是常用「Python 抽 `"""…"""` 再正则替换插值」：
+
+```python
+js = re.findall(r'return """\n(.*?)\n        """', src, re.S)[0]
+values = {'agentVersion': '1', 'channel': 'ios2Game', 'fastIntervalMs': '400'}
+js = re.sub(r'\\\((\w+)\)', lambda m: values[m.group(1)], js)   # ⚠️ 必须全替换
+open('agent.js','w').write(js)
+```
+
+- **所有**插值都要在 `values` 里，漏一个就会在 JS 里留下 `\(x)` —— 那是**语法错误**，
+  但 `node --check` 的报错位置会指到你没想到的行。
+- 抽完先 `assert '\\(' not in js`，这一步比看报错快。
+
+### 5.2 测「等时间」的逻辑：用虚拟时钟，别真 sleep
+
+轮询类 agent（等 `__require` / 等 `window.ROLE`）的关键行为是「400ms 拍 N 次后降频」，
+真等要几分钟。用一个受控的假 `setInterval`：
+
+```js
+const timers = new Map(); let nextId = 1; const clock = { now: 0 };
+sandbox.setInterval = (fn, ms) => { const id = nextId++; timers.set(id, { fn, ms }); return id; };
+sandbox.clearInterval = (id) => timers.delete(id);
+const advance = (ms) => { for (let e = 0; e < ms; e += 50) { clock.now += 50;
+  for (const [, t] of [...timers]) { t.next ??= clock.now + t.ms;
+    if (clock.now >= t.next) { t.next = clock.now + t.ms; t.fn(); } } } };
+```
+配合 `node:vm` 起的 `window`（含 `webkit.messageHandlers` 假桥）就能在毫秒内跑完几分钟的行为。
+必测项：未就绪不上报 / **重复注入被哨兵挡住**（并断言没有新定时器）/
+值不变不重复上报 / 值变后补报 / 兜底路径（`__require`）/ **桥抛异常时不提交去重键**
+（先提交再投递的写法会让这条资料永远发不出去，且重启也不好——这是真实踩到的坑）。
+
+### 5.3 单测一个依赖工程内模块的 Swift 文件
+
+没有测试 target，又不想为了测一个 store 去搭整套依赖时，用「**剥 import + 补桩**」：
+
+```bash
+mkdir -p /tmp/t && python3 - <<'PY'
+src = open('…/LobbyEngine/AccountAvatarStore.swift', encoding='utf-8').read()
+out = [l for l in src.split('\n') if l.strip() not in ('import LobbyDomain', 'import LobbyIPC')]
+open('/tmp/t/Store.swift','w',encoding='utf-8').write('\n'.join(out))
+PY
+# Stubs.swift：补 LobbyLog / LobbyConfiguration / 上报结构（⚠️ 要 public，
+# 否则「default 参数里引用 internal 常量」直接编译失败）
+# 骨架见 scripts/swift-isolated-test.template.swift
+xcrun swiftc -O -o t/run Stubs.swift Store.swift TestMain.swift -framework AppKit && t/run
+```
+- 主文件**不能叫 `main.swift`**（会与 `@main` 冲突），改叫 `TestMain.swift`。
+- `@main struct T { @MainActor static func main() async throws { … } }` 就能直接
+  `await` MainActor 隔离的 store，并用 `try await Task.sleep` 等异步下载落地。
+- 这样能跑**真网络**的真实资源（本例用用户抓包的头像链接验证了「末段尺寸归一化」：
+  原始 `/132` 落到 4KB / 132×132，而不是 1080px 原图）。
+- ⚠️ 被剥离的 import 只影响符号可见性，**业务逻辑一字未改**——别顺手改逻辑，
+  否则测的就不是产品代码了。
+
+> 同类检查：SwiftUI 的 `body` 里**绝不允许**有会写 `@Published` 的调用
+> （「懒加载 + 顺手清死引用」就是典型）。IO/状态变更一律挪到 init 或定时节拍里。
+
+### 5.4 宽度/字号类 UI 改动：先量，再改，再复算
+
+「文字被截断」这类问题**凭感觉调字号/缩写一定会反复翻车**（只有在位数够长的那个
+账号上才暴露，肉眼试不出来）。做法是把「可用宽度」写成算式，用**真实字体**量候选字符串：
+
+```swift
+let font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+func w(_ s: String) -> Double { Double((s as NSString).size(withAttributes: [.font: font]).width) }
+```
+
+- **可用宽度 = 容器宽 − 各级 padding − 同级子视图 − 间距**。侧栏那种「固定宽 + 卡片」
+  的结构一定要把每一层 padding、每个按钮、每个 `HStack(spacing:)` 都算进去，
+  差 8pt 就是「显示 `…`」和「显示完整」的差别。
+- 先量出最窄状态（示例里：卡片「运行中」时会多出一个胶囊，可用宽度从 134pt 掉到 74pt），
+  **按最窄状态设计退让档位**，而不是按最好的情况。
+- 退让档位写成 `ViewThatFits(in: .horizontal)` 的候选链，顺序是
+  **先换行、后丢项、最后不显示**——宁可多占一行高度，也不出一个半截数字。
+- 把算式固化成脚本（示例：`LobbyCoreSystem/Scripts/stats-width-probe.sh`），
+  并且**从源码里抽取真的格式化函数**（正则抓出 `private static func` 再编译），
+  不要抄一份——抄的那份一定会和产品代码漂移。
+- ⚠️ 无关但会浪费半小时的坑：Swift 里一长串裸字面量运算（`304.0 - 32 - 20 - …`）
+  会触发 "unable to type-check this expression in reasonable time"，**全部显式标 `Double`**；
+  带 `@main` 的文件**不能叫 `main.swift`**，反过来顶层代码的那个文件**必须**叫 `main.swift`。
+
+### 5.5 构建脚本别写批量 `rm -rf`
+
+`PhaseScriptExecution failed` 但 Swift 一点没错时，先看构建脚本的输出里有没有
+`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":N,"threshold":50,…}`——
+本机沙箱对「单次删除超过 50 个文件」有确认门闸，**沙箱内和免沙箱都拦**，
+所以「整目录 `rm -rf` 重建」的写法会稳定失败。
+改法：拷完后按**期望清单**做差集，只删真的残留（`comm -23 actual expected`），
+意图不变、更精确、正常情况下 0 删除。
+另：**不要并发跑两个 build**（两份构建都去 `rm -rf` 同一个输出目录，会互相踩）。
 
 ## 6. 别忘
 
