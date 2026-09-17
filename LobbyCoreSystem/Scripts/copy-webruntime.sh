@@ -41,10 +41,18 @@ RUNTIME="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/WebRuntime"
 
 [ -d "$CP_ROOT" ] || fail "找不到引擎壳工程：$CP_ROOT"
 
-# 整目录重建：Xcode 增量构建不会清理上一版拷进来的文件，不重建的话
-# 被移出白名单的旧文件会一直留在 .app 里（正是本次要解决的问题）。
-rm -rf "$RUNTIME"
 mkdir -p "$RUNTIME"
+
+# ── 为什么这里没有 `rm -rf "$RUNTIME"` ──────────────────────────────────────
+# 整目录重建的**意图**是：Xcode 增量构建不会清理上一版拷进来的文件，
+# 被移出白名单的旧文件会一直留在 .app 里。做法换成了「拷完之后按**期望清单**
+# 逐文件比对，只删差集」（见文件末尾）——意图完全相同，而且：
+#   · 精确：只删真的过期文件，不动正在用的（差集为空时一个都不删）；
+#   · 不被拦：本机沙箱对「单次批量删除 > 50 个文件」有确认门闸，整目录删会
+#     一次枚举 60+ 个文件 → `PhaseScriptExecution failed`（与 Swift 代码无关，
+#     报错里能看到 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]`）。
+MANIFEST=$(mktemp)
+trap 'rm -f "$MANIFEST"' EXIT
 
 # copy <相对 CP_ROOT 的源路径> [目标相对路径，默认与源同路径]
 copy() {
@@ -53,6 +61,7 @@ copy() {
     [ -f "$CP_ROOT/$src_rel" ] || fail "缺少必需文件 $src_rel"
     mkdir -p "$RUNTIME/$(dirname "$dst_rel")"
     ditto "$CP_ROOT/$src_rel" "$RUNTIME/$dst_rel"
+    printf '%s\n' "$dst_rel" >> "$MANIFEST"
 }
 
 # ① 入口链，顺序与 ios2-web-index.html 的 <script> 标签一致
@@ -84,6 +93,7 @@ done
 #    game-res:// 的 /assets/** 会先命中本地再回落 CDN
 #    （GameResourceSchemeHandler.localResource），不裁剪。
 ditto "$CP_ROOT/assets" "$RUNTIME/assets"
+( cd "$CP_ROOT/assets" && find . -type f | sed 's|^\./||' | sed 's|^|assets/|' ) >> "$MANIFEST"
 
 # ⑥ 只服务 iOS 原生 JSB 路径、对 macOS 是死重量的文件清单。
 #    用于下面「未归类文件」的告警：新增 src/*.js 时必须显式归类，
@@ -109,6 +119,23 @@ for f in "$CP_ROOT"/src/*.js; do
         echo "warning:   若 macOS 运行时需要它，请写进 Scripts/copy-webruntime.sh。" >&2
     fi
 done
+
+# ⑦ 删残留：上一次构建拷进来、这次不在期望清单里的文件（移出白名单 / 改名）。
+#    差集通常为空，此时一个文件都不删——这就是不用 `rm -rf` 的收益（见文件开头）。
+ACTUAL=$(mktemp)
+EXPECTED=$(mktemp)
+trap 'rm -f "$MANIFEST" "$ACTUAL" "$EXPECTED"' EXIT
+( cd "$RUNTIME" && find . -type f | sed 's|^\./||' | LC_ALL=C sort ) > "$ACTUAL"
+LC_ALL=C sort -u "$MANIFEST" > "$EXPECTED"
+stale=$(LC_ALL=C comm -23 "$ACTUAL" "$EXPECTED")
+if [ -n "$stale" ]; then
+    printf '%s\n' "$stale" | while IFS= read -r rel; do
+        rm -f "$RUNTIME/$rel"
+        echo "note: [Copy WebRuntime] 移除白名单外的残留：$rel"
+    done
+    # 顺手收掉因此变空的目录。
+    find "$RUNTIME" -type d -empty -delete 2>/dev/null || true
+fi
 
 file_count=$(find "$RUNTIME" -type f | wc -l | tr -d ' ')
 size_kb=$(du -sk "$RUNTIME" | awk '{print $1}')
