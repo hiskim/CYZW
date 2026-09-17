@@ -22,7 +22,9 @@ struct SidebarSettingsView: View {
                 }
                 settingCard(title: "目标帧率",
                             summary: "焦点实例的主循环帧率；非焦点自动降到 \(TargetFrameRate.idleFallback.rawValue) FPS 省电") {
-                    pickerRow(options: TargetFrameRate.allCases, selection: $frameRateRaw) { "\($0.rawValue)" }
+                    // 7 个档位等宽均分一行：内容自适应放不下会压缩换行（15→1/5 竖排，已踩过）。
+                    pickerRow(options: TargetFrameRate.allCases, selection: $frameRateRaw,
+                              label: { "\($0.rawValue)" }, fillsWidth: true)
                 }
                 settingCard(title: "游戏内存储",
                             summary: "WebKit 持久化容器策略，改档需重启实例") {
@@ -89,6 +91,9 @@ struct SidebarSettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             content()
         }
+        // ⚠️ 必须在 padding/background 之前撑满：所有卡片统一 = 内容列宽，
+        // 否则各卡按自身内容理想宽度布局，侧栏里一列卡片宽窄不一。
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(11)
         .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.white.opacity(0.055)))
         .overlay(
@@ -111,21 +116,45 @@ struct SidebarSettingsView: View {
     }
 
     /// 横向胶囊选择行。
+    ///
+    /// - `fillsWidth = false`（默认）：胶囊按内容自适应，放不下时经 `LobbyFlowLayout`
+    ///   优雅换行——绝不压缩胶囊（压缩 = 文字竖排，目标帧率曾踩过）。
+    /// - `fillsWidth = true`：档位多时（如 7 个帧率档）等宽均分一行，铺满卡片内宽，
+    ///   视觉成一条整齐的档位条。
     private func pickerRow<Option: Identifiable>(options: [Option],
                                                  selection: Binding<Option.ID>,
-                                                 label: @escaping (Option) -> String) -> some View {
-        HStack(spacing: 5) {
-            ForEach(options) { option in
-                Button {
-                    selection.wrappedValue = option.id
-                } label: {
-                    LobbyStatusCapsule(text: label(option),
-                                       tint: .cyan,
-                                       isSelected: selection.wrappedValue == option.id)
+                                                 label: @escaping (Option) -> String,
+                                                 fillsWidth: Bool = false) -> some View {
+        Group {
+            if fillsWidth {
+                HStack(spacing: 5) {
+                    ForEach(options) { option in
+                        capsule(option, selection: selection, label: label, fillsWidth: true)
+                    }
                 }
-                .buttonStyle(.plain)
-                .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.10)
+            } else {
+                LobbyFlowLayout(horizontalSpacing: 5, verticalSpacing: 5) {
+                    ForEach(options) { option in
+                        capsule(option, selection: selection, label: label, fillsWidth: false)
+                    }
+                }
             }
         }
+    }
+
+    private func capsule<Option: Identifiable>( _ option: Option,
+                                                selection: Binding<Option.ID>,
+                                                label: @escaping (Option) -> String,
+                                                fillsWidth: Bool) -> some View {
+        Button {
+            selection.wrappedValue = option.id
+        } label: {
+            LobbyStatusCapsule(text: label(option),
+                               tint: .cyan,
+                               isSelected: selection.wrappedValue == option.id,
+                               fillsWidth: fillsWidth)
+        }
+        .buttonStyle(.plain)
+        .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.10)
     }
 }

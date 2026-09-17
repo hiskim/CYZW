@@ -382,25 +382,41 @@ struct LobbyButtonStyle: ButtonStyle {
 }
 
 /// 状态胶囊：选中 = 实色填充白字 + 微光；未选中 = 白 5% 填充 + 描边同色文字。
+///
+/// ⚠️ `Text` 必须 `lineLimit(1)` + `fixedSize()`：没有这两条，HStack 空间不足时
+/// 胶囊被压缩、文字竖排（「目标帧率」的 15 / 120 曾被拆成 1/5、12/0 两行）。
+/// `fillsWidth = true` 用于等宽网格行（如 7 个帧率档均分一行）：内边距收窄、
+/// 背景铺满父级分配的格子，所有档位同宽同高，视觉成一条整齐的档位条。
 struct LobbyStatusCapsule: View {
     let text: String
     let tint: Color
     let isSelected: Bool
+    /// true = 铺满父级提议宽度（等宽网格）；false = 按内容自适应。
+    var fillsWidth: Bool = false
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold))
+        // 逐段拆子表达式：整条链一次写完编译器类型检查超时（12 段修饰符 + 三元）。
+        let horizontalPadding: CGFloat = fillsWidth ? 5 : 9
+        let font: Font = .system(size: 11, weight: .semibold).monospacedDigit()
+        let maxWidth: CGFloat? = fillsWidth ? .infinity : nil
+        let fill = Capsule(style: .continuous)
+            .fill(isSelected ? tint.opacity(0.9) : Color.white.opacity(0.05))
+        let stroke = Capsule(style: .continuous)
+            .strokeBorder(isSelected ? Color.white.opacity(0.25) : tint.opacity(0.45), lineWidth: 1)
+        let shadowColor: Color = isSelected ? tint.opacity(0.35) : .clear
+
+        let label = Text(text)
+            .font(font)
             .foregroundStyle(isSelected ? Color.white : tint)
-            .padding(.horizontal, 9)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 4)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(isSelected ? tint.opacity(0.9) : Color.white.opacity(0.05))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(isSelected ? Color.white.opacity(0.25) : tint.opacity(0.45), lineWidth: 1)
-            )
-            .shadow(color: isSelected ? tint.opacity(0.35) : .clear, radius: 6, y: 1)
+            .frame(maxWidth: maxWidth)
+
+        return label
+            .background(fill)
+            .overlay(stroke)
+            .shadow(color: shadowColor, radius: 6, y: 1)
     }
 }
