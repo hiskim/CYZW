@@ -270,8 +270,9 @@ if [ -f "$ICON_SRC" ]; then
     done
     ICNS_OUT="$WORK_DIR/AppIcon.icns"
     iconutil -c icns "$ICONSET" -o "$ICNS_OUT"
-    rm -rf "$ICONSET" 2>/dev/null
-    rm -rf "$ICON_PARENT" 2>/dev/null  # 同理，失败只 warn
+    # 清理失败不该让已经做好的图标白做（临时目录在 build/ 下，本就是可弃物）
+    rm -rf "$ICONSET" 2>/dev/null || true
+    rm -rf "$ICON_PARENT" 2>/dev/null || true
     mkdir -p "$APP_PATH/Contents/Resources"
     cp "$ICNS_OUT" "$APP_PATH/Contents/Resources/AppIcon.icns"
     icon_bytes=$(stat -f%z "$APP_PATH/Contents/Resources/AppIcon.icns" 2>/dev/null || echo 0)
