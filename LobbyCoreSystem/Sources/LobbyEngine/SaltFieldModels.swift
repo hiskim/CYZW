@@ -289,6 +289,30 @@ public struct SaltFieldMapGeometry: Sendable {
     }
 }
 
+/// 大本营的**关系标记**（用户手动标注：自身 / 友军 / 中立 / 敌对）。
+///
+/// 用途：盐场 20 个大本营，靠序号认不出谁是谁；标上关系后地图上一眼能看出阵营分布，
+/// 也能顺着「我方 → 敌对」定进攻路线。按账号持久化（`salt.chart.strongholdMarks.<账号>`）。
+public enum SaltStrongholdMark: String, CaseIterable, Sendable {
+    case own = "自身"
+    case ally = "友军"
+    case neutral = "中立"
+    case enemy = "敌对"
+
+    /// 地图上大本营外圈的颜色。
+    public var ringHex: String {
+        switch self {
+        case .own: return "#00A651"       // 鲜绿（用户要求更绿、更醒目）
+        case .ally: return "#3B7DD8"      // 蓝
+        case .neutral: return "#8A8F98"   // 灰
+        case .enemy: return "#EB3329"     // 红
+        }
+    }
+
+    /// 自身只能有一个（其余可多选）。
+    public var isUnique: Bool { self == .own }
+}
+
 /// 据点名称**坐标表**（手填）：节点 id（"列_行"，如 "27_10"）→ 该据点自己的名称。
 ///
 /// 用途：地图骨架是静态的、服务端数据要进盐场才有 —— 这张表让你**提前**把每个据点的

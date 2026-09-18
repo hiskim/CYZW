@@ -289,11 +289,68 @@ struct SaltFieldChartWindowView: View {
     /// 工具栏实测高度（穿透时顶部豁免区 = 标题栏 + 这个值）。
     @State private var toolbarHeight: CGFloat = 0
 
+    // ── 大本营标记：自身 / 友军 / 中立 / 敌对 + 攻击目标（用户 2026-09-19 要求）──
+    /// 大本营关系标记（序号 → 关系）。按账号持久化，下次开窗还在。
+    @State private var strongholdMarks: [Int: SaltStrongholdMark] = [:]
+    /// 攻击路线上的点（我方之后的每一段终点；可以是任意据点或大本营，按点击顺序**追加**）。
+    @State private var routeWaypointIDs: [String] = []
+    /// 当前标记工具（点地图上的大本营就按它生效）。默认「自身」——用户口径：点一下就能设我方。
+    @State private var markTool: MarkTool = .own
+
+    /// 标记工具：四种关系 + 选目标 + 清除。
+    enum MarkTool: String, CaseIterable, Identifiable {
+        case own, ally, neutral, enemy, target, clear
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .own: return "自身"
+            case .ally: return "友军"
+            case .neutral: return "中立"
+            case .enemy: return "敌对"
+            case .target: return "加攻击点"
+            case .clear: return "清除标记"
+            }
+        }
+
+        /// 对应的关系标记（加攻击点 / 清除没有）。
+        var mark: SaltStrongholdMark? {
+            switch self {
+            case .own: return .own
+            case .ally: return .ally
+            case .neutral: return .neutral
+            case .enemy: return .enemy
+            case .target, .clear: return nil
+            }
+        }
+
+        /// 工具色点。
+        var swatchHex: String { mark?.ringHex ?? (self == .target ? "#EB3329" : "#B8BDC6") }
+    }
+
+    private var marksKey: String { "salt.chart.strongholdMarks.\(account.id)" }
+
     init(session: LobbySessionModel, account: GameAccount, windowRef: WeakWindowRef) {
         self.session = session
         self.account = account
         self.windowRef = windowRef
         _controller = ObservedObject(wrappedValue: session.saltField)
+        var initialMarks: [Int: SaltStrongholdMark] = [:]
+        if let data = UserDefaults.standard.data(forKey: "salt.chart.strongholdMarks.\(account.id)"),
+           let stored = try? JSONDecoder().decode([String: String].self, from: data) {
+            for (key, value) in stored {
+                if let position = Int(key), let mark = SaltStrongholdMark(rawValue: value) {
+                    initialMarks[position] = mark
+                }
+            }
+        }
+        // 兼容旧版本：之前只存过「我方大本营序号」。
+        if initialMarks.isEmpty,
+           let legacy = UserDefaults.standard.object(forKey: "salt.chart.ownStronghold.\(account.id)") as? Int {
+            initialMarks[legacy] = .own
+        }
+        _strongholdMarks = State(initialValue: initialMarks)
     }
 
     /// 穿透豁免区高度 = 标准标题栏（≈28）+ 工具栏高度（实测；上报失败按 44 保底，
@@ -306,6 +363,168 @@ struct SaltFieldChartWindowView: View {
     /// 实时地图链的进度 / 失败文案。
     private var liveStatus: String? { controller.liveStatus[account.id] }
     private var isPolling: Bool { controller.pollingAccountIDs.contains(account.id) }
+
+    /// 当前地图节点（有快照用快照，否则静态骨架）。
+    private var currentNodes: [String: SaltRenderedNode] {
+        snapshot?.nodes ?? Self.staticNodes
+    }
+
+    /// 我方大本营序号：**手标优先**（marks 里的「自身」），否则用实时数据自动认领
+    /// （我方军团 ID ← `legion_getinfo`，去 `legion_getopponent` 名单里找同名军团的位置）。
+    private var ownPosition: Int? {
+        if let marked = strongholdMarks.first(where: { $0.value == .own })?.key { return marked }
+        guard let ownLegionID = controller.ownLegionIDs[account.id],
+              let live = liveBattlefield else { return nil }
+        return live.clubs.first { $0.legionID == ownLegionID }?.position
+    }
+
+    private var ownStrongholdNodeID: String? {
+        ownPosition.flatMap { SaltFieldChartController.strongholdNodeID(position: $0) }
+    }
+
+    /// 我方 → 各攻击点 的**连续通路**：每一段单独 BFS，再首尾相接（去掉重复的接缝格）。
+    /// 用户口径：再点一个据点/大本营就**接着之前的路线扩展**，所以是累加而不是替换。
+    private var routeIDs: [String] {
+        guard let from = ownStrongholdNodeID else { return [] }
+        var result: [String] = []
+        var cursor = from
+        for waypoint in routeWaypointIDs {
+            let leg = SaltFieldChartController.route(from: cursor, to: waypoint, in: currentNodes)
+            guard !leg.isEmpty else { continue }
+            if result.isEmpty {
+                result.append(contentsOf: leg)
+            } else {
+                result.append(contentsOf: leg.dropFirst())   // 去掉接缝处重复的那一格
+            }
+            cursor = waypoint
+        }
+        return result
+    }
+
+    /// 点格子：按当前工具生效（⌥ 点击 = 强制「自身」，作为快捷键）。
+    /// 「自身/友军/中立/敌对」只对大本营有效；「加攻击点」对任意据点/大本营有效。
+    private func pickStronghold(nodeID: String, asOwn: Bool) {
+        applyMark(nodeID: nodeID, tool: asOwn ? .own : markTool)
+    }
+
+    /// 加/移攻击点：已在路线里 → 移除（后面几段会自动重新接上）；否则**追加**。
+    private func toggleWaypoint(nodeID: String) {
+        guard let node = currentNodes[nodeID], !node.isRoad else { return }
+        if let index = routeWaypointIDs.firstIndex(of: nodeID) {
+            routeWaypointIDs.remove(at: index)
+        } else {
+            routeWaypointIDs.append(nodeID)
+        }
+    }
+
+    /// 右键菜单：直接指定关系（`nil` = 清除）。「自身」唯一，设新的会清掉旧的。
+    private func markStronghold(nodeID: String, mark: SaltStrongholdMark?) {
+        guard let position = SaltFieldChartController.strongholdPosition(nodeID: nodeID) else { return }
+        if let mark {
+            if mark.isUnique { strongholdMarks = strongholdMarks.filter { $0.value != mark } }
+            strongholdMarks[position] = mark
+        } else {
+            strongholdMarks[position] = nil
+        }
+        saveMarks()
+    }
+
+    /// 右键菜单：加 / 移攻击点。
+    private func menuToggleWaypoint(nodeID: String) {
+        toggleWaypoint(nodeID: nodeID)
+    }
+
+    /// 施加标记：同类再点一次 = 取消；「自身」唯一（设新的会清掉旧的）。
+    private func applyMark(nodeID: String, tool: MarkTool) {
+        if tool == .target {
+            toggleWaypoint(nodeID: nodeID)
+            return
+        }
+        guard let position = SaltFieldChartController.strongholdPosition(nodeID: nodeID) else { return }
+        switch tool {
+        case .target:
+            return
+        case .clear:
+            strongholdMarks[position] = nil
+        case .own, .ally, .neutral, .enemy:
+            guard let mark = tool.mark else { return }
+            if mark.isUnique { strongholdMarks = strongholdMarks.filter { $0.value != mark } }
+            if strongholdMarks[position] == mark {
+                strongholdMarks[position] = nil          // 再点一次取消
+            } else {
+                strongholdMarks[position] = mark
+            }
+        }
+        saveMarks()
+    }
+
+    /// 标记持久化（[序号: 关系] → JSON）。
+    private func saveMarks() {
+        let encoded = Dictionary(uniqueKeysWithValues:
+            strongholdMarks.map { (String($0.key), $0.value.rawValue) })
+        if let data = try? JSONEncoder().encode(encoded) {
+            UserDefaults.standard.set(data, forKey: marksKey)
+        }
+    }
+
+    /// 选了攻击目标但还没认领我方大本营 → 画不出路线，给条醒目提示
+    /// （用户反馈：只看到目标红圈、没有通路，就是因为缺我方）。
+    @ViewBuilder
+    private var routeWarningBanner: some View {
+        if !routeWaypointIDs.isEmpty, ownPosition == nil {
+            Text("已加 \(routeWaypointIDs.count) 个攻击点，但还没认领我方大本营 —— 点/右键任一格子设为「自身」才会画进攻路线")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color(red: 0.55, green: 0.20, blue: 0.05))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color(red: 1.0, green: 0.93, blue: 0.80), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color(red: 0.92, green: 0.65, blue: 0.25)))
+                .padding(.top, 8)
+        }
+    }
+
+    /// 左上角标记工具面板：选一种关系，然后点地图上的大本营即可（同类再点一次取消）。
+    private var markToolPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("大本营标记")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("点选后点格子；右键直接选")
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+            ForEach(MarkTool.allCases) { tool in
+                Button {
+                    markTool = tool
+                } label: {
+                    markToolRow(tool)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6)
+        .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.black.opacity(0.15)))
+        .padding(8)
+    }
+
+    private func markToolRow(_ tool: MarkTool) -> some View {
+        let selected = markTool == tool
+        return HStack(spacing: 5) {
+            Circle()
+                .fill(SaltColorPalette.color(tool.swatchHex))
+                .frame(width: 7, height: 7)
+            Text(tool.label)
+                .font(.system(size: 10, weight: selected ? .semibold : .regular))
+                .foregroundStyle(.primary)
+            Spacer(minLength: 0)
+        }
+        .frame(width: 62, alignment: .leading)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(selected ? Color.black.opacity(0.10) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 4))
+    }
+
     private var warActive: Bool { controller.warActiveAccountIDs.contains(account.id) }
 
     var body: some View {
@@ -744,7 +963,20 @@ struct SaltFieldChartWindowView: View {
                                    legionNameByID: snapshot.map { snap in
                                        Dictionary(uniqueKeysWithValues: snap.legions.map { ($0.id, $0.name) })
                                    } ?? [:],
-                                   clubsByPosition: liveBattlefield?.clubByPosition ?? [:])
+                                   clubsByPosition: liveBattlefield?.clubByPosition ?? [:],
+                                   strongholdMarks: strongholdMarks,
+                                   routeWaypointIDs: routeWaypointIDs,
+                                   routeIDs: routeIDs,
+                                   onPickStronghold: { nodeID, asOwn in
+                                       pickStronghold(nodeID: nodeID, asOwn: asOwn)
+                                   },
+                                   onMarkStronghold: { nodeID, mark in
+                                       markStronghold(nodeID: nodeID, mark: mark)
+                                   },
+                                   onToggleWaypoint: { nodeID in
+                                       menuToggleWaypoint(nodeID: nodeID)
+                                   },
+                                   onClearRoute: { routeWaypointIDs.removeAll() })
         let table = Group {
             if let snapshot {
                 SaltFieldStatView(snapshot: snapshot, mode: statMode)
@@ -764,6 +996,8 @@ struct SaltFieldChartWindowView: View {
                 HStack(spacing: 0) {
                     map
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .topLeading) { markToolPanel }
+                        .overlay(alignment: .top) { routeWarningBanner }
                         .overlay(alignment: .bottomLeading) { mapCaption }
                     Divider()
                     table.frame(width: 430)
@@ -775,19 +1009,48 @@ struct SaltFieldChartWindowView: View {
     /// 地图左下角角标：有落位就报「哪一场 / 几家落位 / 什么时候拉的」，
     /// 没有就报当前卡在哪一步（未进盐场 / 正在定位 / 本月非盐场周）。
     private var mapCaption: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(mapCaptionColor)
-                .frame(width: 6, height: 6)
-            Text(mapCaptionText)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(mapCaptionColor)
+                    .frame(width: 6, height: 6)
+                Text(mapCaptionText)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(ownPosition != nil ? Color(red: 0.10, green: 0.42, blue: 0.29) : .gray)
+                    .frame(width: 6, height: 6)
+                Text(routeHintText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(Color.white.opacity(0.85), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.black.opacity(0.10)))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.black.opacity(0.10)))
         .padding(8)
+    }
+
+    /// 路线行：我方大本营 / 攻击目标 / 通路长度 + 阵营统计。
+    private var routeHintText: String {
+        var parts: [String] = []
+        parts.append(ownPosition.map { "我方 \($0) 号" } ?? "我方未认领")
+        if routeWaypointIDs.isEmpty {
+            parts.append("未加攻击点")
+        } else {
+            let hops = max(0, routeIDs.count - 1)
+            parts.append("攻击点 \(routeWaypointIDs.count) 个 · 通路 \(hops) 格")
+        }
+        let ally = strongholdMarks.values.filter { $0 == .ally }.count
+        let neutral = strongholdMarks.values.filter { $0 == .neutral }.count
+        let enemy = strongholdMarks.values.filter { $0 == .enemy }.count
+        if ally + neutral + enemy > 0 {
+            parts.append("友\(ally) 中\(neutral) 敌\(enemy)")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var mapCaptionText: String {
@@ -854,6 +1117,20 @@ struct SaltFieldMapView: View {
     let legionNameByID: [Int64: String]
     /// 大本营序号 → 俱乐部（主连接 `legion_getopponent` 的实时落位；可为空）。
     var clubsByPosition: [Int: SaltLiveClub] = [:]
+    /// 大本营关系标记（序号 → 自身/友军/中立/敌对；用户手标）。
+    var strongholdMarks: [Int: SaltStrongholdMark] = [:]
+    /// 攻击路线上的点（我方之后的每一段终点；可以是**任意据点或大本营**，按点击顺序）。
+    var routeWaypointIDs: [String] = []
+    /// 我方 → 目标 的通路（沿格子中心连线高亮）。
+    var routeIDs: [String] = []
+    /// 点中某个大本营（`asOwn = true` 表示按着 ⌥ 点，设为「我方大本营」）。
+    var onPickStronghold: ((_ nodeID: String, _ asOwn: Bool) -> Void)?
+    /// 右键菜单：给大本营标关系（`nil` = 清除）。
+    var onMarkStronghold: ((_ nodeID: String, _ mark: SaltStrongholdMark?) -> Void)?
+    /// 右键菜单：加/移攻击点（追加一段路线）。
+    var onToggleWaypoint: ((_ nodeID: String) -> Void)?
+    /// 右键菜单：清空整条攻击路线。
+    var onClearRoute: (() -> Void)?
 
     /// 几何（格子中心 / 自适应 / 命中）统一在引擎里，绘制与悬停共用同一套数学。
     private let geometry = SaltFieldMapGeometry()
@@ -909,6 +1186,54 @@ struct SaltFieldMapView: View {
                     }
                     .onEnded { _ in panBase = pan }
             )
+            // 点大本营：普通点击 = 选攻击目标；⌥ 点击 = 设为我方大本营。
+            .gesture(
+                SpatialTapGesture()
+                    .onEnded { value in
+                        guard let onPickStronghold,
+                              let id = geometry.nodeID(at: value.location, in: geo.size,
+                                                       zoom: zoom, pan: pan),
+                              nodes[id]?.isStronghold == true else { return }
+                        let asOwn = NSEvent.modifierFlags.contains(.option)
+                        onPickStronghold(id, asOwn)
+                    }
+            )
+            // 右键 = 对**光标所在格子**标记（大本营才能标关系；其它格子只给坐标信息）。
+            .contextMenu {
+                if let hoveredID, let node = nodes[hoveredID] {
+                    Text("\(hoveredID) · \(node.labelText)")
+                    if let position = SaltFieldChartController.strongholdPosition(nodeID: hoveredID),
+                       node.isStronghold {
+                        Text("大本营 \(position) 号")
+                        ForEach(SaltStrongholdMark.allCases, id: \.self) { mark in
+                            Button {
+                                onMarkStronghold?(hoveredID, mark)
+                            } label: {
+                                Label(mark.rawValue, systemImage: strongholdMarks[position] == mark
+                                      ? "checkmark.circle.fill" : "circle")
+                            }
+                        }
+                        Button("清除标记") { onMarkStronghold?(hoveredID, nil) }
+                        Divider()
+                    }
+                    if !node.isRoad {
+                        // 攻击点可以是**任意据点或大本营**（用户口径 2026-09-19）
+                        Button {
+                            onToggleWaypoint?(hoveredID)
+                        } label: {
+                            Label(routeWaypointIDs.contains(hoveredID) ? "从攻击路线移除" : "加为攻击点",
+                                  systemImage: "scope")
+                        }
+                    } else {
+                        Text("（道路不能作为攻击点）")
+                    }
+                    if !routeWaypointIDs.isEmpty {
+                        Button("清空攻击路线") { onClearRoute?() }
+                    }
+                } else {
+                    Text("把鼠标移到格子上再右键")
+                }
+            }
             // 上报「地图在窗口里的 frame」——Ctrl+滚轮要判断光标是否落在地图上。
             .background(WindowFrameReporter { frame, window in
                 scrollHost.frameInWindow = frame
@@ -937,6 +1262,12 @@ struct SaltFieldMapView: View {
             }
             .overlay(alignment: .topTrailing) {
                 zoomControls
+            }
+            // 我方大本营的呼吸光：独立 overlay，动画只重画这一小块（不进 Canvas）。
+            .overlay(alignment: .topLeading) {
+                markGlows(size: geo.size)
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                    .clipped()
             }
         }
         .onAppear { installScrollZoom() }
@@ -1046,6 +1377,24 @@ struct SaltFieldMapView: View {
         let maxY = max(0, (map.height * fit.scale - size.height) / 2 + 40)
         return CGSize(width: min(max(value.width, -maxX), maxX),
                       height: min(max(value.height, -maxY), maxY))
+    }
+
+    /// 所有已标记大本营的呼吸光（自身绿 / 友军蓝 / 中立灰 / 敌对红），各按自己的颜色呼吸。
+    @ViewBuilder
+    private func markGlows(size: CGSize) -> some View {
+        let fit = geometry.fit(in: size, zoom: zoom, pan: pan)
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(strongholdMarks.keys.sorted()), id: \.self) { position in
+                if let id = SaltFieldChartController.strongholdNodeID(position: position),
+                   let node = nodes[id], let mark = strongholdMarks[position] {
+                    BreathingGlow(radius: geometry.hexSize * fit.scale,
+                                  color: SaltColorPalette.color(mark.ringHex),
+                                  strong: mark == .own)
+                        .position(geometry.center(col: node.x, row: node.y, in: size,
+                                                  zoom: zoom, pan: pan))
+                }
+            }
+        }
     }
 
     /// 右下角读数：悬停据点的**坐标**（就是坐标表的 key）+ 类型/归属/血量。
@@ -1173,6 +1522,55 @@ struct SaltFieldMapView: View {
                 labels.append((center, node.labelText, ink.opacity(0.9)))
             }
         }
+        // 进攻路线（沿格子中心连线的细线 + 淡柔光）。**必须画在标注之前**，
+        // 否则线会压在据点名字上（用户反馈：太粗、把名字盖住了）。
+        // 顺序：空格 → 格子 → 路线/圈 → 名字 → 俱乐部胶囊。
+        if routeIDs.count > 1 {
+            var line = Path()
+            var started = false
+            for id in routeIDs {
+                guard let node = nodes[id] else { continue }
+                let point = screenCenter(col: node.x, row: node.y)
+                if started { line.addLine(to: point) } else { line.move(to: point); started = true }
+            }
+            if started {
+                let routeColor = Color(red: 0.92, green: 0.20, blue: 0.16)
+                // 细线 + 很淡的柔光：太粗会压住格子里名字（用户反馈 2026-09-19）
+                context.stroke(line, with: .color(routeColor.opacity(0.18)),
+                               style: StrokeStyle(lineWidth: radius * 0.95,
+                                                  lineCap: .round, lineJoin: .round))
+                context.stroke(line, with: .color(routeColor.opacity(0.95)),
+                               style: StrokeStyle(lineWidth: radius * 0.30,
+                                                  lineCap: .round, lineJoin: .round))
+            }
+        }
+        // 大本营关系圈：自身绿 / 友军蓝 / 中立灰 / 敌对红（呼吸光在 overlay 里）。
+        for (position, mark) in strongholdMarks {
+            guard let id = SaltFieldChartController.strongholdNodeID(position: position),
+                  let node = nodes[id] else { continue }
+            let center = screenCenter(col: node.x, row: node.y)
+            context.stroke(hexPath(center: center, radius: radius * 0.92),
+                           with: .color(SaltColorPalette.color(mark.ringHex)),
+                           lineWidth: max(1.6, radius * 0.16))
+        }
+        // 攻击路线上的点：粗红环 + 顺序编号（可以连着打多个据点/大本营）。
+        let routeColor = Color(red: 0.92, green: 0.20, blue: 0.16)
+        for (index, id) in routeWaypointIDs.enumerated() {
+            guard let node = nodes[id] else { continue }
+            let center = screenCenter(col: node.x, row: node.y)
+            context.stroke(hexPath(center: center, radius: radius * 0.72),
+                           with: .color(routeColor),
+                           lineWidth: max(2.2, radius * 0.26))
+            let badge = CGPoint(x: center.x + radius * 0.72, y: center.y - radius * 0.72)
+            context.fill(Path(ellipseIn: CGRect(x: badge.x - radius * 0.34,
+                                                y: badge.y - radius * 0.34,
+                                                width: radius * 0.68, height: radius * 0.68)),
+                         with: .color(routeColor))
+            context.draw(Text("\(index + 1)")
+                .font(.system(size: max(7, radius * 0.52), weight: .bold))
+                .foregroundStyle(.white), at: badge)
+        }
+
         // 标注：按**实际字体度量**把文字收进六边形。
         //
         // 固定字号在「30血」这种 2 字标签上没问题，但坐标表填进 3–4 字的名字
@@ -1246,6 +1644,78 @@ struct WindowFrameReporter: NSViewRepresentable {
 
         private func report() {
             onChange(convert(bounds, to: nil), window)
+        }
+    }
+}
+
+// MARK: - 大本营的呼吸光
+
+/// 呼吸光：**双环错峰扩散 + 脉冲底晕**，标出大本营的关系（自身/友军/中立/敌对）。
+///
+/// 为什么做得这么"重"：只靠一圈细描边，颜色相近时根本分不出阵营（用户 2026-09-19 反馈）；
+/// 这里改成「一圈实环 + 两圈错峰扩散 + 一圈会呼吸的底晕」，动起来才一眼能认。
+/// 单独成一个视图，动画只重画这一小块（整张地图 1600+ 个格子不能每帧重画）。
+struct BreathingGlow: View {
+    let radius: CGFloat
+    let color: Color
+    /// 「自身」用更强的效果：**三层扩散 + 白色内闪 + 更亮的底晕**（用户要求更猛、更绿）。
+    var strong: Bool = false
+
+    @State private var pulsing = false
+
+    var body: some View {
+        ZStack {
+            // 会呼吸的底晕（让整格亮起来，不只靠描边）
+            Circle()
+                .fill(color.opacity(strong ? 0.45 : 0.28))
+                .frame(width: radius * 1.7, height: radius * 1.7)
+                .scaleEffect(pulsing ? (strong ? 1.3 : 1.22) : 0.9)
+                .opacity(pulsing ? 0.45 : 1.0)
+            // 白色内闪（仅自身：绿色底上叠一层白，闪起来更跳）
+            if strong {
+                Circle()
+                    .stroke(Color.white.opacity(0.92), lineWidth: 2.2)
+                    .frame(width: radius * 1.15, height: radius * 1.15)
+                    .scaleEffect(pulsing ? 1.6 : 0.85)
+                    .opacity(pulsing ? 0 : 1)
+                    .animation(.easeOut(duration: 0.95).repeatForever(autoreverses: false),
+                               value: pulsing)
+            }
+            // 常亮主环
+            Circle()
+                .stroke(color, lineWidth: strong ? 3.4 : 2.4)
+                .frame(width: radius * 1.72, height: radius * 1.72)
+            // 扩散环 A
+            Circle()
+                .stroke(color.opacity(0.9), lineWidth: strong ? 3.0 : 2.2)
+                .frame(width: radius * 1.7, height: radius * 1.7)
+                .scaleEffect(pulsing ? (strong ? 2.6 : 2.2) : 1.0)
+                .opacity(pulsing ? 0 : 1)
+            // 扩散环 B（错峰半拍）
+            Circle()
+                .stroke(color.opacity(0.7), lineWidth: 1.8)
+                .frame(width: radius * 1.7, height: radius * 1.7)
+                .scaleEffect(pulsing ? (strong ? 2.6 : 2.2) : 1.0)
+                .opacity(pulsing ? 0 : 1)
+                .animation(.easeOut(duration: 1.5).repeatForever(autoreverses: false).delay(0.75),
+                           value: pulsing)
+            // 扩散环 C（仅自身：白环，更慢更大）
+            if strong {
+                Circle()
+                    .stroke(Color.white.opacity(0.6), lineWidth: 2)
+                    .frame(width: radius * 1.7, height: radius * 1.7)
+                    .scaleEffect(pulsing ? 3.1 : 1.0)
+                    .opacity(pulsing ? 0 : 0.9)
+                    .animation(.easeOut(duration: 1.5).repeatForever(autoreverses: false).delay(1.1),
+                               value: pulsing)
+            }
+        }
+        .frame(width: radius * 2, height: radius * 2)
+        .allowsHitTesting(false)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                pulsing = true
+            }
         }
     }
 }

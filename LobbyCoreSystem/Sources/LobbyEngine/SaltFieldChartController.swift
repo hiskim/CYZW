@@ -74,6 +74,8 @@ public final class SaltFieldChartController: ObservableObject {
     @Published public private(set) var liveBattlefields: [String: SaltLiveBattlefield] = [:]
     /// 账号 → 实时地图状态文案（窗口顶部提示 / 排错用）。
     @Published public private(set) var liveStatus: [String: String] = [:]
+    /// 账号 → **我方军团 ID**（`legion_getinfo` 的 info.id）——用来自动认领我方大本营。
+    @Published public private(set) var ownLegionIDs: [String: Int64] = [:]
     /// 正在跑实时地图链的账号（防重入）。
     private var liveBusy: Set<String> = []
     /// 链中途的暂存（battlefield → opponent → 各家详情逐级填充）。
@@ -337,6 +339,7 @@ public final class SaltFieldChartController: ObservableObject {
         chainedBattleDate.removeValue(forKey: accountID)
         // 实时地图归属（与快照同生命周期：实例关了就没有「实时」可言）
         liveBattlefields.removeValue(forKey: accountID)
+        ownLegionIDs.removeValue(forKey: accountID)
         liveStatus.removeValue(forKey: accountID)
         liveBusy.remove(accountID)
         liveDrafts.removeValue(forKey: accountID)
@@ -624,15 +627,24 @@ public final class SaltFieldChartController: ObservableObject {
                                        inner: BonValue?, accountID: String) {
         switch pending.kind {
         case .legionInfo:
-            historyBusy.remove(accountID)
+            setBusy(pending.channel, accountID: accountID, busy: false)
+            // 我方军团 ID（自动认领我方大本营用；历史页与实时页都会走到这里）。
+            if let ownID = Self.parseOwnLegionID(inner: inner) {
+                if ownLegionIDs[accountID] != ownID {
+                    ownLegionIDs[accountID] = ownID
+                    LobbyLog.info("[saltfield-live] %@ 我方军团 ID = %lld", accountID, ownID)
+                }
+            }
             let battles = Self.parseHistoryBattles(inner: inner)
             if battles.isEmpty {
                 let structure = Self.describeBodyKeys(inner: inner)
-                historyStatus[accountID] = "未查到历史场次（结构诊断见 diagnostics.log 的 [saltfield-history]）"
+                setStatus(pending.channel, accountID: accountID,
+                          text: "未查到历史场次（结构诊断见 diagnostics.log 的 [saltfield-history]）")
                 LobbyLog.warn("[saltfield-history] %@ warMap 解析为空。响应结构：%@",
                               accountID, structure)
             } else {
-                historyStatus[accountID] = "历史场次已加载：共 \(battles.count) 场"
+                setStatus(pending.channel, accountID: accountID,
+                          text: "历史场次已加载：共 \(battles.count) 场")
             }
             historyBattles[accountID] = battles
             LobbyLog.info("[saltfield-history] %@ 历史场次 %ld", accountID, battles.count)
@@ -743,6 +755,17 @@ public final class SaltFieldChartController: ObservableObject {
             }
             draft.requested = missing.count
             liveDrafts[accountID] = draft
+            // 顺手查一次我方军团信息（拿 info.id → 自动认领我方大本营）。
+            // 复用 .legionInfo 这条 kind（同一个命令），但走 live 通道：状态文案写 liveStatus，
+            // 不会污染历史战绩页；顺带把历史场次也刷新一遍（同一份数据，无害）。
+            if ownLegionIDs[accountID] == nil {
+                enqueueHistorySend(accountID: accountID,
+                                   command: "legion_getinfo",
+                                   paramsJSON: "{}",
+                                   kind: .legionInfo,
+                                   startStatus: "正在认领我方大本营…",
+                                   channel: .live)
+            }
             LobbyLog.info("[saltfield-live] %@ 对手 %ld 家（缓存命中 %ld，待补 %ld）",
                           accountID, entries.count, draft.clubs.count, missing.count)
             guard !missing.isEmpty else {
@@ -1107,6 +1130,15 @@ public final class SaltFieldChartController: ObservableObject {
         return (Int(phase), id)
     }
 
+    /// `legion_getinfo` → **我方军团 ID**（`info.id`）。配合 `legion_getopponent` 的
+    /// 对手名单就能自动认出「我方大本营是哪一号」——参考脚本「星驰」也是这么配的
+    /// （它拿 legion_getinfo 的 id 与 legion_getopponent 的 legionId 比对）。
+    static func parseOwnLegionID(inner: BonValue?) -> Int64? {
+        let node = inner?.path("info") ?? inner
+        let id = node?.path("id")?.intValue ?? node?.path("legionId")?.intValue ?? 0
+        return id > 0 ? id : nil
+    }
+
     /// `legion_getopponent` → [(legionID, position)]（position = 大本营序号）。
     static func parseOpponentLegions(inner: BonValue?) -> [(legionID: Int64, position: Int)] {
         var result: [(legionID: Int64, position: Int)] = []
@@ -1145,6 +1177,46 @@ public final class SaltFieldChartController: ObservableObject {
     /// 大本营序号 → 地图节点 id（静态表见 `SaltFieldRoadPoints.strongholdNodeIDs`）。
     public static func strongholdNodeID(position: Int) -> String? {
         SaltFieldRoadPoints.strongholdNodeID(position: position)
+    }
+
+    /// 两个格子之间的最短通路（含起点与终点；不可达返回空数组）。
+    ///
+    /// ⚠️ 必须走**全节点**图，不能只走道路：骨架里的道路是**分段**的（实测仅道路有 87 个
+    /// 连通块、20 个大本营 0 个落在最大块里），而全节点是单一连通块（323 个、20/20 大本营）。
+    /// 所以「我方大本营 → 目标大本营」的路线会沿道路走、必要时穿过中间的据点格子。
+    ///
+    /// 用于地图上的「进攻路线」高亮（用户 2026-09-19 要求）。
+    public static func route(from startID: String, to endID: String,
+                             in nodes: [String: SaltRenderedNode]) -> [String] {
+        guard startID != endID, nodes[startID] != nil, nodes[endID] != nil else {
+            return startID == endID && nodes[startID] != nil ? [startID] : []
+        }
+        // 邻接表：只在「有内容的格子」之间连边（空格不参与，路线不该穿空地）。
+        var adjacency: [String: [String]] = [:]
+        for id in nodes.keys { adjacency[id] = SaltFieldRoadPoints.neighborIDs(of: id) }
+        var previous: [String: String] = [:]
+        var visited: Set<String> = [startID]
+        var queue: [String] = [startID]
+        var head = 0
+        while head < queue.count {
+            let current = queue[head]
+            head += 1
+            if current == endID { break }
+            for neighbor in adjacency[current] ?? [] where nodes[neighbor] != nil {
+                if visited.insert(neighbor).inserted {
+                    previous[neighbor] = current
+                    queue.append(neighbor)
+                }
+            }
+        }
+        guard visited.contains(endID) else { return [] }
+        var path: [String] = []
+        var cursor: String? = endID
+        while let id = cursor {
+            path.append(id)
+            cursor = previous[id]
+        }
+        return path.reversed()
     }
 
     /// 地图网格尺寸（整张网格都要画：骨架之外的格子留白框）。
