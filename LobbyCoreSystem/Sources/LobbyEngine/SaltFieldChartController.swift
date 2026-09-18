@@ -253,11 +253,10 @@ public final class SaltFieldChartController: ObservableObject {
     /// 拉取我方历史场次（`legion_getinfo` → info.warMap + warRank）。
     /// 日历的可点日期与我方名次都来自这里。
     public func fetchHistoryBattles(accountID: String) {
-        guard !historyBusy.contains(accountID) else { return }
-        sendHistoryFrame(accountID: accountID, command: "legion_getinfo",
-                         paramsJSON: "{}",
-                         kind: .legionInfo,
-                         startStatus: "正在拉取历史场次…")
+        enqueueHistorySend(accountID: accountID, command: "legion_getinfo",
+                           paramsJSON: "{}",
+                           kind: .legionInfo,
+                           startStatus: "正在拉取历史场次…")
     }
 
     /// 查询指定场次的盐场总榜。两步链式：warType（当月未缓存时）→ totalRank。
@@ -270,13 +269,11 @@ public final class SaltFieldChartController: ObservableObject {
         if let warType = monthlyWarTypes[accountID]?[monthKey] {
             issueTotalRank(accountID: accountID, battleDate: battleDate, warType: warType)
         } else {
-            historyBusy.insert(accountID)
-            historyStatus[accountID] = "正在获取当月盐场类型…"
-            sendHistoryFrame(accountID: accountID,
-                             command: "saltroad_getwartype",
-                             paramsJSON: "{\"date\":\"\(monthKey)\"}",
-                             kind: .warType(monthFirstSaturday: monthKey),
-                             startStatus: "正在获取当月盐场类型…")
+            enqueueHistorySend(accountID: accountID,
+                               command: "saltroad_getwartype",
+                               paramsJSON: "{\"date\":\"\(monthKey)\"}",
+                               kind: .warType(monthFirstSaturday: monthKey),
+                               startStatus: "正在获取当月盐场类型…")
         }
     }
 
@@ -289,21 +286,35 @@ public final class SaltFieldChartController: ObservableObject {
             return
         }
         let dateKey = SaltHistoryCatalog.yymmddString(of: battleDate)
-        historyBusy.insert(accountID)
-        historyStatus[accountID] = "正在查询 \(SaltHistoryCatalog.warTypeName(warType)) 榜单…"
-        sendHistoryFrame(accountID: accountID,
-                         command: "saltroad_getsaltroadwartotalrank",
-                         paramsJSON: "{\"date\":\"\(dateKey)\",\"startRank\":\(range.startRank),\"endRank\":\(range.endRank)}",
-                         kind: .totalRank(battleDate: battleDate),
-                         startStatus: historyStatus[accountID] ?? "查询中…")
+        enqueueHistorySend(accountID: accountID,
+                           command: "saltroad_getsaltroadwartotalrank",
+                           paramsJSON: "{\"date\":\"\(dateKey)\",\"startRank\":\(range.startRank),\"endRank\":\(range.endRank)}",
+                           kind: .totalRank(battleDate: battleDate),
+                           startStatus: "正在查询 \(SaltHistoryCatalog.warTypeName(warType)) 榜单…")
+    }
+
+    /// 串行队列：同一账号的历史查询**按发起顺序逐个执行**——前一个拿到响应后才发
+    /// 下一个。并发两连发会在游戏封装里响应错位（实测：legion_getinfo 与
+    /// legionwar_getdetails 同时在途时，后者的 Promise 拿到前者的响应 → 解析为空）。
+    private var historyChainTasks: [String: Task<Void, Never>] = [:]
+
+    private func enqueueHistorySend(accountID: String, command: String, paramsJSON: String,
+                                    kind: PendingHistoryQuery.Kind, startStatus: String) {
+        let previous = historyChainTasks[accountID]
+        historyChainTasks[accountID] = Task { @MainActor [weak self] in
+            _ = await previous?.value
+            await self?.performHistorySend(accountID: accountID, command: command,
+                                           paramsJSON: paramsJSON, kind: kind,
+                                           startStatus: startStatus)
+        }
     }
 
     /// 发送历史查询命令。**主路径走游戏自己的发送封装**（`window.ws.sendAsync`，
     /// 猫助手同款）：seq 由游戏计数器管理，与游戏自身请求天然连续（宿主直发的
     /// 撞号 seq 会被服务端静默丢弃），且响应经封装的 Promise 直接带回（body 已由
     /// 游戏解码），无需抓包流配对。封装不可用时回退「原生日发 + pending 匹配」。
-    private func sendHistoryFrame(accountID: String, command: String, paramsJSON: String,
-                                  kind: PendingHistoryQuery.Kind, startStatus: String) {
+    private func performHistorySend(accountID: String, command: String, paramsJSON: String,
+                                    kind: PendingHistoryQuery.Kind, startStatus: String) async {
         guard let instance = pool?.existingSurface(forAccountID: accountID) else {
             historyStatus[accountID] = "实例未运行"
             return
@@ -312,18 +323,15 @@ public final class SaltFieldChartController: ObservableObject {
         historyStatus[accountID] = startStatus
         let pending = PendingHistoryQuery(kind: kind, command: command, paramsJSON: paramsJSON,
                                           seq: 0, issuedAt: Date())
-        Task { @MainActor [weak self] in
-            let js = PacketCaptureScript.sendViaGame(command: command, paramsJSON: paramsJSON)
-            let responseText = await instance.evaluatePageJS(js)
-            guard let self else { return }
-            guard let inner = Self.parseViaGameResponse(responseText) else {
-                LobbyLog.warn("[saltfield-history] %@ 游戏封装不可用/失败，回退直发通道：%@",
-                              accountID, responseText.prefix(200))
-                self.fallbackSendRaw(accountID: accountID, pending: pending)
-                return
-            }
-            self.handleHistoryResponse(pending: pending, inner: inner, accountID: accountID)
+        let js = PacketCaptureScript.sendViaGame(command: command, paramsJSON: paramsJSON)
+        let responseText = await instance.evaluatePageJS(js)
+        guard let inner = Self.parseViaGameResponse(responseText) else {
+            LobbyLog.warn("[saltfield-history] %@ 游戏封装不可用/失败，回退直发通道：%@",
+                          accountID, responseText.prefix(200))
+            fallbackSendRaw(accountID: accountID, pending: pending)
+            return
         }
+        handleHistoryResponse(pending: pending, inner: inner, accountID: accountID)
     }
 
     /// 解析 sendViaGame 的页面回执：`{"__ok":true,"data":…}` → data 的 BonValue 树。
@@ -550,13 +558,11 @@ public final class SaltFieldChartController: ObservableObject {
     /// `legionwar_getdetails { date: "YYYY/MM/DD" }` → roleDetailsList（成员 胜/负/攻城）。
     public func requestWarDetails(accountID: String, battleDate: Date) {
         let dateKey = SaltHistoryCatalog.slashDateString(of: battleDate)
-        historyBusy.insert(accountID)
-        historyStatus[accountID] = "正在查询 \(dateKey) 的盐场战绩…"
-        sendHistoryFrame(accountID: accountID,
-                         command: "legionwar_getdetails",
-                         paramsJSON: "{\"date\":\"\(dateKey)\"}",
-                         kind: .warDetails(battleDate: battleDate),
-                         startStatus: historyStatus[accountID] ?? "查询中…")
+        enqueueHistorySend(accountID: accountID,
+                           command: "legionwar_getdetails",
+                           paramsJSON: "{\"date\":\"\(dateKey)\"}",
+                           kind: .warDetails(battleDate: battleDate),
+                           startStatus: "正在查询 \(dateKey) 的盐场战绩…")
     }
 
     /// 该场次日期所属月份的 warType（已缓存才返回，否则 0）。
