@@ -53,8 +53,10 @@ public final class SaltFieldChartWindowManager: NSObject, NSWindowDelegate {
         window.title = "盐场战况 · \(account.nickname)"
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 900, height: 560)
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(calibratedWhite: 0.10, alpha: 1)
+        // 浅色主题（2026-09-18 用户要求白底）：实时地图本来就是白底绘制，
+        // 历史战报浅色化后对比度更好；控件随 aqua 自动深字。
+        window.appearance = NSAppearance(named: .aqua)
+        window.backgroundColor = NSColor(calibratedWhite: 0.99, alpha: 1)
         guard let session else {
             LobbyLog.warn("[saltfield] 会话模型未挂接，盐场图表窗口无法创建")
             return
@@ -277,8 +279,8 @@ struct SaltFieldChartWindowView: View {
             Divider()
             content
         }
-        .background(Color(nsColor: NSColor(calibratedWhite: 0.10, alpha: 1)))
-        .preferredColorScheme(.dark)
+        .background(Color(nsColor: NSColor(calibratedWhite: 0.99, alpha: 1)))
+        .preferredColorScheme(.light)
         .onAppear(perform: applyWindowSettings)
     }
 
@@ -689,22 +691,22 @@ struct SaltFieldStatView: View {
             .opacity(0.55)
     }
 
-    // MARK: 单元格
+    // MARK: 单元格（浅色主题）
 
     private func statHeader(_ title: String, width: CGFloat) -> some View {
         Text(title)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.85))
+            .foregroundStyle(.primary)
             .frame(width: width, height: 24, alignment: .leading)
             .padding(.horizontal, 4)
-            .background(Color.white.opacity(0.08))
+            .background(Color.black.opacity(0.05))
     }
 
     private func statCell(_ value: String, width: CGFloat,
                           bold: Bool = false, tint: Color? = nil) -> some View {
         Text(value)
             .font(.system(size: 11, weight: bold ? .semibold : .regular, design: .monospaced))
-            .foregroundStyle(tint ?? .white.opacity(0.82))
+            .foregroundStyle(tint ?? .primary.opacity(0.85))
             .lineLimit(1)
             .frame(width: width, height: 22, alignment: .leading)
             .padding(.horizontal, 4)
@@ -728,6 +730,9 @@ struct SaltHistoryView: View {
     @State private var month: Date = Date()
     /// 选中的场次日期（点日历设置，触发查询）。
     @State private var selectedDate: Date?
+    /// 明细表排序（点表头切换；默认击杀降序）。
+    @State private var sortKey: HistorySortKey = .kill
+    @State private var sortAscending = false
 
     init(session: LobbySessionModel, account: GameAccount) {
         _controller = ObservedObject(wrappedValue: session.saltField)
@@ -862,7 +867,7 @@ struct SaltHistoryView: View {
         }
     }
 
-    /// 日历格：盐场日可点（查总榜）；有我方场次的标注名次。
+    /// 日历格（浅色）：盐场日可点（查总榜）；有我方场次的标注名次。
     private func dayCell(day: Int) -> some View {
         let calendar = Calendar.current
         let saltDate = saltDays[day]
@@ -878,7 +883,8 @@ struct SaltHistoryView: View {
             VStack(spacing: 1) {
                 Text("\(day)")
                     .font(.system(size: 11, weight: isSaltDay ? .bold : .regular))
-                    .foregroundStyle(isSaltDay ? .white : .white.opacity(0.35))
+                    .foregroundStyle(isSaltDay ? Color(red: 0.10, green: 0.26, blue: 0.20)
+                                               : Color.primary.opacity(0.35))
                 if let battle {
                     Text(battle.rank > 0 ? "第\(battle.rank)名" : battle.warTypeName)
                         .font(.system(size: 8, weight: .semibold))
@@ -886,7 +892,7 @@ struct SaltHistoryView: View {
                 } else if isSaltDay {
                     Text("盐场")
                         .font(.system(size: 8))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(Color.secondary.opacity(0.7))
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 34)
@@ -897,26 +903,26 @@ struct SaltHistoryView: View {
         }
         .buttonStyle(.plain)
         .disabled(!isSaltDay)
-        .help(isSaltDay ? "点击查询 \(day) 日盐场总榜" : "非盐场日（仅周六与第 4 周周日开放）")
+        .help(isSaltDay ? "点击查询 \(day) 日盐场战绩" : "非盐场日（仅周六与第 4 周周日开放）")
         .dayCellHover(day: day, calendar: calendar, saltDate: saltDate)
     }
 
     private func cellBackground(day: Int, isSaltDay: Bool,
                                 battle: SaltHistoryBattle?, isSelected: Bool) -> Color {
-        if isSelected { return Color.cyan.opacity(0.35) }
-        if battle != nil { return Color.white.opacity(0.12) }
-        if isSaltDay { return Color.cyan.opacity(0.10) }
-        return Color.white.opacity(0.03)
+        if isSelected { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.18) }
+        if battle != nil { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.08) }
+        if isSaltDay { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.045) }
+        return Color.black.opacity(0.02)
     }
 
     /// 我方名次徽标配色。
     private func rankColor(_ rank: Int) -> Color {
         switch rank {
-        case 1: return .yellow
-        case 2: return Color(red: 0.85, green: 0.87, blue: 0.92)
-        case 3: return .orange
-        case 4...20: return .cyan
-        default: return .white.opacity(0.55)
+        case 1: return .orange
+        case 2: return Color(red: 0.42, green: 0.45, blue: 0.50)
+        case 3: return Color(red: 0.72, green: 0.45, blue: 0.20)
+        case 4...20: return Color(red: 0.10, green: 0.26, blue: 0.20)
+        default: return .secondary
         }
     }
 
@@ -933,24 +939,37 @@ struct SaltHistoryView: View {
     private var rankView: some View {
         if let result = controller.historyDetails[account.id] {
             VStack(spacing: 0) {
-                metricCards(result)
+                // 上栏一：总览卡（总击杀 / 总死亡 / 总攻城 / 平均 K.D）。
+                overviewCards(result)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
+                // 上栏二：四个 TOP3 榜单。
+                topPodiums(result)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                 Divider()
+                // 底部：全部成员明细（可点表头排序；默认击杀降序）。
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        // 表头：# 居中、成员左、攻城/击杀/死亡/K.D/积分右（数值右对齐规范）。
                         HStack(spacing: 0) {
                             rankHeader("#", width: 40, alignment: .center)
-                            rankHeader("成员", width: 116, alignment: .leading)
-                            rankHeader("攻城", width: 76, alignment: .trailing)
-                            rankHeader("击杀", width: 56, alignment: .trailing)
-                            rankHeader("死亡", width: 56, alignment: .trailing)
-                            rankHeader("K/D", width: 56, alignment: .trailing)
-                            rankHeader("总积分", width: 56, alignment: .trailing)
+                            // 成员列弹性拉伸，让明细表与上栏榜单卡同宽（下限 520）。
+                            Text("成员")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.primary.opacity(0.75))
+                                .frame(minWidth: 122, maxWidth: .infinity, alignment: .leading)
+                                .frame(height: 24)
+                                .padding(.horizontal, 4)
+                                .background(Color.black.opacity(0.05))
+                            sortableHeader("攻城", key: .siege, width: 72)
+                            sortableHeader("击杀", key: .kill, width: 60)
+                            sortableHeader("死亡", key: .death, width: 60)
+                            sortableHeader("K/D", key: .kd, width: 62)
+                            sortableHeader("总积分", key: .score, width: 70)
                         }
+                        .frame(minWidth: 520, maxWidth: .infinity, alignment: .leading)
                         let maxBuilding = result.rows.map(\.building).max() ?? 0
-                        ForEach(Array(result.rows.enumerated()), id: \.element.id) { index, row in
+                        ForEach(Array(sortedRows(result.rows).enumerated()), id: \.element.id) { index, row in
                             warDetailRow(index: index, row: row, maxBuilding: maxBuilding)
                         }
                     }
@@ -964,7 +983,7 @@ struct SaltHistoryView: View {
                     .foregroundStyle(.quaternary)
                 Text("选择左侧日历中的盐场日期")
                     .font(.headline)
-                Text("点击带底色的日期即可查询该场盐场的成员战绩（胜/负/攻城）；\n日历上的名次徽标来自「我的场次」拉取结果。")
+                Text("点击带底色的日期即可查询该场盐场的成员战绩（击杀/死亡/攻城/K.D）；\n日历上的名次徽标来自「我的场次」拉取结果。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -973,111 +992,173 @@ struct SaltHistoryView: View {
         }
     }
 
-    // MARK: 统计卡片（击杀 / 死亡 / 攻城 / 整体 K.D / MVP）
+    // MARK: 上栏 · 四个 TOP3 榜单（击杀 / 攻城 / K.D / 积分）
 
-    private func metricCards(_ result: SaltWarDetailsResult) -> some View {
-        return HStack(spacing: 8) {
-            // 总击杀。
-            metricCard {
-                Image(systemName: "scope")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.green)
-                    .frame(width: 40)
-                VStack(alignment: .leading, spacing: 3) {
-                    metricValue("\(result.totalKill)")
-                    metricCaption("总击杀")
-                }
-            }
-            // 总死亡。
-            metricCard {
-                Image(systemName: "shield.slash.fill")
-                    .font(.system(size: 19))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .frame(width: 40)
-                VStack(alignment: .leading, spacing: 3) {
-                    metricValue("\(result.totalDeath)")
-                    metricCaption("总死亡")
-                }
-            }
-            // 总攻城。
-            metricCard {
-                Image(systemName: "building.castle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.orange)
-                    .frame(width: 40)
-                VStack(alignment: .leading, spacing: 3) {
-                    metricValue("\(result.totalBuilding)")
-                    metricCaption("总攻城")
-                }
-            }
-            // 整体 K/D。
-            metricCard {
-                Image(systemName: "divide")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.cyan)
-                    .frame(width: 40)
-                VStack(alignment: .leading, spacing: 3) {
-                    metricValue(result.overallKDText)
-                    metricCaption("整体 K/D")
-                }
-            }
-            // 本场 MVP（击杀第 1；头像用昵称首字圆形占位——协议无头像字段）。
-            metricCard {
-                if let mvp = result.rows.first {
-                    ZStack {
-                        Circle().fill(LinearGradient(colors: [Color.orange.opacity(0.85),
-                                                              Color.pink.opacity(0.85)],
-                                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                        Text(String(mvp.name.prefix(1)))
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 36, height: 36)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "crown.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.yellow)
-                            Text(mvp.name)
-                                .font(.system(size: 12, weight: .semibold))
-                                .lineLimit(1)
-                        }
-                        Text("击杀\(mvp.win) · 死亡\(mvp.lose) · K/D \(mvp.kdText)")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("本场无数据")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+    /// 排序键（明细表点表头切换；默认击杀降序）。
+    enum HistorySortKey: String, CaseIterable {
+        case kill, death, siege, kd, score
+        var label: String {
+            switch self {
+            case .kill: return "击杀"
+            case .death: return "死亡"
+            case .siege: return "攻城"
+            case .kd: return "K/D"
+            case .score: return "总积分"
             }
         }
     }
 
-    /// 卡片容器：等分一行，圆角深色底 + 细描边。
-    private func metricCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 8) { content() }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07)))
+    private func sortedRows(_ rows: [SaltWarDetailRow]) -> [SaltWarDetailRow] {
+        let key: (SaltWarDetailRow) -> Double = { row in
+            switch sortKey {
+            case .kill: return Double(row.win)
+            case .death: return Double(row.lose)
+            case .siege: return Double(row.building)
+            case .kd: return row.kd
+            case .score: return Double(row.score)
+            }
+        }
+        return rows.sorted { sortAscending ? key($0) < key($1) : key($0) > key($1) }
     }
 
-    private func metricCaption(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
+    /// 可排序表头：点击按该列降序，再点同列切换升序；当前排序列带箭头高亮。
+    private func sortableHeader(_ title: String, key: HistorySortKey, width: CGFloat) -> some View {
+        Button {
+            if sortKey == key {
+                sortAscending.toggle()
+            } else {
+                sortKey = key
+                sortAscending = false
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Text(title)
+                if sortKey == key {
+                    Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+            }
+            .font(.system(size: 11, weight: sortKey == key ? .bold : .semibold))
+            .foregroundStyle(sortKey == key ? Color(red: 0.10, green: 0.26, blue: 0.20) : .primary.opacity(0.75))
+            .frame(width: width, height: 24, alignment: .trailing)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Color.black.opacity(0.05))
     }
 
-    private func metricValue(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 15, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .lineLimit(1)
+    /// 总览卡（标题在上、数字在下，按指标着色）：
+    /// 总击杀=绿 · 总死亡=红 · 总攻城=橙 · 平均 K/D=紫 · 总积分=蓝。
+    private func overviewCards(_ result: SaltWarDetailsResult) -> some View {
+        let totalScore = result.rows.reduce(0) { $0 + $1.score }
+        return HStack(spacing: 8) {
+            overviewCard(label: "总击杀", tint: Color(red: 0.10, green: 0.42, blue: 0.29),
+                         icon: "scope", value: "\(result.totalKill)")
+            overviewCard(label: "总死亡", tint: Color(red: 0.80, green: 0.20, blue: 0.16),
+                         icon: "shield.slash.fill", value: "\(result.totalDeath)")
+            overviewCard(label: "总攻城", tint: Color(red: 0.85, green: 0.47, blue: 0.02),
+                         icon: "building.castle.fill", value: "\(result.totalBuilding)")
+            overviewCard(label: "平均 K/D", tint: Color(red: 0.49, green: 0.23, blue: 0.93),
+                         icon: "divide", value: result.overallKDText)
+            overviewCard(label: "总积分", tint: Color(red: 0.15, green: 0.39, blue: 0.92),
+                         icon: "star.fill", value: "\(totalScore)")
+        }
+    }
+
+    /// 紧凑总览卡：标题（着色）在上、大数字（同色）在下。
+    private func overviewCard(label: String, tint: Color, icon: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 10.5, weight: .semibold))
+            }
+            .foregroundStyle(tint)
+            Text(value)
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(tint.opacity(0.22)))
+    }
+
+    private func topPodiums(_ result: SaltWarDetailsResult) -> some View {
+        let killTop3 = result.rows.sorted { $0.win > $1.win }.prefix(3)
+        let siegeTop3 = result.rows.sorted { $0.building > $1.building }.prefix(3)
+        let kdTop3 = result.rows.sorted { $0.kd > $1.kd }.prefix(3)
+        let scoreTop3 = result.rows.sorted { $0.score > $1.score }.prefix(3)
+        return HStack(alignment: .top, spacing: 8) {
+            podiumCard(title: "⚔️ 击杀榜 TOP3", rows: Array(killTop3)) { "\($0.win)" }
+            podiumCard(title: "🏰 攻城榜 TOP3", rows: Array(siegeTop3)) { "\($0.building)" }
+            podiumCard(title: "📈 K/D 榜 TOP3", rows: Array(kdTop3)) { $0.kdText }
+            podiumCard(title: "⭐️ 积分榜 TOP3", rows: Array(scoreTop3)) { "\($0.score)" }
+        }
+    }
+
+    /// 单个榜单卡：墨绿标题 + 三行（角标/头像/昵称/右对齐绿色数值）。
+    private func podiumCard(title: String,
+                            rows: [SaltWarDetailRow],
+                            figure: @escaping (SaltWarDetailRow) -> String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color(red: 0.10, green: 0.26, blue: 0.20))
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, member in
+                HStack(spacing: 6) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .frame(width: 16, height: 16)
+                        .background(RoundedRectangle(cornerRadius: 3.5)
+                            .fill(index == 0 ? Color(red: 0.10, green: 0.26, blue: 0.20)
+                                  : (index == 1 ? Color(red: 0.24, green: 0.38, blue: 0.34)
+                                     : Color(red: 0.35, green: 0.49, blue: 0.43))))
+                    Text(String(member.name.prefix(1)))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(LinearGradient(
+                            colors: [memberGradient(member).0, memberGradient(member).1],
+                            startPoint: .topLeading, endPoint: .bottomTrailing)))
+                    Text(member.name)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.primary.opacity(0.85))
+                        .lineLimit(1)
+                    Spacer(minLength: 2)
+                    Text(figure(member))
+                        .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.14)))
+    }
+
+    /// 成员头像渐变（按名字稳定取色）。
+    private func memberGradient(_ member: SaltWarDetailRow) -> (Color, Color) {
+        let pool: [(Color, Color)] = [
+            (Color(red: 0.18, green: 0.42, blue: 0.31), Color(red: 0.45, green: 0.66, blue: 0.57)),
+            (Color(red: 0.15, green: 0.39, blue: 0.92), Color(red: 0.49, green: 0.66, blue: 0.96)),
+            (Color(red: 0.49, green: 0.23, blue: 0.93), Color(red: 0.72, green: 0.61, blue: 0.96)),
+            (Color(red: 0.85, green: 0.47, blue: 0.02), Color(red: 0.94, green: 0.72, blue: 0.38)),
+            (Color(red: 0.86, green: 0.15, blue: 0.47), Color(red: 0.94, green: 0.57, blue: 0.75)),
+            (Color(red: 0.06, green: 0.46, blue: 0.43), Color(red: 0.37, green: 0.77, blue: 0.71)),
+            (Color(red: 0.28, green: 0.33, blue: 0.41), Color(red: 0.58, green: 0.65, blue: 0.72)),
+        ]
+        let hash = abs(member.name.hashValue) % pool.count
+        return pool[hash]
     }
 
     // MARK: 明细行（奖牌 / 攻城 / 击杀 / 死亡 / K/D / 总积分 / 评价）
@@ -1094,16 +1175,16 @@ struct SaltHistoryView: View {
                 } else {
                     Text("\(index + 1)")
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(.primary.opacity(0.4))
                         .frame(width: 40)
                 }
             }
-            // 成员（左对齐）。
+            // 成员（左对齐，弹性宽度——明细表与上栏同宽）。
             Text(row.name)
                 .font(.system(size: 11, weight: index < 3 ? .semibold : .regular))
-                .foregroundStyle(.white.opacity(index < 3 ? 0.95 : 0.82))
+                .foregroundStyle(.primary.opacity(index < 3 ? 0.95 : 0.82))
                 .lineLimit(1)
-                .frame(width: 116, alignment: .leading)
+                .frame(minWidth: 116, maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
             // 攻城：DataBar 底 + 数字（右对齐）。
             HStack {
@@ -1117,16 +1198,27 @@ struct SaltHistoryView: View {
                 Spacer()
                 Text("\(row.win)")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
             }
             .frame(width: 56)
             .padding(.horizontal, 4)
-            // 死亡（暗红）。
+            // 死亡：≥6 = 免费复活额度耗尽（1 条命 + 5 次免费复活），
+            // 红底白字胶囊加粗提示「不能再免费复活」；<6 普通暗红。
             HStack {
                 Spacer()
-                Text("\(row.lose)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Color(red: 0.85, green: 0.45, blue: 0.38))
+                if row.lose >= 6 {
+                    Text("\(row.lose)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Color(red: 0.86, green: 0.15, blue: 0.15)))
+                        .help("死亡已达 6 次：免费复活额度（1 命 + 5 次）已耗尽，再死需要消耗复活丹")
+                } else {
+                    Text("\(row.lose)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.80, green: 0.32, blue: 0.25))
+                }
             }
             .frame(width: 56)
             .padding(.horizontal, 4)
@@ -1135,7 +1227,9 @@ struct SaltHistoryView: View {
                 Spacer()
                 Text(row.kdText)
                     .font(.system(size: 11, weight: row.kd >= 2 ? .semibold : .regular, design: .monospaced))
-                    .foregroundStyle(row.kd >= 2 ? .green : (row.kd >= 1 ? .white.opacity(0.8) : Color(red: 0.85, green: 0.45, blue: 0.38)))
+                    .foregroundStyle(row.kd >= 2 ? Color(red: 0.10, green: 0.42, blue: 0.29)
+                                                    : (row.kd >= 1 ? .primary.opacity(0.75)
+                                                       : Color(red: 0.80, green: 0.32, blue: 0.25)))
             }
             .frame(width: 56)
             .padding(.horizontal, 4)
@@ -1149,6 +1243,7 @@ struct SaltHistoryView: View {
             .frame(width: 56)
             .padding(.horizontal, 4)
         }
+        .frame(minWidth: 520, maxWidth: .infinity, alignment: .leading)
         .frame(height: 30)
         .background(rankRowBackground(index))
     }
@@ -1158,16 +1253,16 @@ struct SaltHistoryView: View {
         Group {
             switch index {
             case 0:
-                LinearGradient(colors: [Color.yellow.opacity(0.13), Color.yellow.opacity(0.02)],
+                LinearGradient(colors: [Color.yellow.opacity(0.16), Color.yellow.opacity(0.03)],
                                startPoint: .leading, endPoint: .trailing)
             case 1:
-                LinearGradient(colors: [Color.white.opacity(0.09), Color.white.opacity(0.015)],
+                LinearGradient(colors: [Color.black.opacity(0.05), Color.black.opacity(0.01)],
                                startPoint: .leading, endPoint: .trailing)
             case 2:
                 LinearGradient(colors: [Color.orange.opacity(0.10), Color.orange.opacity(0.015)],
                                startPoint: .leading, endPoint: .trailing)
             default:
-                Color.white.opacity(0.02)
+                Color.clear
             }
         }
     }
@@ -1175,53 +1270,22 @@ struct SaltHistoryView: View {
     /// 奖牌图标（SF medal.fill）。
     private func medalInfo(_ index: Int) -> (symbol: String, color: Color)? {
         switch index {
-        case 0: return ("medal.fill", Color(red: 1.0, green: 0.78, blue: 0.20))
-        case 1: return ("medal.fill", Color(red: 0.80, green: 0.83, blue: 0.88))
-        case 2: return ("medal.fill", Color(red: 0.83, green: 0.55, blue: 0.32))
+        case 0: return ("medal.fill", Color(red: 0.85, green: 0.62, blue: 0.05))
+        case 1: return ("medal.fill", Color(red: 0.48, green: 0.52, blue: 0.58))
+        case 2: return ("medal.fill", Color(red: 0.72, green: 0.42, blue: 0.16))
         default: return nil
         }
-    }
-
-    /// 胜负双色比例条（绿=胜 红=负；零场次给空轨道）。
-    private func winLoseBar(win: Int, lose: Int) -> some View {
-        let total = win + lose
-        let winRatio = total > 0 ? Double(win) / Double(total) : 0
-        return ZStack(alignment: .leading) {
-            Capsule().fill(Color.white.opacity(0.08))
-            HStack(spacing: 0) {
-                if total > 0 {
-                    Capsule().fill(Color.green)
-                        .frame(width: max(3, 56 * winRatio))
-                    Capsule().fill(Color.red)
-                        .frame(width: max(3, 56 * (1 - winRatio)))
-                }
-            }
-        }
-        .frame(width: 56, height: 6)
-    }
-
-    /// 胜率胶囊：≥60% 亮绿、50–60% 中性、<50% 灰暗。
-    private func ratePill(_ rate: Int) -> some View {
-        let tint: Color = rate >= 60 ? .green : .white
-        let opacity: Double = rate >= 60 ? 0.18 : (rate >= 50 ? 0.10 : 0.05)
-        let textColor: Color = rate >= 60 ? .green : (rate >= 50 ? .white.opacity(0.8) : .white.opacity(0.38))
-        return Text("\(rate)%")
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundStyle(textColor)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(opacity)))
     }
 
     /// 攻城 DataBar：半透明橙条按最高值归一化，数字右对齐叠在条上。
     private func buildingBar(value: Int, maxValue: Int) -> some View {
         let ratio = maxValue > 0 ? Double(value) / Double(maxValue) : 0
         return ZStack(alignment: .leading) {
-            Capsule().fill(Color.orange.opacity(0.10))
+            Capsule().fill(Color.black.opacity(0.05))
             if value > 0 {
                 GeometryReader { geo in
                     Capsule()
-                        .fill(Color.orange.opacity(0.45))
+                        .fill(Color.orange.opacity(0.55))
                         .frame(width: max(6, geo.size.width * ratio))
                 }
             }
@@ -1240,10 +1304,10 @@ struct SaltHistoryView: View {
                             alignment: Alignment = .leading) -> some View {
         Text(title)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.85))
+            .foregroundStyle(.primary.opacity(0.75))
             .frame(width: width, height: 24, alignment: alignment)
             .padding(.horizontal, 4)
-            .background(Color.white.opacity(0.08))
+            .background(Color.black.opacity(0.05))
     }
 }
 
