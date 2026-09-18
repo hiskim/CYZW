@@ -51,7 +51,11 @@ public enum PacketCaptureScript {
     /// 主连接与盐场连接的 URL 都含 "agent"，按 URL 挑发送目标会撞，盐场图表的
     /// 轮询帧必须**定向**发回学到 `war_*` 命令的那条连接；② 单帧上限 192→512 KiB
     /// （`war_getbattlefieldinfo` 的战场快照实测逼近旧上限，截断会让 BON 解不开）。
-    public static let agentVersion = "3"
+    /// v4：新增 `sendViaGame(cmd, paramsJSON)`——走**游戏自己的发送封装**
+    /// （`window.ws` 等带 `sendAsync` 的对象，猫助手同款）发命令：seq 由游戏
+    /// 计数器管理，与游戏自身请求天然连续（原生日发的 seq 撞号会被服务端静默
+    /// 丢弃），响应经封装 Promise 直接返回，无需抓包流配对。
+    public static let agentVersion = "4"
 
     /// 单帧上报字节上限（512 KiB）。超出部分丢弃并打 `trunc` 标记。
     private static let maxFrameBytes = 512 * 1024
@@ -75,6 +79,15 @@ public enum PacketCaptureScript {
     public static func sendRaw(_ base64: String, socketID: Int = -1) -> String {
         let target = socketID >= 0 ? String(socketID + 1) : "0"
         return "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendRaw('\(base64)', \(target)) : 'no-handler'"
+    }
+
+    /// 走游戏自己的发送封装发命令（seq 由游戏计数器管理，天然连续不撞号）。
+    /// 返回页面回执 JSON 文本：`{"__ok":true,"data":…}` / `{"__error":"…"}`。
+    public static func sendViaGame(command: String, paramsJSON: String) -> String {
+        let escapedCommand = command.replacingOccurrences(of: "'", with: "\\'")
+        let escapedParams = paramsJSON.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        return "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendViaGame('\(escapedCommand)', '\(escapedParams)') : JSON.stringify({ __error: 'no-handler' })"
     }
 
     /// 代理脚本本体（`atDocumentStart` 注入，只注入主框架）。
@@ -215,6 +228,41 @@ public enum PacketCaptureScript {
             }
           }
 
+          // 走游戏自己的发送封装（window.ws/gameWs 等带 sendAsync 的对象，猫助手同款）：
+          // seq 由游戏计数器管理，与游戏自身请求天然连续，不会撞号；
+          // 响应经封装的 Promise 直接返回（body 已由游戏解码），无需抓包流配对。
+          async function sendViaGame(cmd, paramsJSON) {
+              const candidates = [window.ws, window.h5websocket && window.h5websocket.ws,
+                                  window.h5websocket, window.gameWs, window.WebSocketClient,
+                                  window._ws, window.gameSocket];
+              const ws = candidates.find(function (w) {
+                  return w && typeof w.sendAsync === 'function';
+              });
+              if (!ws) return JSON.stringify({ __error: 'no-game-socket' });
+              let params = {};
+              try { params = JSON.parse(paramsJSON); } catch (e) { params = {}; }
+              const request = { ack: 0, cmd: cmd, params: params, seq: Date.now(), time: Date.now() };
+              if (window.g_utils && window.g_utils.bon && window.g_utils.bon.encode) {
+                  request.body = window.g_utils.bon.encode(params);
+                  delete request.params;
+              }
+              try {
+                  const response = await ws.sendAsync(request);
+                  const result = response && (response._rawData !== undefined ? response._rawData
+                      : (typeof response.getData === 'function' ? response.getData()
+                         : (response.body !== undefined ? response.body : response)));
+                  let payload;
+                  try {
+                      payload = JSON.stringify({ __ok: true, data: result === undefined ? null : result });
+                  } catch (ser) {
+                      payload = JSON.stringify({ __ok: true, data: null, __note: 'unserializable' });
+                  }
+                  return payload;
+              } catch (e) {
+                  return JSON.stringify({ __error: String(e && e.message ? e.message : e) });
+              }
+          }
+
           window.__LOBBY_CAPTURE__ = {
             version: VERSION,
             setEnabled(enabled) {
@@ -230,7 +278,8 @@ public enum PacketCaptureScript {
                      ' enabled=' + state.enabled +
                      ' sent=' + state.sent + ' dropped=' + state.dropped;
             },
-            sendRaw: sendRaw
+            sendRaw: sendRaw,
+            sendViaGame: sendViaGame
           };
         })();
         """

@@ -76,7 +76,7 @@ public final class SaltFieldChartController: ObservableObject {
     }
     private var mainStates: [String: MainLinkState] = [:]
 
-    /// 在途历史查询（响应匹配；`resp` 字段 / cmd 包含逐级退化，超时 12s 判失败）。
+    /// 在途历史查询（响应匹配：`resp` 字段 → cmd 包含 → FIFO 兜底；无响应自动重试）。
     private struct PendingHistoryQuery {
         enum Kind {
             case warType(monthFirstSaturday: String)   // 命中后接着查 totalRank
@@ -105,11 +105,21 @@ public final class SaltFieldChartController: ObservableObject {
             }
         }
         let kind: Kind
-        let seq: Int64
-        let issuedAt: Date
+        let command: String
+        let paramsJSON: String
+        var seq: Int64
+        var issuedAt: Date
+        var retryCount: Int = 0
     }
     private var pendingHistory: [String: [PendingHistoryQuery]] = [:]
     private static let historyTimeout: TimeInterval = 12
+    /// 无响应自动重试次数上限。
+    private static let maxRetry = 2
+    /// FIFO 兜底配对的信任窗口（秒）：查询在途时到达的第一个业务响应按序配对，
+    /// 超过窗口的帧只认 resp/cmd 精确匹配（防误吞游戏自己的推送）。
+    private static let fifoWindowSeconds: TimeInterval = 8
+    /// 未匹配业务帧的诊断日志计数（每账号限 3 条，防刷屏）。
+    private var unmatchedLogCounts: [String: Int] = [:]
 
     public init() {}
 
@@ -288,28 +298,73 @@ public final class SaltFieldChartController: ObservableObject {
                          startStatus: historyStatus[accountID] ?? "查询中…")
     }
 
-    /// 构帧发送 + 登记在途查询 + 超时定时。
+    /// 发送历史查询命令。**主路径走游戏自己的发送封装**（`window.ws.sendAsync`，
+    /// 猫助手同款）：seq 由游戏计数器管理，与游戏自身请求天然连续（宿主直发的
+    /// 撞号 seq 会被服务端静默丢弃），且响应经封装的 Promise 直接带回（body 已由
+    /// 游戏解码），无需抓包流配对。封装不可用时回退「原生日发 + pending 匹配」。
     private func sendHistoryFrame(accountID: String, command: String, paramsJSON: String,
                                   kind: PendingHistoryQuery.Kind, startStatus: String) {
-        guard let main = mainStates[accountID], main.socketID >= 0 || main.serverSeq > 0 else {
+        guard let instance = pool?.existingSurface(forAccountID: accountID) else {
+            historyStatus[accountID] = "实例未运行"
+            return
+        }
+        historyBusy.insert(accountID)
+        historyStatus[accountID] = startStatus
+        let pending = PendingHistoryQuery(kind: kind, command: command, paramsJSON: paramsJSON,
+                                          seq: 0, issuedAt: Date())
+        Task { @MainActor [weak self] in
+            let js = PacketCaptureScript.sendViaGame(command: command, paramsJSON: paramsJSON)
+            let responseText = await instance.evaluatePageJS(js)
+            guard let self else { return }
+            guard let inner = Self.parseViaGameResponse(responseText) else {
+                LobbyLog.warn("[saltfield-history] %@ 游戏封装不可用/失败，回退直发通道：%@",
+                              accountID, responseText.prefix(200))
+                self.fallbackSendRaw(accountID: accountID, pending: pending)
+                return
+            }
+            self.handleHistoryResponse(pending: pending, inner: inner, accountID: accountID)
+        }
+    }
+
+    /// 解析 sendViaGame 的页面回执：`{"__ok":true,"data":…}` → data 的 BonValue 树。
+    private static func parseViaGameResponse(_ text: String) -> BonValue? {
+        guard !text.contains("__error"),
+              let data = text.data(using: .utf8),
+              let wrapper = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (wrapper["__ok"] as? Bool) == true,
+              let payload = wrapper["data"] else { return nil }
+        let payloadJSON = (try? JSONSerialization.data(withJSONObject: payload))
+            ?? Data("{}".utf8)
+        return try? PacketCaptureController.jsonToBonValue(
+            String(decoding: payloadJSON, as: UTF8.self))
+    }
+
+    /// 回退通道：原生日发（sendRawFrame + pending 响应匹配 + 超时重试）。
+    private func fallbackSendRaw(accountID: String, pending: PendingHistoryQuery) {
+        guard let main = mainStates[accountID],
+              main.socketID >= 0 || main.serverSeq > 0 else {
+            historyBusy.remove(accountID)
             historyStatus[accountID] = "主连接未就绪：请先启动该账号的游戏实例"
             return
         }
         guard let instance = pool?.existingSurface(forAccountID: accountID) else {
+            historyBusy.remove(accountID)
             historyStatus[accountID] = "实例未运行"
             return
         }
         let seq = main.clientSeq + 1
         guard let frame = try? PacketCaptureController.buildFrame(
-            command: command, paramsJSON: paramsJSON,
+            command: pending.command, paramsJSON: pending.paramsJSON,
             ack: main.serverSeq, seq: seq) else {
             historyStatus[accountID] = "构帧失败"
             return
         }
         mainStates[accountID]?.clientSeq = seq
-        pendingHistory[accountID, default: []].append(
-            PendingHistoryQuery(kind: kind, seq: seq, issuedAt: Date()))
-        historyStatus[accountID] = startStatus
+        var queued = pending
+        queued.seq = seq
+        queued.issuedAt = Date()
+        pendingHistory[accountID, default: []].append(queued)
+        unmatchedLogCounts[accountID] = 0
         let socketID = main.socketID
         Task { @MainActor [weak self] in
             let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString(),
@@ -317,12 +372,18 @@ public final class SaltFieldChartController: ObservableObject {
             if !diagnostic.hasPrefix("sent") {
                 self?.historyStatus[accountID] = "发送失败：\(diagnostic)"
                 self?.pendingHistory[accountID]?.removeAll { $0.seq == seq }
-                LobbyLog.warn("[saltfield-history] %@ 发送 %@ 失败：%@", accountID, command, diagnostic)
+                LobbyLog.warn("[saltfield-history] %@ 发送 %@ 失败：%@",
+                              accountID, pending.command, diagnostic)
             } else {
-                LobbyLog.info("[saltfield-history] %@ 已发 %@ seq=%lld", accountID, command, seq)
+                LobbyLog.info("[saltfield-history] %@ 已发 %@ seq=%lld ack=%lld",
+                              accountID, pending.command, seq, main.serverSeq)
             }
         }
-        // 超时：响应匹配失败（resp / cmd 都没对上）时明确报出来，方便从抓包对 cmd。
+        scheduleHistoryTimeout(accountID: accountID, seq: seq)
+    }
+
+    /// 超时调度：12s 无响应 → 自动重试（新 seq 重新入队），重试上限后报失败。
+    private func scheduleHistoryTimeout(accountID: String, seq: Int64) {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.historyTimeout * 1_000_000_000))
             guard let self, var queue = self.pendingHistory[accountID],
@@ -330,12 +391,48 @@ public final class SaltFieldChartController: ObservableObject {
             let pending = queue.remove(at: index)
             self.pendingHistory[accountID] = queue
             guard Date().timeIntervalSince(pending.issuedAt) >= Self.historyTimeout - 1 else { return }
-            if case .warType = pending.kind { self.historyBusy.remove(accountID) }
-            if case .totalRank = pending.kind { self.historyBusy.remove(accountID) }
-            if case .legionInfo = pending.kind { self.historyBusy.remove(accountID) }
-            self.historyStatus[accountID] = "查询超时：未匹配到 \(command) 的响应（可在抓包窗口查看响应 cmd 后反馈）"
-            LobbyLog.warn("[saltfield-history] %@ %@ 响应超时", accountID, command)
+            if pending.retryCount < Self.maxRetry {
+                LobbyLog.warn("[saltfield-history] %@ %@ 无响应（seq=%lld），重试 %ld/%ld",
+                              accountID, pending.command, seq,
+                              pending.retryCount + 1, Self.maxRetry)
+                self.historyStatus[accountID] =
+                    "无响应，自动重试 \(pending.retryCount + 1)/\(Self.maxRetry)（seq 序列校验或 cmd 匹配问题）"
+                self.resendHistoryFrame(accountID: accountID, pending: pending)
+            } else {
+                self.historyBusy.remove(accountID)
+                self.historyStatus[accountID] =
+                    "查询失败：\(pending.command) 重试 \(Self.maxRetry) 次均无响应（服务端可能丢弃了不连续的 seq，建议稍后再试）"
+                LobbyLog.warn("[saltfield-history] %@ %@ 重试耗尽", accountID, pending.command)
+            }
         }
+    }
+
+    /// 用新 seq 重发同一命令（服务端按连续 seq 校验，撞号/跳号会被静默丢弃——重试换号）。
+    private func resendHistoryFrame(accountID: String, pending: PendingHistoryQuery) {
+        guard let main = mainStates[accountID],
+              let instance = pool?.existingSurface(forAccountID: accountID) else {
+            historyBusy.remove(accountID)
+            historyStatus[accountID] = "实例未运行，查询中断"
+            return
+        }
+        let seq = main.clientSeq + 1
+        guard let frame = try? PacketCaptureController.buildFrame(
+            command: pending.command, paramsJSON: pending.paramsJSON,
+            ack: main.serverSeq, seq: seq) else { return }
+        mainStates[accountID]?.clientSeq = seq
+        var retried = pending
+        retried.seq = seq
+        retried.issuedAt = Date()
+        retried.retryCount += 1
+        pendingHistory[accountID, default: []].append(retried)
+        let socketID = main.socketID
+        Task { @MainActor in
+            let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString(),
+                                                         socketID: socketID)
+            LobbyLog.info("[saltfield-history] %@ 重试 %@ seq=%lld → %@",
+                          accountID, pending.command, seq, diagnostic)
+        }
+        scheduleHistoryTimeout(accountID: accountID, seq: seq)
     }
 
     /// 响应匹配（逐级退化）：① 响应外层 `resp` 字段 == 在途请求 seq；
@@ -345,14 +442,34 @@ public final class SaltFieldChartController: ObservableObject {
         guard var queue = pendingHistory[accountID], !queue.isEmpty else { return false }
         let lowered = command.lowercased()
         var matched: PendingHistoryQuery?
+        var matchedBy = ""
         if let respSeq = object?["resp"]?.intValue,
            let index = queue.firstIndex(where: { $0.seq == respSeq }) {
             matched = queue.remove(at: index)
+            matchedBy = "resp 字段"
         } else if let index = queue.firstIndex(where: { $0.kind.matches(lowered) }) {
             matched = queue.remove(at: index)
+            matchedBy = "cmd 匹配"
+        } else if !queue.isEmpty,
+                  Date().timeIntervalSince(queue[0].issuedAt) < Self.fifoWindowSeconds {
+            // FIFO 兜底：查询在途且在信任窗口内，到达的第一个业务响应按序配对
+            // （服务端串行处理，游戏空闲时第一个响应即我们的响应）。
+            matched = queue.remove(at: 0)
+            matchedBy = "fifo 兜底"
         }
-        guard let pending = matched else { return false }
+        guard let pending = matched else {
+            // 在途查询存在但帧没对上：打结构诊断（限 3 条/账号），帮助定位响应 cmd 名。
+            unmatchedLogCounts[accountID, default: 0] += 1
+            if unmatchedLogCounts[accountID] ?? 0 <= 3 {
+                LobbyLog.warn("[saltfield-history] %@ 收到未匹配业务帧 cmd=%@ 结构：%@",
+                              accountID, command, Self.describeBodyKeys(inner: inner))
+            }
+            pendingHistory[accountID] = queue
+            return false
+        }
+        unmatchedLogCounts[accountID] = 0
         pendingHistory[accountID] = queue
+        LobbyLog.info("[saltfield-history] %@ 响应匹配（%@）：%@", accountID, matchedBy, command)
         handleHistoryResponse(pending: pending, inner: inner, accountID: accountID)
         return true
     }

@@ -440,6 +440,23 @@ public final class GameViewportInstance: NSView {
         }
     }
 
+    /// 通用页面脚本执行（结果字符串化；脚本返回 Promise 时 WKWebView 会等待其 resolve）。
+    /// 盐场图表的「走游戏封装发命令」用：封装的 sendAsync 返回 Promise，响应直接带回。
+    public func evaluatePageJS(_ script: String) async -> String {
+        guard !isStopped else { return "{ \"__error\": \"instance-stopped\" }" }
+        return await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(script) { result, error in
+                if let error {
+                    continuation.resume(returning: "{ \"__error\": \(String(describing: error).debugDescription) }")
+                } else if let text = result as? String {
+                    continuation.resume(returning: text)
+                } else {
+                    continuation.resume(returning: String(describing: result ?? "nil"))
+                }
+            }
+        }
+    }
+
     /// 把宿主构好的完整帧（base64）交给页面代理发送。
     /// `socketID` ≥ 0 时定向发给该编号的 socket（盐场连接与主连接的 URL 都含
     /// "agent"，必须点名；-1 = 旧口径按 URL 挑）。
