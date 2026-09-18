@@ -241,27 +241,32 @@ public struct SaltFieldMapGeometry: Sendable {
                height: centerY(SaltFieldRoadPoints.rows - 1, col: 0) + hexHeight + gap)
     }
 
-    /// 画布尺寸 → 缩放（上限 1.6）与居中偏移。
-    public func fit(in size: CGSize) -> (scale: CGFloat, offsetX: CGFloat, offsetY: CGFloat) {
+    /// 画布尺寸 → 缩放与居中偏移。`zoom` 是**相对自适应基准的倍数**（1 = 刚好铺满），
+    /// `pan` 是用户拖动出来的像素位移。绘制与命中都走这一个函数，缩放/平移不会「描错格」。
+    public func fit(in size: CGSize, zoom: CGFloat = 1, pan: CGSize = .zero)
+        -> (scale: CGFloat, offsetX: CGFloat, offsetY: CGFloat) {
         let map = mapSize
         guard map.width > 0, map.height > 0 else { return (1, 0, 0) }
-        let scale = min(size.width / map.width, size.height / map.height, 1.6)
+        let base = min(size.width / map.width, size.height / map.height, 1.6)
+        let scale = base * zoom
         return (scale,
-                max(0, (size.width - map.width * scale) / 2),
-                max(0, (size.height - map.height * scale) / 2))
+                max(0, (size.width - map.width * scale) / 2) + pan.width,
+                max(0, (size.height - map.height * scale) / 2) + pan.height)
     }
 
     /// 格子中心在画布里的位置。
-    public func center(col: Int, row: Int, in size: CGSize) -> CGPoint {
-        let fit = fit(in: size)
+    public func center(col: Int, row: Int, in size: CGSize,
+                       zoom: CGFloat = 1, pan: CGSize = .zero) -> CGPoint {
+        let fit = fit(in: size, zoom: zoom, pan: pan)
         return CGPoint(x: fit.offsetX + centerX(col) * fit.scale,
                        y: fit.offsetY + centerY(row, col: col) * fit.scale)
     }
 
     /// 画布坐标 → 节点 id（逆变换：先估列，再在 ±1 列/行里找最近且落在六边形内的格子）。
     /// 命中不到（落在空白处）返回 nil。
-    public func nodeID(at point: CGPoint, in size: CGSize) -> String? {
-        let fit = fit(in: size)
+    public func nodeID(at point: CGPoint, in size: CGSize,
+                       zoom: CGFloat = 1, pan: CGSize = .zero) -> String? {
+        let fit = fit(in: size, zoom: zoom, pan: pan)
         let stepX = (hexSize * 1.5 + gap) * fit.scale
         let stepY = (hexHeight + gap) * fit.scale
         let radius = hexSize * fit.scale

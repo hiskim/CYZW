@@ -861,17 +861,64 @@ struct SaltFieldMapView: View {
     /// 悬停中的格子（坐标固定显示在地图**右下角**，方便照着填 `SaltFieldNodeNames` 坐标表）。
     @State private var hoveredID: String?
 
+    // ── 缩放 / 平移（用户要求「可以拉大拉小」）──
+    /// 相对自适应基准的倍数（1 = 刚好铺满面板）。跨会话记住。
+    @State private var zoom: CGFloat =
+        CGFloat(UserDefaults.standard.object(forKey: "salt.chart.mapZoom") as? Double ?? 1)
+    /// 手势起点（捏合 / 拖动进行中时以它为基准，避免累乘漂移）。
+    @State private var zoomBase: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var panBase: CGSize = .zero
+    /// 缩放范围（0.6 = 比自适应还小一点，3.5 = 放到能看清名字）。
+    private static let zoomRange: ClosedRange<CGFloat> = 0.6...3.5
+    private static let zoomKey = "salt.chart.mapZoom"
+
+    /// Ctrl+滚轮缩放的宿主数据。用**引用类型**装：`NSEvent` 本地监视器的闭包
+    /// 要读「地图在窗口里的位置 / 所属窗口」，值类型 `@State` 在闭包里读不到最新值。
+    private final class ScrollZoomHost {
+        var monitor: Any?
+        /// 地图在**窗口坐标**里的 frame（原点左下，与 `event.locationInWindow` 同一套）。
+        var frameInWindow: CGRect = .zero
+        weak var window: NSWindow?
+    }
+    @State private var scrollHost = ScrollZoomHost()
+
     var body: some View {
         GeometryReader { geo in
             Canvas { context, size in
                 draw(context: &context, size: size)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // 放大后地图会超出面板：必须裁剪，否则会画到右边的战况表上。
+            .clipped()
+            // 触控板双指捏合缩放（以当前视野为基准）。
+            .gesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        zoom = Self.clampZoom(zoomBase * value.magnification)
+                    }
+                    .onEnded { _ in commitZoom() }
+            )
+            // 拖动平移（放大后用来找据点；未放大时会被 clamp 成 0）。
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        pan = clampPan(CGSize(width: panBase.width + value.translation.width,
+                                              height: panBase.height + value.translation.height),
+                                       size: geo.size)
+                    }
+                    .onEnded { _ in panBase = pan }
+            )
+            // 上报「地图在窗口里的 frame」——Ctrl+滚轮要判断光标是否落在地图上。
+            .background(WindowFrameReporter { frame, window in
+                scrollHost.frameInWindow = frame
+                scrollHost.window = window
+            })
             // 悬停命中：只在「格子变了」时改状态，避免鼠标每动一下都刷新。
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let location):
-                    let id = geometry.nodeID(at: location, in: geo.size)
+                    let id = geometry.nodeID(at: location, in: geo.size, zoom: zoom, pan: pan)
                     if id != hoveredID { hoveredID = id }
                 case .ended:
                     hoveredID = nil
@@ -880,23 +927,125 @@ struct SaltFieldMapView: View {
             // 高亮与读数都放 overlay：Canvas 的绘制输入不含悬停状态，
             // 鼠标移动不会触发整张地图（1312 个空格 + 300 多节点）重画。
             .overlay(alignment: .topLeading) {
+                // 撑满画布再裁剪：放大后若悬停的格子被切在边界外，高亮圈不会画到隔壁面板上。
                 hoverHighlight(size: geo.size)
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                    .clipped()
             }
             .overlay(alignment: .bottomTrailing) {
                 hoverReadout
             }
+            .overlay(alignment: .topTrailing) {
+                zoomControls
+            }
         }
+        .onAppear { installScrollZoom() }
+        .onDisappear { removeScrollZoom() }
     }
 
     /// 悬停高亮：只给该格描一圈黑边（帮助对准要读的那一格）。
     @ViewBuilder
     private func hoverHighlight(size: CGSize) -> some View {
         if let hoveredID, let node = nodes[hoveredID] {
-            let fit = geometry.fit(in: size)
-            hexPath(center: geometry.center(col: node.x, row: node.y, in: size),
+            let fit = geometry.fit(in: size, zoom: zoom, pan: pan)
+            hexPath(center: geometry.center(col: node.x, row: node.y, in: size, zoom: zoom, pan: pan),
                     radius: geometry.hexSize * fit.scale)
                 .stroke(Color.black.opacity(0.85), lineWidth: 2)
         }
+    }
+
+    // MARK: 缩放 / 平移
+
+    /// 右上角控件：放大 / 缩小 / 复位（鼠标用户不靠触控板也能用）。
+    private var zoomControls: some View {
+        VStack(spacing: 4) {
+            zoomButton("plus.magnifyingglass", help: "放大（Ctrl+滚轮 / 触控板双指捏合同效）") {
+                setZoom(zoom * 1.25)
+            }
+            zoomButton("minus.magnifyingglass", help: "缩小（Ctrl+滚轮 / 双指捏合同效）") {
+                setZoom(zoom / 1.25)
+            }
+            zoomButton("arrow.counterclockwise", help: "复位（回到自适应大小并居中）") {
+                setZoom(1, resetPan: true)
+            }
+            Text("\(Int((zoom * 100).rounded()))%")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(5)
+        .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.black.opacity(0.15)))
+        .padding(8)
+    }
+
+    private func zoomButton(_ symbol: String, help: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 20, height: 18)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private static func clampZoom(_ value: CGFloat) -> CGFloat {
+        min(max(value, zoomRange.lowerBound), zoomRange.upperBound)
+    }
+
+    /// Ctrl+滚轮缩放（macOS 惯例）。用**本地事件监视器**而不是盖一层 NSView：
+    /// 盖视图会抢走点击/悬停事件，监视器只挑「本窗口 + 光标在地图内 + 按住 Control」
+    /// 的滚轮消费掉，其它事件原样放行。
+    ///
+    /// 方向按**物理方向**归一（`isDirectionInvertedFromDevice`）：滚轮/手指向上 = 放大，
+    /// 与系统「自然滚动」开关无关——这正是 macOS 的缩放手感。
+    private func installScrollZoom() {
+        guard scrollHost.monitor == nil else { return }
+        scrollHost.monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { event in
+            guard event.modifierFlags.contains(.control),
+                  let window = scrollHost.window,
+                  event.window === window,
+                  scrollHost.frameInWindow.contains(event.locationInWindow) else {
+                return event
+            }
+            let physical = event.isDirectionInvertedFromDevice
+                ? -event.scrollingDeltaY : event.scrollingDeltaY
+            guard abs(physical) > 0.01 else { return nil }
+            // 指数缩放：连续滚轮手感平滑，单次幅度钳在 0.5×...2× 防甩飞。
+            let factor = min(max(exp(physical * 0.1), 0.5), 2.0)
+            setZoom(zoom * factor)
+            return nil
+        }
+    }
+
+    private func removeScrollZoom() {
+        if let monitor = scrollHost.monitor {
+            NSEvent.removeMonitor(monitor)
+            scrollHost.monitor = nil
+        }
+    }
+
+    /// 按钮缩放：立刻提交并持久化。
+    private func setZoom(_ value: CGFloat, resetPan: Bool = false) {
+        zoom = Self.clampZoom(value)
+        zoomBase = zoom
+        if resetPan { pan = .zero; panBase = .zero }
+        UserDefaults.standard.set(Double(zoom), forKey: Self.zoomKey)
+    }
+
+    private func commitZoom() {
+        zoomBase = zoom
+        UserDefaults.standard.set(Double(zoom), forKey: Self.zoomKey)
+    }
+
+    /// 平移范围：放大后允许把地图拖到边缘，但不允许拖到完全看不见（留 40pt 余量）。
+    private func clampPan(_ value: CGSize, size: CGSize) -> CGSize {
+        let fit = geometry.fit(in: size, zoom: zoom)
+        let map = geometry.mapSize
+        let maxX = max(0, (map.width * fit.scale - size.width) / 2 + 40)
+        let maxY = max(0, (map.height * fit.scale - size.height) / 2 + 40)
+        return CGSize(width: min(max(value.width, -maxX), maxX),
+                      height: min(max(value.height, -maxY), maxY))
     }
 
     /// 右下角读数：悬停据点的**坐标**（就是坐标表的 key）+ 类型/归属/血量。
@@ -975,12 +1124,12 @@ struct SaltFieldMapView: View {
 
     private func draw(context: inout GraphicsContext, size: CGSize) {
         // 与悬停命中共用引擎里的几何：两边必须是同一套数学，否则会「描错格」。
-        let fit = geometry.fit(in: size)
+        let fit = geometry.fit(in: size, zoom: zoom, pan: pan)
         let scale = fit.scale
         let radius = geometry.hexSize * scale
 
         func screenCenter(col: Int, row: Int) -> CGPoint {
-            geometry.center(col: col, row: row, in: size)
+            geometry.center(col: col, row: row, in: size, zoom: zoom, pan: pan)
         }
 
         // ① 先铺**整张网格**：骨架之外的格子画成白色（细描边），地图边界一眼可见。
@@ -1057,6 +1206,46 @@ struct SaltFieldMapView: View {
             context.stroke(Path(roundedRect: rect, cornerRadius: 3),
                            with: .color(.black.opacity(0.25)), lineWidth: 0.6)
             context.draw(resolved, at: center)
+        }
+    }
+}
+
+// MARK: - 窗口 frame 上报（Ctrl+滚轮缩放用）
+
+/// 把承载它的视图在**窗口坐标**里的 frame 报出来（原点左下，与 `NSEvent.locationInWindow`
+/// 同一套坐标系），并带上所属窗口。只上报，不拦截任何事件。
+struct WindowFrameReporter: NSViewRepresentable {
+    let onChange: (CGRect, NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { ReporterView(onChange: onChange) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class ReporterView: NSView {
+        private let onChange: (CGRect, NSWindow?) -> Void
+
+        init(onChange: @escaping (CGRect, NSWindow?) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("not supported") }
+
+        override func layout() {
+            super.layout()
+            report()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            report()
+        }
+
+        /// 命中测试放行：这一层只是探针，不能挡住地图上的点击/悬停。
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func report() {
+            onChange(convert(bounds, to: nil), window)
         }
     }
 }
