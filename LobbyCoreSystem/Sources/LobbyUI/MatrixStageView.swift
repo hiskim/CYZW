@@ -490,6 +490,8 @@ struct ViewportCardView: View {
     @ObservedObject var session: LobbySessionModel
     /// 群控中控：👑 / 🔗 两个开关都落在它身上。
     @ObservedObject private var sync: InputSyncController
+    /// 抓包控制器：📡 按钮的高亮态（capturingAccountIDs）。
+    @ObservedObject private var capture: PacketCaptureController
     let account: GameAccount
     let layout: MatrixLayout
     let slotIndex: Int
@@ -510,12 +512,15 @@ struct ViewportCardView: View {
         self.onHeaderDrag = onHeaderDrag
         self.onHeaderDragEnded = onHeaderDragEnded
         _sync = ObservedObject(wrappedValue: session.sync)
+        _capture = ObservedObject(wrappedValue: session.capture)
     }
 
     private var isFocused: Bool { session.focusedAccountID == account.id }
     private var isDragging: Bool { session.draggingMatrixAccountID == account.id }
     private var isMaster: Bool { sync.isMaster(account.id) }
     private var isReceiver: Bool { sync.isReceiver(account.id) }
+    /// 本实例是否在抓包（📡 按钮点亮）。
+    private var isCapturing: Bool { capture.isCapturing(accountID: account.id) }
     private var swatch: (Double, Double, Double) {
         GroupSwatch.rgb(for: session.groupColorName(forAccountID: account.id))
     }
@@ -596,6 +601,19 @@ struct ViewportCardView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 3)
+            // 抓包：开/停本实例的 WSS 帧捕获并弹出独立抓包窗口；抓包中按钮点亮。
+            Button {
+                session.togglePacketCapture(account)
+            } label: {
+                Image(systemName: isCapturing ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.circle")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(isCapturing ? Color.orange : Color.white.opacity(0.45))
+                    .frame(width: 13, height: 13)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 4, intensity: 0.16)
+            .help(isCapturing ? "停止抓包（窗口可继续查看 / 导出）" : "抓包：捕获本实例的 WSS 协议帧（独立窗口，支持命令过滤）")
             // 主控：在所属分组内唯一。点击设为本组主控或退位。
             // 没有本组主控时，本组开了同步的窗口互相同步。
             Button {

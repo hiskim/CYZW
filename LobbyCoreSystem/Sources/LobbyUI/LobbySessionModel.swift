@@ -78,6 +78,15 @@ public final class LobbySessionModel: ObservableObject {
     public let enhancements: GameEnhancementStore
     /// 账号资料库（头像 / 游戏内昵称 / 等级战力）。账号卡直接观察它取图。
     public let avatars: AccountAvatarStore
+    /// 抓包控制器：解码 + 每账号会话（帧留存）。窗口与列表都从这里取数据。
+    ///
+    /// ⚠️ **必须由装配根注入，且与实例工厂收到的是同一个对象**（2026-09-18.6 的
+    /// 实测事故）：这里若走默认值初始化，就会出现「UI 在实例 A 上开抓包、帧却
+    /// 流向实例 B」的分裂——窗口正常弹出但一条帧都收不到；又因为实例 B 没有强
+    /// 持有者，ARC 释放后实例里的 weak 引用直接变 nil。装配根两处传同一实例即可。
+    public let capture: PacketCaptureController
+    /// 抓包窗口管理器：每账号一个独立 NSWindow（开抓时创建，关窗 = 自动停抓）。
+    public let captureWindows = PacketCaptureWindowManager()
     /// 资料抓取器：**不启动游戏**，直接用 `.bin` 凭据问服务端（见 `AccountProfileFetcher`）。
     public let profileFetcher = AccountProfileFetcher()
 
@@ -89,7 +98,8 @@ public final class LobbySessionModel: ObservableObject {
                 groupStore: GroupStoring,
                 scripts: ScriptStore,
                 enhancements: GameEnhancementStore,
-                avatars: AccountAvatarStore) {
+                avatars: AccountAvatarStore,
+                capture: PacketCaptureController) {
         self.bins = bins
         self.pool = pool
         self.sync = sync
@@ -97,6 +107,7 @@ public final class LobbySessionModel: ObservableObject {
         self.scripts = scripts
         self.enhancements = enhancements
         self.avatars = avatars
+        self.capture = capture
         pool.delegate = self
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()
@@ -104,6 +115,7 @@ public final class LobbySessionModel: ObservableObject {
         accountOrders = groupStore.loadOrders()
         matrixOrder = groupStore.loadMatrixOrder()
         remarks = groupStore.loadRemarks()
+        captureWindows.attach(session: self)
     }
 
     /// 分组定义排序：sortOrder 优先，再按名称本地化比较（与上一代口径一致）。
@@ -593,6 +605,9 @@ public final class LobbySessionModel: ObservableObject {
     /// 关闭实例（账号级：群控参与/主控随账号退休）。
     public func close(_ account: GameAccount) {
         runningAccountIDs.removeAll { $0 == account.id }
+        // 抓包随实例一起收摊：停抓 + 丢会话 + 关窗口（抓包窗口是实例的伴生工具）。
+        capture.discardSession(accountID: account.id)
+        captureWindows.closeWindow(forAccountID: account.id)
         sync.retire(accountID: account.id)
         pool.destroy(accountID: account.id)
         if focusedAccountID == account.id {
@@ -714,6 +729,41 @@ public final class LobbySessionModel: ObservableObject {
         for instance in surfaces {
             instance.applyEnhancements()
         }
+    }
+
+    // MARK: - 抓包（WSS 帧捕获 + 独立抓包窗口）
+
+    /// 开 / 停某账号的抓包（矩阵卡片按钮的唯一入口）。
+    ///
+    /// 开：会话建档 → 页面开关推 on → 弹独立抓包窗口（此后页面帧持续进会话，
+    ///     窗口里 0.25s 批量上屏，过滤随时改）。
+    /// 停：页面开关推 off（hook 保留、零开销路径）→ 留存帧保留（窗口里仍可看 / 导出），
+    ///     再点一次按钮可继续追加。
+    /// 前置：实例必须在运行——开关下发要打在活页面上。
+    public func togglePacketCapture(_ account: GameAccount) {
+        guard runningAccountIDs.contains(account.id),
+              let instance = pool.existingSurface(forAccountID: account.id) else {
+            statusMessage = "抓包需要账号处于运行状态，请先启动「\(account.nickname)」。"
+            return
+        }
+        if capture.isCapturing(accountID: account.id) {
+            capture.endSession(accountID: account.id)
+            instance.setPacketCaptureEnabled(false)
+            statusMessage = "已停止「\(account.nickname)」抓包（留存帧可在窗口中查看 / 导出）。"
+        } else {
+            capture.beginSession(accountID: account.id, accountName: account.nickname)
+            instance.setPacketCaptureEnabled(true)
+            captureWindows.openWindow(for: account)
+        }
+    }
+
+    /// 抓包窗口被用户关闭（红点）：自动停抓这一个账号（留存帧保留）。
+    /// 由 `PacketCaptureWindowManager.windowDidClose` 回调。
+    public func packetCaptureWindowDidClose(accountID: String) {
+        guard capture.isCapturing(accountID: accountID),
+              let instance = pool.existingSurface(forAccountID: accountID) else { return }
+        capture.endSession(accountID: accountID)
+        instance.setPacketCaptureEnabled(false)
     }
 
     // MARK: - 焦点能耗仲裁

@@ -74,6 +74,36 @@ public struct AccountProfileSnapshot: Sendable, Equatable {
     public var isEmpty: Bool { headImg.isEmpty }
 }
 
+/// 抓包探针上报的**原始 WS 帧**（`PacketCaptureScript` 发的）。
+///
+/// 页面侧只做三件事：hook 原生 `WebSocket`、把字节转 base64、原样上报。
+/// **不做解码、不做过滤**——px 信封 / BON 的解码统一在宿主（复用
+/// `XorFrameCipher` + `Bon`），过滤条件随时可改而无需重注入页面。
+public struct PacketFrame: Sendable {
+    /// `"send"` = 游戏发出；`"recv"` = 游戏收到。
+    public let direction: String
+    /// 帧原字节（base64）。可能已被页面侧截断（`truncated == true`）。
+    public let payloadBase64: String
+    /// 页面侧计的原始字节数（截断前）。
+    public let byteCount: Int
+    /// 页面侧时间戳（毫秒，页面时钟）。
+    public let timestampMs: Double
+    /// `"binary"` / `"text"`（文本帧直接按 UTF-8 走同一条 base64 通道）。
+    public let kind: String
+    /// 单包超过页面上限被截断（详情里保留前缀字节，足以解出 cmd）。
+    public let truncated: Bool
+
+    public init(direction: String, payloadBase64: String, byteCount: Int,
+                timestampMs: Double, kind: String, truncated: Bool) {
+        self.direction = direction
+        self.payloadBase64 = payloadBase64
+        self.byteCount = byteCount
+        self.timestampMs = timestampMs
+        self.kind = kind
+        self.truncated = truncated
+    }
+}
+
 /// 页面事件。
 public enum PageEvent: Sendable {
     /// HSDK（游戏 SDK 桥）请求，requestJSON 为原文。
@@ -122,6 +152,8 @@ public enum PageEvent: Sendable {
     /// 我们包装的那层随之失效 —— 实测「改用凭据体 / 完成：响应 N 字节」这类
     /// 关键行根本回不到宿主，排查时会被误判成「没发生」。这条通道只发一个小字符串。
     case loginDiag(message: String)
+    /// 抓包探针的原始 WS 帧（`PacketCaptureScript` 上报；仅抓包开启时才有）。
+    case packet(PacketFrame)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -203,6 +235,19 @@ public enum PageEvent: Sendable {
                               bodyBase64: body["body"] as? String ?? "")
         case "loginDiag":
             return .loginDiag(message: body["message"] as? String ?? "")
+        case "packet":
+            // ⚠️ 宽松解码：抓包是诊断工具，个别字段异常不该让整条事件被丢弃。
+            // byteCount 经 WKScriptMessage 到达时可能是 NSNumber，`as? Int` 在
+            // 32 位溢出值上会失败，所以统一走 `integer(_:)`。
+            let frame = PacketFrame(
+                direction: body["dir"] as? String == "send" ? "send" : "recv",
+                payloadBase64: body["b64"] as? String ?? "",
+                byteCount: integer(body["len"]),
+                timestampMs: double(body["ts"]),
+                kind: body["kind"] as? String ?? "binary",
+                truncated: (body["trunc"] as? Bool) == true
+            )
+            return .packet(frame)
         default:
             return .unknown(type: type)
         }
@@ -222,5 +267,14 @@ public enum PageEvent: Sendable {
 
     private static func stringified(_ value: Any?) -> String {
         String(describing: value ?? "?")
+    }
+
+    /// 宽松取浮点（页面侧 `Date.now()` 是毫秒整数，但别让类型差异丢事件）。
+    private static func double(_ value: Any?) -> Double {
+        if let number = value as? Double { return number }
+        if let number = value as? Int { return Double(number) }
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let text = value as? String, let parsed = Double(text) { return parsed }
+        return 0
     }
 }

@@ -55,6 +55,8 @@ public final class GameViewportInstance: NSView {
     public weak var enhancements: GameEnhancementStore?
     /// 账号资料库（头像 / 游戏内昵称 / 等级战力；页面探针上报后写入）。
     public weak var avatars: AccountAvatarStore?
+    /// 抓包控制器（页面帧上报的归宿；nil 时页面帧事件只进日志）。
+    public weak var capture: PacketCaptureController?
 
     private let authenticator: GameAuthenticating
     private let resources: ResourceProviding
@@ -101,7 +103,8 @@ public final class GameViewportInstance: NSView {
                 sync: InputSyncController? = nil,
                 scripts: ScriptStore? = nil,
                 enhancements: GameEnhancementStore? = nil,
-                avatars: AccountAvatarStore? = nil) {
+                avatars: AccountAvatarStore? = nil,
+                capture: PacketCaptureController? = nil) {
         self.account = account
         self.environment = environment
         self.authenticator = authenticator
@@ -111,6 +114,7 @@ public final class GameViewportInstance: NSView {
         self.scripts = scripts
         self.enhancements = enhancements
         self.avatars = avatars
+        self.capture = capture
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -395,6 +399,43 @@ public final class GameViewportInstance: NSView {
         pool?.requestReload(accountID: account.id)
     }
 
+    // MARK: - 抓包开关
+
+    /// 推一次抓包开关到页面（幂等）。
+    ///
+    /// 页面代理常驻（文档起点已装好 hook），这里只切 `enabled`：
+    /// 开启后页面开始上报原始帧；关闭后 hook 保留但走零开销路径。
+    /// 诊断串（`capture v=1 hooked=1 enabled=true sent=…`）进日志，
+    /// no-handler = 页面没装代理（构建产物未更新）。
+    public func setPacketCaptureEnabled(_ enabled: Bool) {
+        guard !isStopped else { return }
+        webView.evaluateJavaScript(PacketCaptureScript.setEnabled(enabled)) { [weak self] result, error in
+            if let error {
+                LobbyLog.warn("[capture] 开关下发失败（%@）：%@", enabled ? "on" : "off", error.localizedDescription)
+                return
+            }
+            let diagnostic = (result as? String) ?? String(describing: result)
+            LobbyLog.info("[capture] %@ %@ %@", self?.account.fileName ?? "?",
+                          enabled ? "ON" : "OFF", diagnostic)
+        }
+    }
+
+    /// 该账号当前是否在抓包（实例重载后由 didFinish 重推开关时用）。
+    public func isPacketCaptureActive() -> Bool {
+        capture?.isCapturing(accountID: account.id) ?? false
+    }
+
+    /// 查询页面侧代理状态（`capture v=1 hooked=1 enabled=true sent=…`），
+    /// 回执写入控制器的 `pageDiagnostics`——抓包窗口常驻显示，一眼定性
+    /// 「没流量」是没装代理（no-handler）、没建连接（hooked=0）还是没推开关。
+    public func queryPacketCaptureStatus() {
+        guard !isStopped else { return }
+        webView.evaluateJavaScript(PacketCaptureScript.status()) { [weak self] result, error in
+            guard let self, error == nil, let text = result as? String else { return }
+            self.capture?.notePageDiagnostics(text, accountID: self.account.id)
+        }
+    }
+
     /// 抢焦点：键盘事件只会派发给第一响应者。
     public func focusWebView() {
         guard let window = webView.window ?? self.window else { return }
@@ -534,6 +575,13 @@ public final class GameViewportInstance: NSView {
         // 而且不预注入就永远补不上（账号卡的头像要等下一次导航才有）。
         contentController.addUserScript(
             WKUserScript(source: AccountProfileScript.agent,
+                         injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        // ⑥ 抓包代理（hook 原生 WebSocket，常驻；上报与否由运行时开关控制）。
+        // 必须在文档起点装好：游戏的所有 WS 连接都发生在页面脚本执行期，
+        // 错过起点 = 错过游戏登录建立的连接 = 一条都抓不到。
+        contentController.addUserScript(
+            WKUserScript(source: PacketCaptureScript.agent,
                          injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
 
@@ -735,6 +783,9 @@ public final class GameViewportInstance: NSView {
             // （游戏 boot 后会把 console 整个换掉，我们包装的那层会失效）。
             LobbyLog.info("[login-diag] %@", message)
             DiagnosticsLog.append("[diag] \(message)")
+        case .packet(let frame):
+            // 抓包帧：解码 + 会话归档都在控制器（抓包未开启时控制器会直接丢弃）。
+            capture?.ingest(frame: frame, accountID: account.id)
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
         }
@@ -1007,6 +1058,10 @@ extension GameViewportInstance: WKNavigationDelegate {
         sync?.refreshCapture(forAccountID: account.id)
         // 游戏加强（十殿加速）同理：代理已随文档起点注入，这里补一次当前配置。
         applyEnhancements()
+        // 抓包同理：页面重载后 enabled 归零，账号还在抓包名单里就把开关重新推上。
+        if isPacketCaptureActive() {
+            setPacketCaptureEnabled(true)
+        }
         // 就绪后先按「非焦点」降帧静音；焦点仲裁由会话模型在 ready 后统一重放。
         applyEnergyPolicy(isFocused: false)
         scheduleLoginStatsSnapshots()
