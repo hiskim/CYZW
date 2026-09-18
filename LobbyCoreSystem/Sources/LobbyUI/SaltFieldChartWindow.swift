@@ -1067,16 +1067,12 @@ struct SaltHistoryView: View {
 
     /// 紧凑总览卡：标题（着色）在上、大数字（同色）在下。
     private func overviewCard(label: String, tint: Color, icon: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .semibold))
-                Text(label)
-                    .font(.system(size: 10.5, weight: .semibold))
-            }
-            .foregroundStyle(tint)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(tint)
                 .lineLimit(1)
         }
