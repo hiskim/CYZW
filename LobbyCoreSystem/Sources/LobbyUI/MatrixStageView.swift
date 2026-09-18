@@ -601,6 +601,20 @@ struct ViewportCardView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 3)
+            // 盐场图表：弹独立悬浮窗口（可透明 / 置顶 / 鼠标穿透），展示盐场地图占领 + 战况。
+            // 窗口开着时按钮点亮；打盐场时把图表窗压在实例上面当参考。
+            Button {
+                session.toggleSaltFieldChart(account)
+            } label: {
+                Image(systemName: session.saltFieldChartsVisible.contains(account.id) ? "map.fill" : "map")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(session.saltFieldChartsVisible.contains(account.id) ? Color.cyan : Color.white.opacity(0.45))
+                    .frame(width: 13, height: 13)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .lobbyHoverHighlight(cornerRadius: 4, intensity: 0.16)
+            .help("盐场实时图表：独立悬浮窗口展示战场占领与击杀/复活战况（可调透明度、鼠标穿透，打盐场时不挡操作）")
             // 抓包：开/停本实例的 WSS 帧捕获并弹出独立抓包窗口；抓包中按钮点亮。
             Button {
                 session.togglePacketCapture(account)

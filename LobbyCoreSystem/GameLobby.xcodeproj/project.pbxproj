@@ -60,7 +60,11 @@
 		C1000000000000000000001E /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001E /* DiagnosticsLog.swift */; };
 		C10000000000000000000037 /* PacketCaptureWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000037 /* PacketCaptureWindow.swift */; };
 		C10000000000000000000036 /* PacketCaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000036 /* PacketCaptureController.swift */; };
+		C10000000000000000000039 /* SaltFieldRoadPoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000039 /* SaltFieldRoadPoints.swift */; };
 		C10000000000000000000038 /* GameCommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000038 /* GameCommandCatalog.swift */; };
+		C1000000000000000000003B /* SaltFieldModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003B /* SaltFieldModels.swift */; };
+		C1000000000000000000003A /* SaltFieldChartController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003A /* SaltFieldChartController.swift */; };
+		C1000000000000000000003C /* SaltFieldChartWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003C /* SaltFieldChartWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -206,7 +210,11 @@
 		C2000000000000000000001E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsLog.swift; sourceTree = "<group>"; };
 		C20000000000000000000037 /* PacketCaptureWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketCaptureWindow.swift; sourceTree = "<group>"; };
 		C20000000000000000000036 /* PacketCaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketCaptureController.swift; sourceTree = "<group>"; };
+		C20000000000000000000039 /* SaltFieldRoadPoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldRoadPoints.swift; sourceTree = "<group>"; };
 		C20000000000000000000038 /* GameCommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameCommandCatalog.swift; sourceTree = "<group>"; };
+		C2000000000000000000003B /* SaltFieldModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldModels.swift; sourceTree = "<group>"; };
+		C2000000000000000000003A /* SaltFieldChartController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldChartController.swift; sourceTree = "<group>"; };
+		C2000000000000000000003C /* SaltFieldChartWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldChartWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -325,7 +333,10 @@
 				C2000000000000000000000F /* GameInstancePool.swift */,
 				C20000000000000000000036 /* PacketCaptureController.swift */,
 				C2000000000000000000001F /* PacketCaptureScript.swift */,
+				C20000000000000000000039 /* SaltFieldRoadPoints.swift */,
 				C20000000000000000000038 /* GameCommandCatalog.swift */,
+				C2000000000000000000003B /* SaltFieldModels.swift */,
+				C2000000000000000000003A /* SaltFieldChartController.swift */,
 			);
 			path = LobbyEngine;
 			sourceTree = "<group>";
@@ -342,6 +353,7 @@
 				C20000000000000000000015 /* MatrixStageView.swift */,
 				C20000000000000000000025 /* ScriptSidebarView.swift */,
 				C20000000000000000000035 /* RolePickerSheet.swift */,
+				C2000000000000000000003C /* SaltFieldChartWindow.swift */,
 				C20000000000000000000037 /* PacketCaptureWindow.swift */,
 			);
 			path = LobbyUI;
@@ -638,7 +650,10 @@
 				C1000000000000000000000F /* GameInstancePool.swift in Sources */,
 				C10000000000000000000036 /* PacketCaptureController.swift in Sources */,
 				C1000000000000000000001F /* PacketCaptureScript.swift in Sources */,
+				C10000000000000000000039 /* SaltFieldRoadPoints.swift in Sources */,
 				C10000000000000000000038 /* GameCommandCatalog.swift in Sources */,
+				C1000000000000000000003B /* SaltFieldModels.swift in Sources */,
+				C1000000000000000000003A /* SaltFieldChartController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -655,6 +670,7 @@
 				C10000000000000000000025 /* ScriptSidebarView.swift in Sources */,
 				C10000000000000000000029 /* GameEnhancementSectionView.swift in Sources */,
 				C10000000000000000000035 /* RolePickerSheet.swift in Sources */,
+				C1000000000000000000003C /* SaltFieldChartWindow.swift in Sources */,
 				C10000000000000000000037 /* PacketCaptureWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

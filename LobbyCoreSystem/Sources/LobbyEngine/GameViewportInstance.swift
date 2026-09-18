@@ -57,6 +57,8 @@ public final class GameViewportInstance: NSView {
     public weak var avatars: AccountAvatarStore?
     /// 抓包控制器（页面帧上报的归宿；nil 时页面帧事件只进日志）。
     public weak var capture: PacketCaptureController?
+    /// 盐场图表控制器（与抓包并列的第二条解码线：只认盐场连接的 war_* 帧族）。
+    public weak var saltField: SaltFieldChartController?
 
     private let authenticator: GameAuthenticating
     private let resources: ResourceProviding
@@ -104,7 +106,8 @@ public final class GameViewportInstance: NSView {
                 scripts: ScriptStore? = nil,
                 enhancements: GameEnhancementStore? = nil,
                 avatars: AccountAvatarStore? = nil,
-                capture: PacketCaptureController? = nil) {
+                capture: PacketCaptureController? = nil,
+                saltField: SaltFieldChartController? = nil) {
         self.account = account
         self.environment = environment
         self.authenticator = authenticator
@@ -115,6 +118,7 @@ public final class GameViewportInstance: NSView {
         self.enhancements = enhancements
         self.avatars = avatars
         self.capture = capture
+        self.saltField = saltField
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -437,11 +441,13 @@ public final class GameViewportInstance: NSView {
     }
 
     /// 把宿主构好的完整帧（base64）交给页面代理发送。
-    /// 返回页面侧诊断串（`sent bytes=N socket=…` / `no-open-socket …`）。
-    public func sendRawFrame(base64: String) async -> String {
+    /// `socketID` ≥ 0 时定向发给该编号的 socket（盐场连接与主连接的 URL 都含
+    /// "agent"，必须点名；-1 = 旧口径按 URL 挑）。
+    /// 返回页面侧诊断串（`sent sid=N bytes=…` / `no-open-socket …`）。
+    public func sendRawFrame(base64: String, socketID: Int = -1) async -> String {
         guard !isStopped else { return "instance-stopped" }
         return await withCheckedContinuation { continuation in
-            webView.evaluateJavaScript(PacketCaptureScript.sendRaw(base64)) { result, error in
+            webView.evaluateJavaScript(PacketCaptureScript.sendRaw(base64, socketID: socketID)) { result, error in
                 if let error {
                     continuation.resume(returning: "evaluate-failed \(error.localizedDescription)")
                     return
@@ -799,8 +805,10 @@ public final class GameViewportInstance: NSView {
             LobbyLog.info("[login-diag] %@", message)
             DiagnosticsLog.append("[diag] \(message)")
         case .packet(let frame):
-            // 抓包帧：解码 + 会话归档都在控制器（抓包未开启时控制器会直接丢弃）。
+            // 抓包帧：解码 + 会话归档都在控制器（抓包未开启时控制器会直接丢弃）；
+            // 盐场图表线并列摄入（只认 war_* 帧族，未开图表时控制器零成本返回）。
             capture?.ingest(frame: frame, accountID: account.id)
+            saltField?.ingest(frame: frame, accountID: account.id)
         case .unknown(let type):
             LobbyLog.debug("[instance] page event: %@", type)
         }

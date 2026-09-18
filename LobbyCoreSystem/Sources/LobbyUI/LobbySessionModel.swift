@@ -89,6 +89,15 @@ public final class LobbySessionModel: ObservableObject {
     public let commandCatalog: GameCommandStore
     /// 抓包窗口管理器：每账号一个独立 NSWindow（开抓时创建，关窗 = 自动停抓）。
     public let captureWindows = PacketCaptureWindowManager()
+    /// 盐场图表控制器：与抓包并列的第二条解码线（只认盐场连接的 war_* 帧族），
+    /// 持有每账号的战场快照 + 负责轮询帧发送。装配根与实例工厂传同一实例。
+    public let saltField: SaltFieldChartController
+    /// 盐场图表窗口管理器：每账号一个独立 NSWindow（可透明 / 置顶 / 鼠标穿透）。
+    public let saltFieldWindows = SaltFieldChartWindowManager()
+    /// 因「开盐场图表」而顺带开启的页面上报（关图表时要一并关掉的账号）。
+    private var saltFieldOwnsCapture: Set<String> = []
+    /// 盐场图表窗口可见的账号（实例卡片按钮的高亮态）。
+    @Published public private(set) var saltFieldChartsVisible: Set<String> = []
     /// 资料抓取器：**不启动游戏**，直接用 `.bin` 凭据问服务端（见 `AccountProfileFetcher`）。
     public let profileFetcher = AccountProfileFetcher()
 
@@ -102,7 +111,8 @@ public final class LobbySessionModel: ObservableObject {
                 enhancements: GameEnhancementStore,
                 avatars: AccountAvatarStore,
                 capture: PacketCaptureController,
-                commandCatalog: GameCommandStore) {
+                commandCatalog: GameCommandStore,
+                saltField: SaltFieldChartController) {
         self.bins = bins
         self.pool = pool
         self.sync = sync
@@ -112,6 +122,7 @@ public final class LobbySessionModel: ObservableObject {
         self.avatars = avatars
         self.capture = capture
         self.commandCatalog = commandCatalog
+        self.saltField = saltField
         pool.delegate = self
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()
@@ -120,6 +131,8 @@ public final class LobbySessionModel: ObservableObject {
         matrixOrder = groupStore.loadMatrixOrder()
         remarks = groupStore.loadRemarks()
         captureWindows.attach(session: self)
+        saltFieldWindows.attach(session: self)
+        saltField.pool = pool
     }
 
     /// 分组定义排序：sortOrder 优先，再按名称本地化比较（与上一代口径一致）。
@@ -612,6 +625,11 @@ public final class LobbySessionModel: ObservableObject {
         // 抓包随实例一起收摊：停抓 + 丢会话 + 关窗口（抓包窗口是实例的伴生工具）。
         capture.discardSession(accountID: account.id)
         captureWindows.closeWindow(forAccountID: account.id)
+        // 盐场图表同样随实例收摊：停轮询 + 丢快照 + 关窗口。
+        saltField.discard(accountID: account.id)
+        saltFieldWindows.closeWindow(forAccountID: account.id)
+        saltFieldOwnsCapture.remove(account.id)
+        saltFieldChartsVisible.remove(account.id)
         sync.retire(accountID: account.id)
         pool.destroy(accountID: account.id)
         if focusedAccountID == account.id {
@@ -768,6 +786,66 @@ public final class LobbySessionModel: ObservableObject {
               let instance = pool.existingSurface(forAccountID: accountID) else { return }
         capture.endSession(accountID: accountID)
         instance.setPacketCaptureEnabled(false)
+    }
+
+    // MARK: - 盐场实时图表（独立窗口 · 可透明 / 置顶 / 鼠标穿透）
+
+    /// 开 / 关某账号的盐场图表窗口（矩阵卡片按钮的唯一入口）。
+    ///
+    /// 开：确保页面上报开着（图表与抓包共用同一条页面上报通道；若抓包本来没开，
+    ///     记入 `saltFieldOwnsCapture`，关图表时一并关掉）→ 开轮询 → 弹独立窗口。
+    /// 关：停轮询 → 若上报是因图表而开的则关掉 → 关窗口。
+    /// 前置：实例必须在运行（轮询帧要从活页面发出去）。
+    public func toggleSaltFieldChart(_ account: GameAccount) {
+        guard runningAccountIDs.contains(account.id),
+              let instance = pool.existingSurface(forAccountID: account.id) else {
+            statusMessage = "盐场图表需要账号处于运行状态，请先启动「\(account.nickname)」。"
+            return
+        }
+        if saltFieldChartsVisible.contains(account.id) {
+            closeSaltFieldChart(accountID: account.id, instance: instance)
+            statusMessage = "已关闭「\(account.nickname)」盐场图表。"
+        } else {
+            if !capture.isCapturing(accountID: account.id) {
+                capture.beginSession(accountID: account.id, accountName: account.nickname)
+                instance.setPacketCaptureEnabled(true)
+                saltFieldOwnsCapture.insert(account.id)
+            } else {
+                saltFieldOwnsCapture.remove(account.id)
+            }
+            saltField.setPolling(true, accountID: account.id)
+            saltFieldChartsVisible.insert(account.id)
+            saltFieldWindows.openWindow(for: account)
+            statusMessage = "盐场图表已打开：进入游戏内盐场战场后自动拉取（每 4 秒）。"
+        }
+    }
+
+    /// 关图表的公共路径（按钮二次点击 / 窗口红点 / 实例关闭）。
+    private func closeSaltFieldChart(accountID: String, instance: GameViewportInstance? = nil) {
+        saltField.setPolling(false, accountID: accountID)
+        saltFieldChartsVisible.remove(accountID)
+        if saltFieldOwnsCapture.remove(accountID) != nil {
+            let target = instance ?? pool.existingSurface(forAccountID: accountID)
+            capture.endSession(accountID: accountID)
+            target?.setPacketCaptureEnabled(false)
+        }
+        saltFieldWindows.closeWindow(forAccountID: accountID)
+    }
+
+    /// 图表窗口被用户关闭（红点）：停轮询 + 归还页面上报（若因图表而开）。
+    /// 由 `SaltFieldChartWindowManager.windowWillClose` 回调。
+    public func saltFieldChartWindowDidClose(accountID: String) {
+        closeSaltFieldChart(accountID: accountID)
+    }
+
+    /// 图表窗口的轮询开关（窗口工具栏）。
+    public func setSaltFieldPolling(_ enabled: Bool, account: GameAccount) {
+        saltField.setPolling(enabled, accountID: account.id)
+    }
+
+    /// 图表窗口的「立即拉取」。
+    public func refreshSaltFieldNow(account: GameAccount) {
+        saltField.pollNow(accountID: account.id)
     }
 
     // MARK: - 焦点能耗仲裁

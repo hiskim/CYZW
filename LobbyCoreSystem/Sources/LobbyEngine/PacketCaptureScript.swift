@@ -46,10 +46,15 @@ import Foundation
 //   心跳每 2s 一条由宿主窗口的「排除心跳」开关过滤，页面不特判。
 public enum PacketCaptureScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**（诊断串里带 `v=`，用于确认页面在跑哪一版）。
-    public static let agentVersion = "2"
+    ///
+    /// v3（2026-09-18）：① 每个构造的 socket 分配递增编号，上报帧带 `sid`——
+    /// 主连接与盐场连接的 URL 都含 "agent"，按 URL 挑发送目标会撞，盐场图表的
+    /// 轮询帧必须**定向**发回学到 `war_*` 命令的那条连接；② 单帧上限 192→512 KiB
+    /// （`war_getbattlefieldinfo` 的战场快照实测逼近旧上限，截断会让 BON 解不开）。
+    public static let agentVersion = "3"
 
-    /// 单帧上报字节上限（192 KiB）。超出部分丢弃并打 `trunc` 标记。
-    private static let maxFrameBytes = 192 * 1024
+    /// 单帧上报字节上限（512 KiB）。超出部分丢弃并打 `trunc` 标记。
+    private static let maxFrameBytes = 512 * 1024
 
     /// 推一次开关（幂等，可重复调用）。返回页面侧诊断串：
     /// `capture v=1 hooked=1 enabled=true total=1 sent=23 dropped=0`；
@@ -65,9 +70,11 @@ public enum PacketCaptureScript {
     }
 
     /// 发送一帧（base64 编码的完整 x 信封帧，由宿主构好）。
+    /// `socketID` ≥ 0 时定向发给该编号的 socket（盐场轮询用）；否则按旧口径挑。
     /// 返回诊断串：`sent bytes=N socket=…` / `no-open-socket …` / `no-handler`。
-    public static func sendRaw(_ base64: String) -> String {
-        "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendRaw('\(base64)') : 'no-handler'"
+    public static func sendRaw(_ base64: String, socketID: Int = -1) -> String {
+        let target = socketID >= 0 ? String(socketID + 1) : "0"
+        return "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendRaw('\(base64)', \(target)) : 'no-handler'"
     }
 
     /// 代理脚本本体（`atDocumentStart` 注入，只注入主框架）。
@@ -83,7 +90,7 @@ public enum PacketCaptureScript {
           const channel = (window.webkit && window.webkit.messageHandlers &&
                            window.webkit.messageHandlers.ios2Game) || null;
 
-          const state = { enabled: false, hooked: 0, sent: 0, dropped: 0, sockets: new Set() };
+          const state = { enabled: false, hooked: 0, sent: 0, dropped: 0, nextSocketID: 1, sockets: new Map() };
 
           // 字节 → base64。分块拼二进制串再 btoa：大帧一次性 apply 会撞参数个数上限。
           function toBase64(bytes) {
@@ -104,7 +111,8 @@ public enum PacketCaptureScript {
           }
 
           // 统一上报入口。开关关闭时是零开销路径（第一行就返回）。
-          function report(direction, data) {
+          // sid = 发出/收到该帧的 socket 编号（v3；宿主用它做定向发送）。
+          function report(direction, data, sid) {
             if (!state.enabled || !channel) return;
             try {
               let bytes;
@@ -131,6 +139,7 @@ public enum PacketCaptureScript {
                 b64: toBase64(bytes),
                 len: total,
                 trunc: truncated,
+                sid: sid || 0,
                 ts: Date.now()
               });
             } catch (error) {
@@ -139,10 +148,10 @@ public enum PacketCaptureScript {
           }
 
           // Blob 只可能出现在接收侧（binaryType 缺省值）；异步读完再走同一条上报通道。
-          function reportBlob(direction, blob) {
+          function reportBlob(direction, blob, sid) {
             if (!state.enabled || !channel) return;
             blob.arrayBuffer().then(function (buffer) {
-              report(direction, buffer);
+              report(direction, buffer, sid);
             }).catch(function () {});
           }
 
@@ -152,18 +161,21 @@ public enum PacketCaptureScript {
             constructor(url, protocols) {
               super(url, protocols);
               state.hooked++;
-              state.sockets.add(this);
+              // 递增编号（从 1 起；0 是宿主侧「未知 socket」的哨兵值）。
+              const sid = state.nextSocketID++;
+              state.sockets.set(this, sid);
+              this.__lobbySocketID = sid;
               // 关闭 / 失败时摘出登记表，发送指令只挑还活着的连接。
               this.addEventListener('close', function () { state.sockets.delete(this); });
               this.addEventListener('error', function () { state.sockets.delete(this); });
               this.addEventListener('message', function (event) {
-                if (event.data instanceof Blob) reportBlob('recv', event.data);
-                else report('recv', event.data);
+                if (event.data instanceof Blob) reportBlob('recv', event.data, sid);
+                else report('recv', event.data, sid);
               });
             }
             send(data) {
-              if (data instanceof Blob) reportBlob('send', data);
-              else report('send', data);
+              if (data instanceof Blob) reportBlob('send', data, this.__lobbySocketID);
+              else report('send', data, this.__lobbySocketID);
               return super.send(data);
             }
           }
@@ -173,22 +185,31 @@ public enum PacketCaptureScript {
             // 理论上不可达（window 属性可写）；保守起见不阻断页面。
           }
 
-          // 发送指令：挑 OPEN 的游戏连接（优先 agent 端点），字节原样交出。
+          // 发送指令：targetID > 0 → 定向发给该编号的 socket（盐场轮询的主路径）；
+          // 否则按旧口径挑 OPEN 的游戏连接（优先 agent 端点）。字节原样交出。
           // 注入帧会经过上面的 send 包装 → 正常上报抓包流，配对逻辑不受影响。
-          function sendRaw(base64) {
-            const open = Array.from(state.sockets).filter(function (socket) {
-              return socket.readyState === 1;
+          function sendRaw(base64, targetID) {
+            const open = Array.from(state.sockets.entries()).map(function (entry) {
+              return { socket: entry[0], sid: entry[1] };
+            }).filter(function (item) {
+              return item.socket.readyState === 1;
             });
             if (!open.length) {
               return 'no-open-socket hooked=' + state.hooked;
             }
-            const target = open.find(function (socket) {
-              return (socket.url || '').indexOf('agent') >= 0;
-            }) || open[open.length - 1];
+            let target = null;
+            if (targetID > 0) {
+              target = open.find(function (item) { return item.sid === targetID; }) || null;
+            }
+            if (!target) {
+              target = open.find(function (item) {
+                return (item.socket.url || '').indexOf('agent') >= 0;
+              }) || open[open.length - 1];
+            }
             try {
               const bytes = fromBase64(base64);
-              target.send(bytes);
-              return 'sent bytes=' + bytes.length + ' socket=' + (target.url || '').slice(0, 60);
+              target.socket.send(bytes);
+              return 'sent sid=' + target.sid + ' bytes=' + bytes.length + ' socket=' + (target.socket.url || '').slice(0, 60);
             } catch (error) {
               return 'send-failed ' + (error && error.message ? error.message : String(error));
             }
@@ -199,13 +220,13 @@ public enum PacketCaptureScript {
             setEnabled(enabled) {
               state.enabled = !!enabled;
               return 'capture v=' + VERSION + ' hooked=' + state.hooked +
-                     ' open=' + Array.from(state.sockets).filter(function (s) { return s.readyState === 1; }).length +
+                     ' open=' + Array.from(state.sockets.keys()).filter(function (s) { return s.readyState === 1; }).length +
                      ' enabled=' + state.enabled +
                      ' sent=' + state.sent + ' dropped=' + state.dropped;
             },
             status() {
               return 'capture v=' + VERSION + ' hooked=' + state.hooked +
-                     ' open=' + Array.from(state.sockets).filter(function (s) { return s.readyState === 1; }).length +
+                     ' open=' + Array.from(state.sockets.keys()).filter(function (s) { return s.readyState === 1; }).length +
                      ' enabled=' + state.enabled +
                      ' sent=' + state.sent + ' dropped=' + state.dropped;
             },

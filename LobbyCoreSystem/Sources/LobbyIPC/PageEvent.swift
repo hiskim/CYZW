@@ -92,15 +92,22 @@ public struct PacketFrame: Sendable {
     public let kind: String
     /// 单包超过页面上限被截断（详情里保留前缀字节，足以解出 cmd）。
     public let truncated: Bool
+    /// 发出 / 收到该帧的 socket 编号（页面代理 v3 起分配；v2 及更早 = -1）。
+    ///
+    /// 为什么要有：主连接与盐场连接的 URL 都含 "agent"（实测主连接
+    /// `wss://xxz-xyzw.hortorgames.com/agent?…`），按 URL 挑发送目标会撞——
+    /// 盐场图表需要「从哪个 socket 学来的 war_* 命令，就把轮询帧发回哪个 socket」。
+    public let socketID: Int
 
     public init(direction: String, payloadBase64: String, byteCount: Int,
-                timestampMs: Double, kind: String, truncated: Bool) {
+                timestampMs: Double, kind: String, truncated: Bool, socketID: Int = -1) {
         self.direction = direction
         self.payloadBase64 = payloadBase64
         self.byteCount = byteCount
         self.timestampMs = timestampMs
         self.kind = kind
         self.truncated = truncated
+        self.socketID = socketID
     }
 }
 
@@ -245,7 +252,8 @@ public enum PageEvent: Sendable {
                 byteCount: integer(body["len"]),
                 timestampMs: double(body["ts"]),
                 kind: body["kind"] as? String ?? "binary",
-                truncated: (body["trunc"] as? Bool) == true
+                truncated: (body["trunc"] as? Bool) == true,
+                socketID: integer(body["sid"]) - 1
             )
             return .packet(frame)
         default:
