@@ -873,7 +873,12 @@ struct SaltFieldMapView: View {
         return clubsByPosition[position]
     }
 
+    /// 核心四周那 6 格（固定粉红标记；它们本身是道路，正常会被染成蓝色）。
+    private static let coreRingIDs: Set<String> =
+        Set(SaltFieldChartController.coreRingNodeIDs())
+
     /// 节点的最终染色：
+    ///   ⓪ 核心四周 6 格 → 固定粉红（用户点名的焦点标记，不参与归属染色）；
     ///   ① 大本营且**只有主连接落位**（快照还没来）→ 用该俱乐部的联盟色
     ///      （参考脚本「星驰」getAllianceColor 口径：梦盟红 / 大联盟绿 / 龍盟蓝）；
     ///      认不出联盟的用大本营底色 #DC143C（参考脚本 SALT_BUILDING_TYPES[57].bgColor）
@@ -881,6 +886,9 @@ struct SaltFieldMapView: View {
     ///   ② 占领布局用快照染好的 colorHex；③ 分布布局只有大本营亮俱乐部色，其余统一道路蓝
     ///      （照抄自助手仓的分布布局口径）。
     private func color(of node: SaltRenderedNode, club: SaltLiveClub?) -> Color {
+        if Self.coreRingIDs.contains(node.id) {
+            return SaltColorPalette.color(SaltColorPalette.coreRingColor)
+        }
         if let club {
             return SaltColorPalette.color(club.alliance == .unknown
                                           ? "#DC143C" : club.alliance.fillHex)
@@ -894,32 +902,55 @@ struct SaltFieldMapView: View {
         return SaltColorPalette.color(SaltColorPalette.typeColor(9))
     }
 
+    /// 六边形路径（顶点角 0/60/120…；与 centerX/centerY 同一套几何）。
+    private func hexPath(center: CGPoint, radius: CGFloat) -> Path {
+        var path = Path()
+        for corner in 0..<6 {
+            let angle = CGFloat(corner) * .pi / 3
+            let point = CGPoint(x: center.x + radius * cos(angle),
+                                y: center.y + radius * sin(angle))
+            if corner == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        path.closeSubpath()
+        return path
+    }
+
     private func draw(context: inout GraphicsContext, size: CGSize) {
         let map = mapSize
         let scale = min(size.width / map.width, size.height / map.height, 1.6)
         let offsetX = max(0, (size.width - map.width * scale) / 2)
         let offsetY = max(0, (size.height - map.height * scale) / 2)
+        let radius = hexSize * scale
 
+        func screenCenter(col: Int, row: Int) -> CGPoint {
+            CGPoint(x: offsetX + centerX(col) * scale,
+                    y: offsetY + centerY(row, col: col) * scale)
+        }
+
+        // ① 先铺**整张网格**：骨架之外的格子画成白色（细描边），地图边界一眼可见。
+        //    （用户口径：地图周围没用到的六角框用白色框表示。）
+        let emptyFill = SaltColorPalette.color(SaltColorPalette.emptyCellColor)
+        for col in 0..<SaltFieldChartController.gridColumns {
+            for row in 0..<SaltFieldChartController.gridRows where nodes["\(col)_\(row)"] == nil {
+                let path = hexPath(center: screenCenter(col: col, row: row), radius: radius)
+                context.fill(path, with: .color(emptyFill))
+                context.stroke(path, with: .color(.black.opacity(0.10)), lineWidth: 0.5)
+            }
+        }
+
+        // ② 再画有内容的格子（骨架 + 动态归属）。
         var labels: [(CGPoint, String, Color)] = []
         /// 俱乐部名标签：带底色的胶囊（联盟色填充 + 对应文字色），画在大本营上方。
         var clubChips: [(CGPoint, String, SaltAlliance.Name)] = []
         for node in nodes.values {
-            let center = CGPoint(x: offsetX + centerX(node.x) * scale,
-                                 y: offsetY + centerY(node.y, col: node.x) * scale)
-            let radius = hexSize * scale
-            var path = Path()
-            for corner in 0..<6 {
-                let angle = CGFloat(corner) * .pi / 3
-                let point = CGPoint(x: center.x + radius * cos(angle),
-                                    y: center.y + radius * sin(angle))
-                if corner == 0 { path.move(to: point) } else { path.addLine(to: point) }
-            }
-            path.closeSubpath()
+            let center = screenCenter(col: node.x, row: node.y)
+            let path = hexPath(center: center, radius: radius)
             let club = liveClub(of: node)
             context.fill(path, with: .color(color(of: node, club: club)))
             context.stroke(path, with: .color(.black.opacity(0.22)), lineWidth: 0.6)
 
-            // 标注：大本营 → 俱乐部名（快照归属优先，其次主连接落位）；据点 → 分值短名。
+            // 标注：大本营 → 俱乐部名（快照归属优先，其次主连接落位）；
+            //       据点 → 血量短名（30/50/80/100 血）。
             if node.isStronghold {
                 if let club {
                     clubChips.append((CGPoint(x: center.x, y: center.y - radius * 1.25),

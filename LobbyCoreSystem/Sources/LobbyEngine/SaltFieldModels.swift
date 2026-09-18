@@ -9,7 +9,11 @@ import Foundation
 /// 一个建筑/据点/道路点（服务端 `buildingData` 条目）。
 public struct SaltBuilding: Sendable {
     public let id: String
-    /// 9=道路 1/2/3/5=30/50/80/100 分据点 4=大本营 6=核心。
+    /// 9=道路 · 1/2/3/5=据点（对应生命值 30/50/80/100）· 4=大本营 · 6=核心。
+    ///
+    /// ⚠️ 这几个数字是据点的**生命值（血量）**，不是分值——2026-09-18 用户纠正：
+    /// 早先把 1/2/3/5 当「30/50/80/100 分据点」，标签写成「30分」是错的。
+    /// 真正的积分来自服务端 `point` 字段（见 buildSnapshot 的 score 累加）。
     public let type: Int
     public let belongsLegionID: Int64?
     public let hp: Int64
@@ -128,14 +132,18 @@ public struct SaltRenderedNode: Sendable {
     public var isStronghold: Bool { type == 4 }
     public var isCore: Bool { type == 6 }
 
-    /// 据点短名（typeBg 的中文口径；道路不参与）。
+    /// 据点短名（地图标注用；道路不参与）。
+    ///
+    /// ⚠️ 1/2/3/5 那四个数字是**据点生命值**（30/50/80/100 血），不是分值——
+    /// 2026-09-18 用户纠正。所以标签写「30血」而不是「30分」（分值另有其物：
+    /// 服务端 `point`，进俱乐部积分）。
     public var typeName: String {
         switch type {
-        case 1: return "30分"
-        case 2: return "50分"
-        case 3: return "80分"
+        case 1: return "30血"
+        case 2: return "50血"
+        case 3: return "80血"
         case 4: return "大本营"
-        case 5: return "100分"
+        case 5: return "100血"
         case 6: return "核心"
         default: return ""
         }
@@ -457,6 +465,11 @@ public struct SaltWarDetailsResult: Sendable {
 
 /// 盐场调色板（与自助手仓 `colorArray` / `typeBg` 逐色对齐）。
 public enum SaltColorPalette {
+    /// 核心四周那 6 格的高亮色（粉红：全场唯一争抢焦点，用户点名要标出来）。
+    public static let coreRingColor = "#FF69B4"
+
+    /// 骨架之外的「空格子」底色（整张网格都要画，空格留白框）。
+    public static let emptyCellColor = "#FFFFFF"
     /// 俱乐部色表（index 0...19；带透明度的 hex 原样保留，渲染层解析）。
     static let legionColors: [String] = [
         "#ff000033", "#00ff0033", "#0000ff33", "#FFFF0033", "#FF00FF33",

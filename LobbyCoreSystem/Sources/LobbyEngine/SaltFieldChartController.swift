@@ -1117,6 +1117,15 @@ public final class SaltFieldChartController: ObservableObject {
         SaltFieldRoadPoints.strongholdNodeID(position: position)
     }
 
+    /// 地图网格尺寸（整张网格都要画：骨架之外的格子留白框）。
+    public static var gridColumns: Int { SaltFieldRoadPoints.columns }
+    public static var gridRows: Int { SaltFieldRoadPoints.rows }
+
+    /// 核心四周那 6 格（地图上单独染粉红）。
+    public static func coreRingNodeIDs() -> [String] {
+        SaltFieldRoadPoints.coreRingNodeIDs
+    }
+
     /// 地图节点 id → 大本营序号（实时落位查表用）。
     public static func strongholdPosition(nodeID: String) -> Int? {
         SaltFieldRoadPoints.strongholdPositionByNodeID[nodeID]

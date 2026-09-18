@@ -343,6 +343,43 @@ enum SaltFieldRoadPoints {
     /// 静态点数量（诊断日志用）。
     static var count: Int { nodes.count }
 
+    // MARK: 网格几何（错列六边形 odd-q；奇数列下移半格）
+
+    /// 网格列数 / 行数（由节点坐标上界推出：x 0...40、y 0...31）。
+    /// 地图要画**整张网格**（骨架之外的格子留白框），所以尺寸得是确定的。
+    static let columns = 41
+    static let rows = 32
+
+    /// 核心节点 id（type 6）。
+    static var coreNodeID: String? { nodes.first { $0.value == 6 }?.key }
+
+    /// 某格四周的 6 个邻居（越界丢弃）。
+    ///
+    /// 口径 = 地图绘制用的错列六边形（odd-q，**奇数列下移半格**）：
+    ///   同列上下两格 + 相邻列两格（偶数列取 row-1/row，奇数列取 row/row+1）。
+    /// 实测核对：核心 "20_17"（偶数列）的 6 个邻居正是骨架里的
+    /// 20_16 / 20_18 / 19_16 / 19_17 / 21_16 / 21_17（全部 type 9 道路），
+    /// 距离 25.4–26.7，而第 7 近的格子是 43.5 —— 规则与骨架几何一致。
+    static func neighborIDs(of id: String) -> [String] {
+        let parts = id.split(separator: "_")
+        guard parts.count == 2, let col = Int(parts[0]), let row = Int(parts[1]) else { return [] }
+        var candidates = [(col, row - 1), (col, row + 1)]
+        if col % 2 == 1 {
+            candidates += [(col - 1, row), (col - 1, row + 1), (col + 1, row), (col + 1, row + 1)]
+        } else {
+            candidates += [(col - 1, row - 1), (col - 1, row), (col + 1, row - 1), (col + 1, row)]
+        }
+        return candidates
+            .filter { $0.0 >= 0 && $0.0 < columns && $0.1 >= 0 && $0.1 < rows }
+            .map { "\($0.0)_\($0.1)" }
+    }
+
+    /// 核心四周那 6 格（地图上单独染粉红：它是全场唯一的争抢焦点）。
+    static var coreRingNodeIDs: [String] {
+        guard let coreNodeID else { return [] }
+        return neighborIDs(of: coreNodeID)
+    }
+
     // MARK: 大本营编号（俱乐部 ↔ 地图格子）
 
     /// 大本营编号 position（1...20）→ 节点 id。
