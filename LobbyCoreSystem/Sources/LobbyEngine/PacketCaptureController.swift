@@ -122,9 +122,13 @@ public final class PacketCaptureController: ObservableObject {
         if !packet.command.hasPrefix("‹"), !Self.systemCommands.contains(packet.command) {
             catalog.addDiscovered(packet.command)
         }
-        // 维护服务端 seq（发送构帧时的 ack 取这里）。
+        // 维护服务端 seq（发送构帧时的 ack 取这里）+ 游戏自己的 client seq
+        //（「跟随游戏」编址的依据）。
         if packet.direction == "recv", let seq = packet.seq, seq > 0 {
             session.noteServerSeq(seq)
+        }
+        if packet.direction == "send", let seq = packet.seq, seq > 0 {
+            session.noteClientSeq(seq)
         }
         session.append(packet)
     }
@@ -135,47 +139,40 @@ public final class PacketCaptureController: ObservableObject {
     /// 宿主把完整帧编码好（BonCodec + XorFrameCipher，不依赖游戏内部符号），
     /// 页面代理只负责把字节交给登记的活跃 socket。
     ///
-    /// - `ack` 取抓包里最近一个 recv 帧的服务端 seq（比猫助手的 ack=0 更符合协议）；
-    /// - `seq` 用毫秒时间戳（大数，绝不与游戏递增的小 seq 撞车——猫助手实测可行）；
+    /// - `ack` 取抓包里最近一个 recv 帧的服务端 seq（标准确认语义）；
     /// - 注入帧会经过页面代理的 send 包装，**自然进入抓包流**，响应配对照常工作。
-    @discardableResult
-    public func sendCommand(accountID: String,
-                            instance: GameViewportInstance,
-                            entry: GameCommandEntry,
-                            paramsJSON: String) async -> SendRecord {
-        let record = await sendCommand(accountID: accountID, instance: instance,
-                                       command: entry.command,
-                                       chineseName: entry.chineseName,
-                                       paramsJSON: paramsJSON)
-        return record
-    }
-
     @discardableResult
     public func sendCommand(accountID: String,
                             instance: GameViewportInstance,
                             command: String,
                             chineseName: String,
                             paramsJSON: String,
-                            autoAckSeq: Bool = true,
+                            addressing: SeqAddressing = .followGame,
                             manualAck: Int64? = nil,
                             manualSeq: Int64? = nil) async -> SendRecord {
         var record = SendRecord(command: command,
                                 chineseName: chineseName.isEmpty ? command : chineseName,
                                 paramsJSON: paramsJSON)
+        record.addressing = addressing
         let trimmedParams = paramsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-        // ack/seq 编址（默认全自动，推荐）：
-        //   · ack = 会话里最近 recv 帧的服务端 seq（标准确认语义）；
-        //   · seq = 毫秒时间戳——**刻意不延续游戏的 1,2,3 序列**：撞号会让服务端
-        //     按序去重丢掉游戏自己的请求；大数区间独立编址游戏/服务端都容忍
-        //     （猫助手 Date.now seq 实测可用）。
-        //   · 手动模式给懂协议的人做实验（UI 上有风险提示）。
-        let ack: Int64
+        // ── ack / seq 编址 ──
+        // 实测（用户 2026-09-18）：**时间戳 seq 服务端不响应**（ack=41 正确、
+        // socket/会话正确，唯独 seq 从 41 跳到 1.79e12）——服务端对 client seq
+        // 做序列校验，跳跃即丢弃。猫助手能用 Date.now() 是因为它走游戏封装的
+        // sendAsync（seq 被游戏计数器重编），我们直发原生 socket 绕过了这层。
+        //   · followGame（推荐）：seq = 游戏最近业务 seq + 1，服务端认；
+        //     风险 = 撞号（游戏下一个请求用同一个 seq），去重行为未实证；
+        //   · timestamp：独立编址不占游戏序列，但服务端拒收（保留供实验）；
+        //   · manual：懂协议的人手工指定。
+        let session = sessions[accountID]
+        let ack = manualAck ?? session?.lastServerSeq ?? 0
         let seq: Int64
-        if autoAckSeq {
-            ack = manualAck ?? (sessions[accountID]?.lastServerSeq ?? 0)
+        switch addressing {
+        case .timestamp:
             seq = Int64(Date().timeIntervalSince1970 * 1000)
-        } else {
-            ack = manualAck ?? (sessions[accountID]?.lastServerSeq ?? 0)
+        case .followGame:
+            seq = (session?.lastClientSeq ?? 0) + 1
+        case .manual:
             seq = manualSeq ?? Int64(Date().timeIntervalSince1970 * 1000)
         }
         record.ackUsed = ack
@@ -186,8 +183,8 @@ public final class PacketCaptureController: ObservableObject {
             let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString())
             record.status = diagnostic.hasPrefix("sent") ? "已发送" : diagnostic
             record.succeeded = diagnostic.hasPrefix("sent")
-            LobbyLog.info("[capture] 发送指令 %@(%@) ack=%lld seq=%lld → %@",
-                          chineseName, command, ack, seq, diagnostic)
+            LobbyLog.info("[capture] 发送指令 %@(%@) ack=%lld seq=%lld(%@) → %@",
+                          chineseName, command, ack, seq, addressing.rawValue, diagnostic)
         } catch {
             record.status = "构帧失败：\(error.localizedDescription)"
             record.succeeded = false
@@ -372,6 +369,18 @@ public final class PacketCaptureController: ObservableObject {
     }
 }
 
+// MARK: - 发送指令的 seq 编址模式
+
+/// 注入帧的 client seq 编址（实测口径见 `sendCommand` 注释）。
+public enum SeqAddressing: String, CaseIterable, Sendable {
+    /// 毫秒时间戳（独立编址，不占游戏序列；实测服务端对 seq 跳跃拒收，仅留作实验）。
+    case timestamp = "时间戳"
+    /// 跟随游戏序列（seq = 游戏最近业务 seq + 1；推荐——服务端只认连续序列）。
+    case followGame = "跟随游戏"
+    /// 手工指定（实验用）。
+    case manual = "手动"
+}
+
 // MARK: - 单条捕获包
 
 /// 一条已解码的捕获包。列表行 + 详情面板 + 导出共用这一份快照。
@@ -470,6 +479,11 @@ public final class PacketCaptureSession: ObservableObject {
 
     /// 最近收到的服务端 seq（发送构帧时的 ack 来源）。
     public private(set) var lastServerSeq: Int64 = 0
+    /// 游戏最近一个业务请求的 client seq（发送「跟随游戏」编址时用）。
+    ///
+    /// ⚠️ 只统计**小整数** seq（< 1_000_000）：我们自己注入的时间戳 seq（≈1.79e12）
+    /// 也会路过这里，必须排除，否则下一次「跟随」会跳到时间戳量级、服务端再次拒收。
+    public private(set) var lastClientSeq: Int64 = 0
     /// 待配对的业务请求 FIFO（全局队列，跨 cmd）。
     ///
     /// ⚠️ 为什么是**全局**队列而不是按 cmd 分桶（2026-09-18.8 的方案，导出数据
@@ -497,6 +511,13 @@ public final class PacketCaptureSession: ObservableObject {
     /// 记录服务端 seq（recv 帧，>0 才有意义）。
     func noteServerSeq(_ seq: Int64) {
         lastServerSeq = max(lastServerSeq, seq)
+    }
+
+    /// 记录游戏自己的 client seq（send 协议帧）。只认小整数——
+    /// 我们注入的时间戳 seq 也会路过这里，必须排除（见 `lastClientSeq` 注释）。
+    func noteClientSeq(_ seq: Int64) {
+        guard seq > 0, seq < 1_000_000 else { return }
+        lastClientSeq = max(lastClientSeq, seq)
     }
 
     /// 请求-响应配对（业务序号对齐）。
@@ -657,6 +678,8 @@ public struct SendRecord: Identifiable, Sendable, Equatable {
     /// 结果诊断（`已发送` / 页面回执错误 / 构帧失败原因）。
     public var status: String
     public var succeeded: Bool
+    /// 编址模式。
+    public var addressing: SeqAddressing?
     /// 实际使用的 ack / seq（历史里展示编址依据；自动模式 ack=最新服务端 seq、
     /// seq=毫秒时间戳）。
     public var ackUsed: Int64?
@@ -676,6 +699,7 @@ public struct SendRecord: Identifiable, Sendable, Equatable {
         self.paramsJSON = paramsJSON
         self.status = "发送中…"
         self.succeeded = false
+        self.addressing = nil
         self.ackUsed = nil
         self.seqUsed = nil
     }

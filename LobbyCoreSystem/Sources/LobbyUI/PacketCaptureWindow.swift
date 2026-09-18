@@ -1138,9 +1138,8 @@ private struct SendCommandPane: View {
     @State private var confirmCandidate: GameCommandEntry?
     /// 参数模式：自动 = 用指令库默认参数模板（推荐）；手动 = 编辑器可改。
     @State private var paramModeAuto = true
-    /// ack/seq 编址模式：自动 = ack 取最新服务端 seq、seq 用时间戳（推荐，
-    /// 独立编址不碰游戏自己的 seq 序列）；手动 = 自行指定（实验用，有风险）。
-    @State private var autoAckSeq = true
+    /// ack/seq 编址模式（实测：时间戳 seq 服务端拒收；跟随游戏序列服务端才认）。
+    @State private var addressing: SeqAddressing = .followGame
     @State private var manualAckText = ""
     @State private var manualSeqText = ""
     /// 最近一次发送捕获到的响应帧（页面底部结果窗口；靠抓包配对定位）。
@@ -1389,31 +1388,44 @@ private struct SendCommandPane: View {
         }
     }
 
-    /// ack / seq 编址行：自动（推荐）或手动指定。
+    /// ack / seq 编址行：跟随游戏（推荐）/ 时间戳 / 手动指定。
     private var ackSeqRow: some View {
         HStack(spacing: 8) {
             Text("ack / seq")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Toggle(isOn: $autoAckSeq) {
-                Text("自动编址")
-                    .font(.system(size: 10, weight: .medium))
+            Picker("", selection: $addressing) {
+                ForEach(SeqAddressing.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
             }
-            .toggleStyle(.checkbox)
-            .help("自动 = ack 取最近服务端 seq、seq 用毫秒时间戳（独立编址，不占用游戏自己的 seq 序列——撞号会让服务端按序去重丢掉游戏的请求）。推荐保持勾选。")
-            if autoAckSeq {
-                Text("ack=\(previewAck) · seq=发送时刻时间戳")
+            .pickerStyle(.segmented)
+            .frame(width: 240)
+            .help("跟随游戏 = seq 取游戏最近业务请求 + 1（服务端只认连续序列，实测时间戳 seq 被拒收）；时间戳 = 独立编址（实验）；手动 = 自行指定")
+            switch addressing {
+            case .followGame:
+                Text("ack=\(previewAck) · seq=\(previewSeq)（游戏最近 seq + 1）")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
-            } else {
-                metaField("ack", text: $manualAckText, placeholder: "如 132")
-                metaField("seq", text: $manualSeqText, placeholder: "如 1789697114559")
-                Text("⚠️ 手动编址可能与游戏自身请求冲突，仅供实验")
+                    .help("注意：游戏自己的下一个请求可能与我们撞 seq，服务端去重行为未实证——如游戏出现卡顿请立即停止注入")
+            case .timestamp:
+                Text("seq=发送时刻时间戳（实测服务端拒收 seq 跳跃，仅供实验）")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Color(lobbyRGB: 0xF59E0B).opacity(0.7))
+            case .manual:
+                metaField("ack", text: $manualAckText, placeholder: "如 41")
+                metaField("seq", text: $manualSeqText, placeholder: "如 42")
+                Text("⚠️ 手工编址可能与游戏自身请求冲突，仅供实验")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Color(lobbyRGB: 0xF59E0B))
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// 「跟随游戏」模式的 seq 预览。
+    private var previewSeq: Int64 {
+        (capture.session(forAccountID: account.id)?.lastClientSeq ?? 0) + 1
     }
 
     private func metaField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
@@ -1513,9 +1525,10 @@ private struct SendCommandPane: View {
         }
     }
 
-    /// 发送后监视配对响应：用**注入帧自己的 seq**（时间戳全局唯一）在抓包流里
-    /// 定位 send 帧 → 它的配对响应。轮询 10s（250ms 一次，抓包流 0.25s 批量上屏
-    /// + 配对在摄入时完成）；抓包未开启 / 超时未收到 → 结果区不出现，仅状态行提示。
+    /// 发送后监视配对响应：用**注入帧自己的 seq**（时间戳模式全局唯一 / 跟随模式
+    /// 序列唯一）在抓包流里定位 send 帧 → 它的配对响应。轮询 10s（250ms 一次，
+    /// 抓包流 0.25s 批量上屏 + 配对在摄入时完成）；抓包未开启 / 超时未收到 →
+    /// 状态行明确提示「未捕获响应」，区分「服务端没回」和「没抓到」。
     private func startResponseWatch(_ record: SendRecord) {
         resultResponse = nil
         responseWatchTask?.cancel()
@@ -1532,6 +1545,10 @@ private struct SendCommandPane: View {
                     resultResponse = response
                     return
                 }
+            }
+            if !Task.isCancelled {
+                sendStatus = (sendStatus ?? "") + " · 10s 未捕获响应（服务端未回 / 抓包已停 / 帧被挤出留存）"
+                sendStatusIsError = true
             }
         }
     }
@@ -1616,9 +1633,14 @@ private struct SendCommandPane: View {
     private var confirmMessage: String {
         guard let entry = confirmCandidate else { return "" }
         let effectiveParams = paramModeAuto ? (selectedEntry?.defaultParamsJSON ?? paramsDraft) : paramsDraft
-        var lines = "cmd = \(entry.command)\n参数 = \(effectiveParams)\n\n将注入到「\(account.nickname)」的游戏连接并真实执行。"
-        if !autoAckSeq {
-            lines += "\nack / seq = 手动指定（注意：与游戏自身请求撞 seq 可能被服务端去重）。"
+        var lines = "cmd = \(entry.command)\n参数 = \(effectiveParams)\n编址 = \(addressing.rawValue)\n\n将注入到「\(account.nickname)」的游戏连接并真实执行。"
+        switch addressing {
+        case .followGame:
+            lines += "\n注意：游戏自己的下一个请求可能与我们撞 seq，若游戏出现卡顿请立即停止注入。"
+        case .manual:
+            lines += "\nack / seq = 手动指定（与游戏自身请求撞 seq 可能被服务端去重）。"
+        case .timestamp:
+            lines += "\n实测时间戳 seq 会被服务端拒收（仅供实验）。"
         }
         if entry.isHighRisk {
             lines += "\n\n该指令可能消耗游戏资源（购买 / 招募 / 抽取类），请确认参数。"
@@ -1640,14 +1662,14 @@ private struct SendCommandPane: View {
         guard let instance = session.pool.existingSurface(forAccountID: account.id) else { return }
         // 自动参数模式：直接用指令库模板（编辑器在自动态只读显示同一份内容）。
         let effectiveParams = paramModeAuto ? entry.defaultParamsJSON : paramsDraft
-        // 手动 ack/seq 解析（非法值回落自动，状态行提示）。
+        // 手动 ack/seq 解析（非法值直接提示，不发送）。
         var manualAck: Int64?
         var manualSeq: Int64?
-        if !autoAckSeq {
+        if addressing == .manual {
             manualAck = Int64(manualAckText.trimmingCharacters(in: .whitespaces))
             manualSeq = Int64(manualSeqText.trimmingCharacters(in: .whitespaces))
             if manualAck == nil || manualSeq == nil {
-                sendStatus = "手动 ack/seq 必须是整数，已回落自动编址。"
+                sendStatus = "手动 ack/seq 必须是整数。"
                 sendStatusIsError = true
                 return
             }
@@ -1660,7 +1682,7 @@ private struct SendCommandPane: View {
                                                    command: entry.command,
                                                    chineseName: entry.chineseName,
                                                    paramsJSON: effectiveParams,
-                                                   autoAckSeq: autoAckSeq,
+                                                   addressing: addressing,
                                                    manualAck: manualAck,
                                                    manualSeq: manualSeq)
             var detailText = record.status
