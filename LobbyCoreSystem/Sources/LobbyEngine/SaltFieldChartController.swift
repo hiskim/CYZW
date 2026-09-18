@@ -41,6 +41,20 @@ public final class SaltFieldChartController: ObservableObject {
     /// 开启了主动轮询的账号（图表窗口打开时置位，关窗撤位）。
     @Published public private(set) var pollingAccountIDs: Set<String> = []
 
+    // MARK: 历史战绩（主连接查询；协议口径见 SaltFieldModels 注释）
+    /// 账号 → 我方历史场次（warMap 展开 + warRank 对齐，新场次在前）。
+    @Published public private(set) var historyBattles: [String: [SaltHistoryBattle]] = [:]
+    /// 账号 → 最近一次历史总榜查询结果。
+    @Published public private(set) var historyResults: [String: SaltHistoryResult] = [:]
+    /// 账号 → 最近一次成员明细查询（legionwar_getdetails；历史战绩页的主数据）。
+    @Published public private(set) var historyDetails: [String: SaltWarDetailsResult] = [:]
+    /// 账号 → 历史查询状态文本（窗口显示）。
+    @Published public private(set) var historyStatus: [String: String] = [:]
+    /// 正在查询历史的账号（按钮 loading 态）。
+    @Published public private(set) var historyBusy: Set<String> = []
+    /// 每账号当月 warType 缓存（key = 首周六 "YYYY/MM/DD"）。
+    private var monthlyWarTypes: [String: [String: Int]] = [:]
+
     /// 发送轮询帧要借实例的 WebView 出口。会话模型装配时接上。
     public weak var pool: GameInstancePool?
 
@@ -54,6 +68,49 @@ public final class SaltFieldChartController: ObservableObject {
     private var states: [String: WarLinkState] = [:]
     private var pollTask: Task<Void, Never>?
 
+    // MARK: 每账号主连接状态（历史查询构帧用；与盐场连接的游标相互独立）
+    private struct MainLinkState {
+        var socketID = -1
+        var serverSeq: Int64 = 0
+        var clientSeq: Int64 = 0
+    }
+    private var mainStates: [String: MainLinkState] = [:]
+
+    /// 在途历史查询（响应匹配；`resp` 字段 / cmd 包含逐级退化，超时 12s 判失败）。
+    private struct PendingHistoryQuery {
+        enum Kind {
+            case warType(monthFirstSaturday: String)   // 命中后接着查 totalRank
+            case totalRank(battleDate: Date)
+            case legionInfo                            // 我方历史场次（warMap 名次）
+            case warDetails(battleDate: Date)          // 指定日期成员明细（主路径）
+
+            /// 响应 cmd（小写）是否命中本请求。legionInfo 需排除 getinfobyid——
+            /// 其响应名同样包含 "legion_getinfo" 前缀，会抢走配对。
+            /// 兜底再加「去下划线包含」：服务端响应名可能不带下划线
+            /// （抓包实测口径：mergebox_getinfo 的响应是缩写 MergeBoxInfoResp）。
+            func matches(_ loweredResponseCommand: String) -> Bool {
+                let compact = loweredResponseCommand.replacingOccurrences(of: "_", with: "")
+                switch self {
+                case .warType:
+                    return loweredResponseCommand.contains("saltroad_getwartype")
+                case .totalRank:
+                    return loweredResponseCommand.contains("saltroad_getsaltroadwartotalrank")
+                case .legionInfo:
+                    return loweredResponseCommand.contains("legion_getinfo")
+                        && !loweredResponseCommand.contains("byid")
+                case .warDetails:
+                    return loweredResponseCommand.contains("legionwar_getdetails")
+                        || compact.contains("legionwargetdetails")
+                }
+            }
+        }
+        let kind: Kind
+        let seq: Int64
+        let issuedAt: Date
+    }
+    private var pendingHistory: [String: [PendingHistoryQuery]] = [:]
+    private static let historyTimeout: TimeInterval = 12
+
     public init() {}
 
     // MARK: - 帧摄入（GameViewportInstance 路由，与抓包 ingest 并列）
@@ -61,12 +118,27 @@ public final class SaltFieldChartController: ObservableObject {
     public func ingest(frame: PacketFrame, accountID: String) {
         guard let decoded = Self.decode(frame) else { return }
         let lowered = decoded.command.lowercased()
-        // war_* 命令族只出现在盐场连接（主连接没有 war 前缀业务），
-        // 这个过滤同时把「帧属于哪条连接」也定了。
-        guard lowered.contains("war_enterbattlefield")
+        let isWarFamily = lowered.contains("war_enterbattlefield")
                 || lowered.contains("war_getbattlefieldinfo")
                 || lowered == "war_ping" || lowered.contains("war_ping")
-                || lowered.hasPrefix("war_") else { return }
+                || lowered.hasPrefix("war_")
+
+        // ── 历史查询响应匹配（主连接；在 war 族过滤之前——响应 cmd 可能是任意内部名）──
+        if frame.direction == "recv", !isWarFamily {
+            if tryMatchHistoryResponse(command: decoded.command,
+                                       object: decoded.outerObject,
+                                       inner: decoded.inner,
+                                       accountID: accountID) {
+                trackMainLink(frame: frame, lowered: lowered, accountID: accountID, seq: decoded.seq)
+                return
+            }
+        }
+
+        guard isWarFamily else {
+            // 主连接游标：历史查询构帧的 ack / seq / socket 定向来源。
+            trackMainLink(frame: frame, lowered: lowered, accountID: accountID, seq: decoded.seq)
+            return
+        }
 
         var state = states[accountID] ?? WarLinkState()
         var changedLink = false
@@ -118,12 +190,35 @@ public final class SaltFieldChartController: ObservableObject {
         }
     }
 
+    /// 主连接游标跟踪：非 war 族的 send/recv 帧都算主连接流量。
+    private func trackMainLink(frame: PacketFrame, lowered: String, accountID: String,
+                               seq: Int64?) {
+        var state = mainStates[accountID] ?? MainLinkState()
+        if frame.socketID >= 0, state.socketID != frame.socketID {
+            state.socketID = frame.socketID
+        }
+        if let seq, seq > 0 {
+            if frame.direction == "recv" {
+                state.serverSeq = max(state.serverSeq, seq)
+            } else if seq < 1_000_000 {
+                state.clientSeq = max(state.clientSeq, seq)
+            }
+        }
+        mainStates[accountID] = state
+    }
+
     /// 实例关闭：丢弃该账号的快照与连接状态（窗口由会话模型关）。
     public func discard(accountID: String) {
         snapshots.removeValue(forKey: accountID)
         states.removeValue(forKey: accountID)
         pollingAccountIDs.remove(accountID)
         warActiveAccountIDs.remove(accountID)
+        mainStates.removeValue(forKey: accountID)
+        pendingHistory.removeValue(forKey: accountID)
+        historyBusy.remove(accountID)
+        historyStatus.removeValue(forKey: accountID)
+        historyDetails.removeValue(forKey: accountID)
+        chainedBattleDate.removeValue(forKey: accountID)
     }
 
     // MARK: - 轮询
@@ -141,6 +236,216 @@ public final class SaltFieldChartController: ObservableObject {
     /// 立即对指定账号拉一轮（图表窗口的「立即拉取」按钮）。
     public func pollNow(accountID: String) {
         poll(accountID: accountID)
+    }
+
+    // MARK: - 历史战绩查询（主连接；协议口径见 SaltFieldModels 注释）
+
+    /// 拉取我方历史场次（`legion_getinfo` → info.warMap + warRank）。
+    /// 日历的可点日期与我方名次都来自这里。
+    public func fetchHistoryBattles(accountID: String) {
+        guard !historyBusy.contains(accountID) else { return }
+        sendHistoryFrame(accountID: accountID, command: "legion_getinfo",
+                         paramsJSON: "{}",
+                         kind: .legionInfo,
+                         startStatus: "正在拉取历史场次…")
+    }
+
+    /// 查询指定场次的盐场总榜。两步链式：warType（当月未缓存时）→ totalRank。
+    public func queryHistoryRank(accountID: String, battleDate: Date) {
+        guard !historyBusy.contains(accountID) else {
+            historyStatus[accountID] = "已有查询在进行，请稍候…"
+            return
+        }
+        let monthKey = SaltHistoryCatalog.firstSaturdayString(of: battleDate)
+        if let warType = monthlyWarTypes[accountID]?[monthKey] {
+            issueTotalRank(accountID: accountID, battleDate: battleDate, warType: warType)
+        } else {
+            historyBusy.insert(accountID)
+            historyStatus[accountID] = "正在获取当月盐场类型…"
+            sendHistoryFrame(accountID: accountID,
+                             command: "saltroad_getwartype",
+                             paramsJSON: "{\"date\":\"\(monthKey)\"}",
+                             kind: .warType(monthFirstSaturday: monthKey),
+                             startStatus: "正在获取当月盐场类型…")
+        }
+    }
+
+    /// 第二步：按 warType 确定的榜单范围查总榜。
+    private func issueTotalRank(accountID: String, battleDate: Date, warType: Int) {
+        guard let range = SaltHistoryCatalog.rankParams(warType) else {
+            historyBusy.remove(accountID)
+            historyStatus[accountID] =
+                "类型「\(SaltHistoryCatalog.warTypeName(warType))」不支持排行查询（仅青铜/秘蓝/月宫/天宫）"
+            return
+        }
+        let dateKey = SaltHistoryCatalog.yymmddString(of: battleDate)
+        historyBusy.insert(accountID)
+        historyStatus[accountID] = "正在查询 \(SaltHistoryCatalog.warTypeName(warType)) 榜单…"
+        sendHistoryFrame(accountID: accountID,
+                         command: "saltroad_getsaltroadwartotalrank",
+                         paramsJSON: "{\"date\":\"\(dateKey)\",\"startRank\":\(range.startRank),\"endRank\":\(range.endRank)}",
+                         kind: .totalRank(battleDate: battleDate),
+                         startStatus: historyStatus[accountID] ?? "查询中…")
+    }
+
+    /// 构帧发送 + 登记在途查询 + 超时定时。
+    private func sendHistoryFrame(accountID: String, command: String, paramsJSON: String,
+                                  kind: PendingHistoryQuery.Kind, startStatus: String) {
+        guard let main = mainStates[accountID], main.socketID >= 0 || main.serverSeq > 0 else {
+            historyStatus[accountID] = "主连接未就绪：请先启动该账号的游戏实例"
+            return
+        }
+        guard let instance = pool?.existingSurface(forAccountID: accountID) else {
+            historyStatus[accountID] = "实例未运行"
+            return
+        }
+        let seq = main.clientSeq + 1
+        guard let frame = try? PacketCaptureController.buildFrame(
+            command: command, paramsJSON: paramsJSON,
+            ack: main.serverSeq, seq: seq) else {
+            historyStatus[accountID] = "构帧失败"
+            return
+        }
+        mainStates[accountID]?.clientSeq = seq
+        pendingHistory[accountID, default: []].append(
+            PendingHistoryQuery(kind: kind, seq: seq, issuedAt: Date()))
+        historyStatus[accountID] = startStatus
+        let socketID = main.socketID
+        Task { @MainActor [weak self] in
+            let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString(),
+                                                         socketID: socketID)
+            if !diagnostic.hasPrefix("sent") {
+                self?.historyStatus[accountID] = "发送失败：\(diagnostic)"
+                self?.pendingHistory[accountID]?.removeAll { $0.seq == seq }
+                LobbyLog.warn("[saltfield-history] %@ 发送 %@ 失败：%@", accountID, command, diagnostic)
+            } else {
+                LobbyLog.info("[saltfield-history] %@ 已发 %@ seq=%lld", accountID, command, seq)
+            }
+        }
+        // 超时：响应匹配失败（resp / cmd 都没对上）时明确报出来，方便从抓包对 cmd。
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.historyTimeout * 1_000_000_000))
+            guard let self, var queue = self.pendingHistory[accountID],
+                  let index = queue.firstIndex(where: { $0.seq == seq }) else { return }
+            let pending = queue.remove(at: index)
+            self.pendingHistory[accountID] = queue
+            guard Date().timeIntervalSince(pending.issuedAt) >= Self.historyTimeout - 1 else { return }
+            if case .warType = pending.kind { self.historyBusy.remove(accountID) }
+            if case .totalRank = pending.kind { self.historyBusy.remove(accountID) }
+            if case .legionInfo = pending.kind { self.historyBusy.remove(accountID) }
+            self.historyStatus[accountID] = "查询超时：未匹配到 \(command) 的响应（可在抓包窗口查看响应 cmd 后反馈）"
+            LobbyLog.warn("[saltfield-history] %@ %@ 响应超时", accountID, command)
+        }
+    }
+
+    /// 响应匹配（逐级退化）：① 响应外层 `resp` 字段 == 在途请求 seq；
+    /// ② 响应 cmd（小写）按 Kind.matches 命中。命中处理并返回 true。
+    private func tryMatchHistoryResponse(command: String, object: BonObject?,
+                                         inner: BonValue?, accountID: String) -> Bool {
+        guard var queue = pendingHistory[accountID], !queue.isEmpty else { return false }
+        let lowered = command.lowercased()
+        var matched: PendingHistoryQuery?
+        if let respSeq = object?["resp"]?.intValue,
+           let index = queue.firstIndex(where: { $0.seq == respSeq }) {
+            matched = queue.remove(at: index)
+        } else if let index = queue.firstIndex(where: { $0.kind.matches(lowered) }) {
+            matched = queue.remove(at: index)
+        }
+        guard let pending = matched else { return false }
+        pendingHistory[accountID] = queue
+        handleHistoryResponse(pending: pending, inner: inner, accountID: accountID)
+        return true
+    }
+
+    private func handleHistoryResponse(pending: PendingHistoryQuery,
+                                       inner: BonValue?, accountID: String) {
+        switch pending.kind {
+        case .legionInfo:
+            historyBusy.remove(accountID)
+            let battles = Self.parseHistoryBattles(inner: inner)
+            if battles.isEmpty {
+                let structure = Self.describeBodyKeys(inner: inner)
+                historyStatus[accountID] = "未查到历史场次（结构诊断见 diagnostics.log 的 [saltfield-history]）"
+                LobbyLog.warn("[saltfield-history] %@ warMap 解析为空。响应结构：%@",
+                              accountID, structure)
+            } else {
+                historyStatus[accountID] = "历史场次已加载：共 \(battles.count) 场"
+            }
+            historyBattles[accountID] = battles
+            LobbyLog.info("[saltfield-history] %@ 历史场次 %ld", accountID, battles.count)
+        case .warType(let monthKey):
+            let warType = Int(inner?.path("warType")?.intValue ?? 0)
+            monthlyWarTypes[accountID, default: [:]][monthKey] = warType
+            guard warType > 0 else {
+                historyBusy.remove(accountID)
+                historyStatus[accountID] = "未获取到当月盐场类型（服务端返回 warType=0）"
+                return
+            }
+            // 链式继续：warType 到手 → 发 totalRank。battleDate 从 UI 侧最后点击取不到，
+            // 由 warType 查询发起时暂存在 status 之外的专用槽里。
+            guard let battleDate = chainedBattleDate[accountID] else {
+                historyBusy.remove(accountID)
+                return
+            }
+            issueTotalRank(accountID: accountID, battleDate: battleDate, warType: warType)
+        case .warDetails(let battleDate):
+            historyBusy.remove(accountID)
+            let rows = Self.parseWarDetails(inner: inner)
+            if rows.isEmpty {
+                historyStatus[accountID] = "\(SaltHistoryCatalog.slashDateString(of: battleDate)) 无成员战绩（结构诊断见 diagnostics.log 的 [saltfield-history]）"
+                LobbyLog.warn("[saltfield-history] %@ roleDetailsList 解析为空（date=%@）。响应结构：%@",
+                              accountID, SaltHistoryCatalog.slashDateString(of: battleDate),
+                              Self.describeBodyKeys(inner: inner))
+            } else {
+                historyStatus[accountID] = "查询成功：\(rows.count) 人参战"
+            }
+            historyDetails[accountID] = SaltWarDetailsResult(battleDate: battleDate,
+                                                             rows: rows,
+                                                             fetchedAt: Date())
+            LobbyLog.info("[saltfield-history] %@ 成员明细 %ld 条（date=%@）",
+                          accountID, rows.count, SaltHistoryCatalog.slashDateString(of: battleDate))
+        case .totalRank(let battleDate):
+            historyBusy.remove(accountID)
+            chainedBattleDate.removeValue(forKey: accountID)
+            let warType = monthlyWarType(for: battleDate, accountID: accountID)
+            let rows = Self.parseRankList(inner: inner)
+            if rows.isEmpty {
+                historyStatus[accountID] = "该场次无榜单数据（结构诊断见 diagnostics.log 的 [saltfield-history]）"
+                LobbyLog.warn("[saltfield-history] %@ legionList 解析为空（date=%@）。响应结构：%@",
+                              accountID, SaltHistoryCatalog.yymmddString(of: battleDate),
+                              Self.describeBodyKeys(inner: inner))
+            } else {
+                historyStatus[accountID] = "查询成功：\(rows.count) 条"
+            }
+            historyResults[accountID] = SaltHistoryResult(battleDate: battleDate,
+                                                          warType: warType,
+                                                          rows: rows,
+                                                          fetchedAt: Date())
+            LobbyLog.info("[saltfield-history] %@ 榜单 %ld 条（date=%@）",
+                          accountID, rows.count, SaltHistoryCatalog.yymmddString(of: battleDate))
+        }
+    }
+
+    /// warType 链式查询时的目标场次日期（在 issueTotalRank 之前由 UI 写入）。
+    private var chainedBattleDate: [String: Date] = [:]
+
+    /// 查询指定日期的盐场战绩（**主路径**，猫助手同源口径）：
+    /// `legionwar_getdetails { date: "YYYY/MM/DD" }` → roleDetailsList（成员 胜/负/攻城）。
+    public func requestWarDetails(accountID: String, battleDate: Date) {
+        let dateKey = SaltHistoryCatalog.slashDateString(of: battleDate)
+        historyBusy.insert(accountID)
+        historyStatus[accountID] = "正在查询 \(dateKey) 的盐场战绩…"
+        sendHistoryFrame(accountID: accountID,
+                         command: "legionwar_getdetails",
+                         paramsJSON: "{\"date\":\"\(dateKey)\"}",
+                         kind: .warDetails(battleDate: battleDate),
+                         startStatus: historyStatus[accountID] ?? "查询中…")
+    }
+
+    /// 该场次日期所属月份的 warType（已缓存才返回，否则 0）。
+    private func monthlyWarType(for battleDate: Date, accountID: String) -> Int {
+        let monthKey = SaltHistoryCatalog.firstSaturdayString(of: battleDate)
+        return monthlyWarTypes[accountID]?[monthKey] ?? 0
     }
 
     private func startPollLoopIfNeeded() {
@@ -188,6 +493,7 @@ public final class SaltFieldChartController: ObservableObject {
     private struct DecodedFrame {
         let command: String
         let seq: Int64?
+        let outerObject: BonObject?
         let inner: BonValue?
     }
 
@@ -202,7 +508,8 @@ public final class SaltFieldChartController: ObservableObject {
         if case .binary(let body)? = object["body"], !body.isEmpty {
             inner = try? Bon.decode(body)
         }
-        return DecodedFrame(command: command, seq: object["seq"]?.intValue, inner: inner)
+        return DecodedFrame(command: command, seq: object["seq"]?.intValue,
+                            outerObject: object, inner: inner)
     }
 
     // MARK: - 战场快照构建
@@ -337,6 +644,87 @@ public final class SaltFieldChartController: ObservableObject {
         } else if let array = value?.arrayValue {
             for (index, item) in array.enumerated() { body(String(index), item) }
         }
+    }
+
+    // MARK: 历史响应解析
+
+    /// `legion_getinfo` → 我方历史场次（口径照抄自助手仓 ClubHistoryRecords：
+    /// warMap 按周分组 → flatten → reverse；warRank 同步 reverse 对齐）。
+    /// 容错：`info` 包装缺失时退化用 body 顶层（响应结构若有出入，靠诊断日志定位）。
+    static func parseHistoryBattles(inner: BonValue?) -> [SaltHistoryBattle] {
+        let calendar = Calendar.current
+        let source = inner?.path("info") ?? inner
+        var raw: [(date: Date, type: Int)] = []
+        forEachEntry(source?.path("warMap")) { _, value in
+            forEachEntry(value) { _, battle in
+                guard let stamp = battle.path("warDate")?.intValue, stamp > 0 else { return }
+                let type = Int(battle.path("legionWarType")?.intValue ?? 0)
+                raw.append((Date(timeIntervalSince1970: TimeInterval(stamp)), type))
+            }
+        }
+        let ranks = source?.path("warRank")?.arrayValue?
+            .compactMap { $0.intValue.flatMap(Int.init(exactly:)) } ?? []
+        // 参考项目把两者都 reverse 后按下标对齐（reverse 后最新场次在前）。
+        let reversed = raw.reversed()
+        let reversedRanks = Array(ranks.reversed())
+        var battles: [SaltHistoryBattle] = []
+        for (index, item) in reversed.enumerated() {
+            let day = calendar.startOfDay(for: item.date)
+            battles.append(SaltHistoryBattle(date: day,
+                                             warType: item.type,
+                                             rank: index < reversedRanks.count ? reversedRanks[index] : 0))
+        }
+        return battles
+    }
+
+    /// 响应结构诊断：顶层与二级字段名（解析失败时进日志，直接对照真实结构改路径）。
+    static func describeBodyKeys(inner: BonValue?) -> String {
+        guard let object = inner?.objectValue else { return "（body 非对象）" }
+        let top = object.keys.prefix(14).joined(separator: ",")
+        var result = "顶层[\(top)]"
+        if let info = object["info"]?.objectValue {
+            result += " info[\(info.keys.prefix(14).joined(separator: ","))]"
+        }
+        return result
+    }
+
+    /// `saltroad_getsaltroadwartotalrank` → 总榜行（legionList；积分降序服务端已排）。
+    static func parseRankList(inner: BonValue?) -> [SaltHistoryClubRow] {
+        var rows: [SaltHistoryClubRow] = []
+        forEachEntry(inner?.path("legionList")) { _, value in
+            guard let object = value.objectValue else { return }
+            rows.append(SaltHistoryClubRow(
+                rank: object["rank"]?.intValue.flatMap(Int.init(exactly:)) ?? rows.count + 1,
+                id: object["id"]?.intValue ?? 0,
+                name: object["name"]?.stringValue ?? "?",
+                power: object["power"]?.intValue ?? 0,
+                score: object["score"]?.intValue ?? 0,
+                redQuench: object["redQuench"]?.intValue.flatMap(Int.init(exactly:)) ?? 0,
+                serverID: object["serverId"]?.intValue ?? 0
+            ))
+        }
+        return rows.sorted { $0.rank != $1.rank ? $0.rank < $1.rank : $0.score > $1.score }
+    }
+
+    /// `legionwar_getdetails` → 成员明细（roleDetailsList；胜次降序 = 猫助手排序口径）。
+    /// 容错：roleDetailsList 优先，退化尝试 body 顶层同名数组。
+    static func parseWarDetails(inner: BonValue?) -> [SaltWarDetailRow] {
+        var rows: [SaltWarDetailRow] = []
+        let source = inner?.path("roleDetailsList") ?? inner
+        forEachEntry(source) { _, value in
+            guard let object = value.objectValue else { return }
+            let name = object["name"]?.stringValue
+                ?? object["roleName"]?.stringValue
+                ?? object["nickname"]?.stringValue
+                ?? "?"
+            rows.append(SaltWarDetailRow(
+                name: name,
+                win: object["winCnt"]?.intValue.flatMap(Int.init(exactly:)) ?? 0,
+                lose: object["loseCnt"]?.intValue.flatMap(Int.init(exactly:)) ?? 0,
+                building: object["buildingCnt"]?.intValue.flatMap(Int.init(exactly:)) ?? 0
+            ))
+        }
+        return rows.sorted { $0.win != $1.win ? $0.win > $1.win : $0.building > $1.building }
     }
 
     private static func coords(_ id: String) -> (Int, Int) {

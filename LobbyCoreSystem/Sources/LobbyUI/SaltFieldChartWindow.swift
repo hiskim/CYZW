@@ -228,6 +228,13 @@ struct SaltFieldChartWindowView: View {
         var label: String { self == .legion ? "俱乐部战况" : "个人战况" }
     }
 
+    /// 窗口模式：实时战况（盐场连接轮询）/ 历史战绩（主连接按日期查总榜）。
+    enum WindowMode: Int, CaseIterable, Identifiable {
+        case live, history
+        var id: Int { rawValue }
+        var label: String { self == .live ? "实时战况" : "历史战绩" }
+    }
+
     // ── 窗口偏好（UserDefaults 持久化，跨会话记住手感）──
     private static let opacityKey = "salt.chart.opacity"
     private static let floatingKey = "salt.chart.floating"
@@ -240,6 +247,7 @@ struct SaltFieldChartWindowView: View {
 
     @ObservedObject private var controller: SaltFieldChartController
 
+    @State private var mode: WindowMode = .live
     @State private var layout: MapLayout = .occupy
     @State private var statMode: StatMode = .legion
     @State private var opacity: Double = UserDefaults.standard.object(forKey: Self.opacityKey) as? Double ?? 0.92
@@ -274,60 +282,28 @@ struct SaltFieldChartWindowView: View {
         .onAppear(perform: applyWindowSettings)
     }
 
-    // MARK: 工具栏
+    // MARK: 工具栏（模式切换 + 按模式的控件组）
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            statusView
-            Spacer(minLength: 6)
-            Toggle("轮询", isOn: Binding(
-                get: { isPolling },
-                set: { session.setSaltFieldPolling($0, account: account) }
-            ))
-            .toggleStyle(.checkbox)
-            .font(.system(size: 11))
-            .help("每 4 秒向盐场连接自动拉取一次战场信息")
-            Picker("", selection: $layout) {
-                ForEach(MapLayout.allCases) { Text($0.label).tag($0) }
+            Picker("", selection: $mode) {
+                ForEach(WindowMode.allCases) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
-            .frame(width: 168)
-            .help("占领布局 = 俱乐部占领区连通染色；分布布局 = 只亮各大本营位置")
-            Picker("", selection: $statMode) {
-                ForEach(StatMode.allCases) { Text($0.label).tag($0) }
+            .frame(width: 160)
+            .onChange(of: mode) { _, newMode in
+                // 历史模式的日历/榜单需要正常交互，穿透自动关掉（回实时模式可再开）。
+                if newMode == .history, clickThrough {
+                    clickThrough = false
+                }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 168)
-            Button {
-                session.refreshSaltFieldNow(account: account)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .semibold))
+            .help("实时战况 = 盐场连接轮询（需游戏内进战场）；历史战绩 = 主连接按日期查任意场次总榜")
+            switch mode {
+            case .live:
+                liveToolbarControls
+            case .history:
+                historyToolbarControls
             }
-            .buttonStyle(.plain)
-            .help("立即拉取一次")
-            Divider().frame(height: 16)
-            Toggle("置顶", isOn: $floating)
-                .toggleStyle(.checkbox)
-                .font(.system(size: 11))
-                .onChange(of: floating) { _, _ in applyWindowSettings() }
-                .help("窗口悬浮在所有实例窗口之上")
-            Toggle("穿透", isOn: $clickThrough)
-                .toggleStyle(.checkbox)
-                .font(.system(size: 11))
-                .onChange(of: clickThrough) { _, _ in applyWindowSettings() }
-                .help("开启后仅地图与战况表区域穿透（点击直达下层游戏窗口）；\n标题栏与本工具栏始终可正常拖动/点击；\n按住 Control 可临时点击穿透中的内容区（如滚动表格）")
-            Text("透明")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Slider(value: $opacity, in: 0.25...1.0)
-                .frame(width: 110)
-                .onChange(of: opacity) { _, _ in applyWindowSettings() }
-                .help("窗口透明度：低透明度悬浮在实例上不挡操作")
-            Text("\(Int(opacity * 100))%")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 34)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -340,6 +316,88 @@ struct SaltFieldChartWindowView: View {
             toolbarHeight = height
             applyWindowSettings()
         }
+    }
+
+    /// 实时战况的工具栏控件（原口径）。
+    @ViewBuilder
+    private var liveToolbarControls: some View {
+        statusView
+        Spacer(minLength: 6)
+        Toggle("轮询", isOn: Binding(
+            get: { isPolling },
+            set: { session.setSaltFieldPolling($0, account: account) }
+        ))
+        .toggleStyle(.checkbox)
+        .font(.system(size: 11))
+        .help("每 4 秒向盐场连接自动拉取一次战场信息")
+        Picker("", selection: $layout) {
+            ForEach(MapLayout.allCases) { Text($0.label).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 168)
+        .help("占领布局 = 俱乐部占领区连通染色；分布布局 = 只亮各大本营位置")
+        Picker("", selection: $statMode) {
+            ForEach(StatMode.allCases) { Text($0.label).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 168)
+        Button {
+            session.refreshSaltFieldNow(account: account)
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .buttonStyle(.plain)
+        .help("立即拉取一次")
+        Divider().frame(height: 16)
+        Toggle("置顶", isOn: $floating)
+            .toggleStyle(.checkbox)
+            .font(.system(size: 11))
+            .onChange(of: floating) { _, _ in applyWindowSettings() }
+            .help("窗口悬浮在所有实例窗口之上")
+        Toggle("穿透", isOn: $clickThrough)
+            .toggleStyle(.checkbox)
+            .font(.system(size: 11))
+            .onChange(of: clickThrough) { _, _ in applyWindowSettings() }
+            .help("开启后仅地图与战况表区域穿透（点击直达下层游戏窗口）；\n标题栏与本工具栏始终可正常拖动/点击；\n按住 Control 可临时点击穿透中的内容区（如滚动表格）")
+        Text("透明")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+        Slider(value: $opacity, in: 0.25...1.0)
+            .frame(width: 110)
+            .onChange(of: opacity) { _, _ in applyWindowSettings() }
+            .help("窗口透明度：低透明度悬浮在实例上不挡操作")
+        Text("\(Int(opacity * 100))%")
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .frame(width: 34)
+    }
+
+    /// 历史战绩的工具栏控件（月份导航 + 状态 + 拉取场次）。
+    @ViewBuilder
+    private var historyToolbarControls: some View {
+        Text(controller.historyStatus[account.id] ?? "选择右侧日历中的盐场日期查询当场总榜")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        Spacer(minLength: 6)
+        Button {
+            controller.fetchHistoryBattles(accountID: account.id)
+        } label: {
+            HStack(spacing: 3) {
+                if controller.historyBusy.contains(account.id) {
+                    ProgressView().controlSize(.mini)
+                }
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("我的场次")
+                    .font(.system(size: 11))
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(controller.historyBusy.contains(account.id))
+        .help("拉取本账号的盐场历史场次（legion_getinfo），日历上会标注我方名次")
     }
 
     /// 连接/轮询状态（一眼定性「没数据」是哪一环）。
@@ -372,10 +430,21 @@ struct SaltFieldChartWindowView: View {
         return "未检测到盐场连接（请在游戏内进入盐场战场）"
     }
 
-    // MARK: 内容（地图 + 战况表）
+    // MARK: 内容（按窗口模式：实时 / 历史）
 
     @ViewBuilder
     private var content: some View {
+        switch mode {
+        case .live:
+            liveContent
+        case .history:
+            SaltHistoryView(session: session, account: account)
+                .id(account.id)
+        }
+    }
+
+    @ViewBuilder
+    private var liveContent: some View {
         if let snapshot {
             HStack(spacing: 0) {
                 SaltFieldMapView(snapshot: snapshot,
@@ -640,4 +709,316 @@ struct SaltFieldStatView: View {
             .frame(width: width, height: 22, alignment: .leading)
             .padding(.horizontal, 4)
     }
+}
+
+// MARK: - 历史战绩视图（月历 + 指定日期总榜）
+//
+// 数据全部走主连接（`legion_getinfo` / `saltroad_getwartype` /
+// `saltroad_getsaltroadwartotalrank`），盐场没开放时也能查——这正是它存在的意义：
+// 盐场只在周六 20:00 与月赛日开放，平时想复盘只能查历史。
+//
+// 交互：日历上**盐场日**（前四周周六 + 第 4 周周日）可点击 → 查询当场总榜；
+// 已拉取「我的场次」的日期会标注我方名次（金/银/铜/普通色）。
+
+struct SaltHistoryView: View {
+    @ObservedObject private var controller: SaltFieldChartController
+    let account: GameAccount
+
+    /// 当前显示的月份（取该月任意一天代表）。
+    @State private var month: Date = Date()
+    /// 选中的场次日期（点日历设置，触发查询）。
+    @State private var selectedDate: Date?
+
+    init(session: LobbySessionModel, account: GameAccount) {
+        _controller = ObservedObject(wrappedValue: session.saltField)
+        self.account = account
+    }
+
+    private var battles: [SaltHistoryBattle] { controller.historyBattles[account.id] ?? [] }
+    private var isBusy: Bool { controller.historyBusy.contains(account.id) }
+    private var statusText: String { controller.historyStatus[account.id] ?? "" }
+
+    /// 当前月里 day → 我方场次（日历徽标）。
+    private var battleByDay: [Int: SaltHistoryBattle] {
+        var result: [Int: SaltHistoryBattle] = [:]
+        for battle in battles where isSameMonth(battle.date, month) {
+            result[Calendar.current.component(.day, from: battle.date)] = battle
+        }
+        return result
+    }
+
+    /// 当前月的盐场日（day → 该日 Date）。
+    private var saltDays: [Int: Date] {
+        var result: [Int: Date] = [:]
+        for date in SaltHistoryCatalog.saltDates(in: month) where isSameMonth(date, month) {
+            result[Calendar.current.component(.day, from: date)] = date
+        }
+        return result
+    }
+
+    /// 同月判断（日历过滤用；isSameDay 只对同一天成立，语义不同）。
+    private func isSameMonth(_ lhs: Date, _ rhs: Date) -> Bool {
+        Calendar.current.dateComponents([.year, .month], from: lhs)
+            == Calendar.current.dateComponents([.year, .month], from: rhs)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            monthNavigator
+            Divider()
+            HStack(spacing: 0) {
+                calendarView
+                    .frame(width: 330)
+                    .padding(8)
+                Divider()
+                rankView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            // 窗口切到历史模式自动拉一次我方场次（幂等：已有数据也刷新）。
+            controller.fetchHistoryBattles(accountID: account.id)
+        }
+    }
+
+    // MARK: 月份导航
+
+    private var monthNavigator: some View {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy年M月"
+        return HStack(spacing: 8) {
+            Button {
+                month = Calendar.current.date(byAdding: .month, value: -1, to: month) ?? month
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help("上一月")
+            Text(formatter.string(from: month))
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 90)
+            Button {
+                month = Calendar.current.date(byAdding: .month, value: 1, to: month) ?? month
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help("下一月")
+            Text("周六＝周赛 · 第 4 周周日＝月赛")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: 月历
+
+    private var calendarView: some View {
+        VStack(spacing: 6) {
+            let weekdaySymbols = Calendar.current.veryShortWeekdaySymbols
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
+                      spacing: 4) {
+                ForEach(weekdaySymbols.indices, id: \.self) { index in
+                    Text(weekdaySymbols[index])
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                }
+                calendarDayCells
+            }
+            if statusText.isEmpty {
+                Text("点击盐场日期查询当场总榜")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text(statusText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(isBusy ? .orange : .secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var calendarDayCells: some View {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month], from: month)
+        let first = calendar.date(from: DateComponents(year: components.year,
+                                                       month: components.month, day: 1)) ?? month
+        let daysInMonth = calendar.range(of: .day, in: .month, for: first)?.count ?? 30
+        let leading = (calendar.component(.weekday, from: first) - calendar.firstWeekday + 7) % 7
+        // ⚠️ 占位 id 必须与日期 id（1...daysInMonth）不在同一空间——曾经用 0..<leading
+        // 作 id，与 1/2 号撞车，SwiftUI 去重直接吞掉了日期格（实测 2026-09：1-6 号消失）。
+        ForEach(-leading..<0, id: \.self) { _ in
+            Color.clear.frame(height: 34)
+        }
+        ForEach(1...daysInMonth, id: \.self) { day in
+            dayCell(day: day)
+        }
+    }
+
+    /// 日历格：盐场日可点（查总榜）；有我方场次的标注名次。
+    private func dayCell(day: Int) -> some View {
+        let calendar = Calendar.current
+        let saltDate = saltDays[day]
+        let battle = battleByDay[day]
+        let isSelected = selectedDate.map({ SaltHistoryCatalog.isSameDay($0, saltDate ?? month) }) ?? false
+        let isSaltDay = saltDate != nil
+
+        return Button {
+            guard let date = saltDate else { return }
+            selectedDate = date
+            controller.requestWarDetails(accountID: account.id, battleDate: date)
+        } label: {
+            VStack(spacing: 1) {
+                Text("\(day)")
+                    .font(.system(size: 11, weight: isSaltDay ? .bold : .regular))
+                    .foregroundStyle(isSaltDay ? .white : .white.opacity(0.35))
+                if let battle {
+                    Text(battle.rank > 0 ? "第\(battle.rank)名" : battle.warTypeName)
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(rankColor(battle.rank))
+                } else if isSaltDay {
+                    Text("盐场")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(cellBackground(day: day, isSaltDay: isSaltDay,
+                                       battle: battle, isSelected: isSelected))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isSaltDay)
+        .help(isSaltDay ? "点击查询 \(day) 日盐场总榜" : "非盐场日（仅周六与第 4 周周日开放）")
+        .dayCellHover(day: day, calendar: calendar, saltDate: saltDate)
+    }
+
+    private func cellBackground(day: Int, isSaltDay: Bool,
+                                battle: SaltHistoryBattle?, isSelected: Bool) -> Color {
+        if isSelected { return Color.cyan.opacity(0.35) }
+        if battle != nil { return Color.white.opacity(0.12) }
+        if isSaltDay { return Color.cyan.opacity(0.10) }
+        return Color.white.opacity(0.03)
+    }
+
+    /// 我方名次徽标配色。
+    private func rankColor(_ rank: Int) -> Color {
+        switch rank {
+        case 1: return .yellow
+        case 2: return Color(red: 0.85, green: 0.87, blue: 0.92)
+        case 3: return .orange
+        case 4...20: return .cyan
+        default: return .white.opacity(0.55)
+        }
+    }
+
+    // MARK: 榜单表
+
+    /// 场次日期短格式（榜单表头）。
+    private static let battleDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M月d日"
+        return formatter
+    }()
+
+    @ViewBuilder
+    private var rankView: some View {
+        if let result = controller.historyDetails[account.id] {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Text("\(Self.battleDayFormatter.string(from: result.battleDate)) 盐场战绩")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("总胜 \(result.totalWin)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.green)
+                    Text("总负 \(result.totalLose)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                    Text("总攻城 \(result.totalBuilding)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    Text("参战 \(result.rows.count) 人")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                Divider()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 0) {
+                            rankHeader("#", width: 34)
+                            rankHeader("成员", width: 130)
+                            rankHeader("胜", width: 48)
+                            rankHeader("负", width: 48)
+                            rankHeader("胜率", width: 52)
+                            rankHeader("攻城", width: 52)
+                        }
+                        ForEach(Array(result.rows.enumerated()), id: \.element.id) { index, row in
+                            HStack(spacing: 0) {
+                                rankCell("\(index + 1)", width: 34,
+                                         bold: index < 3,
+                                         tint: index == 0 ? .yellow
+                                             : (index == 1 ? Color(red: 0.85, green: 0.87, blue: 0.92)
+                                               : (index == 2 ? .orange : nil)))
+                                rankCell(row.name, width: 130)
+                                rankCell("\(row.win)", width: 48, tint: .green)
+                                rankCell("\(row.lose)", width: 48, tint: .red)
+                                rankCell("\(row.rate)%", width: 52)
+                                rankCell("\(row.building)", width: 52, tint: .orange)
+                            }
+                            .background(Color.white.opacity(0.02))
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.quaternary)
+                Text("选择左侧日历中的盐场日期")
+                    .font(.headline)
+                Text("点击带底色的日期即可查询该场盐场的成员战绩（胜/负/攻城）；\n日历上的名次徽标来自「我的场次」拉取结果。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func rankHeader(_ title: String, width: CGFloat) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.85))
+            .frame(width: width, height: 24, alignment: .leading)
+            .padding(.horizontal, 4)
+            .background(Color.white.opacity(0.08))
+    }
+
+    private func rankCell(_ value: String, width: CGFloat,
+                          bold: Bool = false, tint: Color? = nil) -> some View {
+        Text(value)
+            .font(.system(size: 11, weight: bold ? .semibold : .regular, design: .monospaced))
+            .foregroundStyle(tint ?? .white.opacity(0.82))
+            .lineLimit(1)
+            .frame(width: width, height: 22, alignment: .leading)
+            .padding(.horizontal, 4)
+    }
+}
+
+/// 日历格悬停提示的空占位（保留扩展点；当前用 .help 提供即可）。
+private extension View {
+    func dayCellHover(day: Int, calendar: Calendar, saltDate: Date?) -> some View { self }
 }
