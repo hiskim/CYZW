@@ -298,31 +298,39 @@ public struct SaltHistoryResult: Sendable {
 // 的主数据（盐场未开放也能查）。
 
 /// 明细表的一行（一个成员）。
+/// 字段语义（星驰参考图口径）：winCnt=**击杀**、loseCnt=**死亡**、buildingCnt=攻城。
 public struct SaltWarDetailRow: Sendable, Identifiable {
     public let name: String
-    /// 胜场（winCnt）。
+    /// 击杀数（winCnt）。
     public let win: Int
-    /// 负场（loseCnt）。
+    /// 死亡数（loseCnt）。
     public let lose: Int
     /// 攻城次数（buildingCnt）。
     public let building: Int
 
     public var id: String { name }
-    public var total: Int { win + lose }
-    /// 胜率（百分比，四舍五入；无战斗为 0）。
-    public var rate: Int { total > 0 ? Int((Double(win) / Double(total) * 100).rounded()) : 0 }
+    /// K/D = 击杀数 ÷ 死亡次数；零死亡按击杀数本身计（杀100死20 → 5.00）。
+    public var kd: Double { lose > 0 ? Double(win) / Double(lose) : Double(win) }
+    public var kdText: String { String(format: "%.2f", kd) }
+    /// 总积分 = 击杀×10 + 死亡×1 + 攻城×1（用户确认口径，2026-09-18）。
+    public var score: Int { win * 10 + lose + building }
 }
 
 /// 一次成员明细查询的结果。
 public struct SaltWarDetailsResult: Sendable {
     public let battleDate: Date
-    /// 成员明细（胜次降序，与猫助手排序口径一致）。
+    /// 成员明细（击杀降序，猫助手排序口径一致）。
     public let rows: [SaltWarDetailRow]
     public let fetchedAt: Date
 
-    public var totalWin: Int { rows.reduce(0) { $0 + $1.win } }
-    public var totalLose: Int { rows.reduce(0) { $0 + $1.lose } }
+    public var totalKill: Int { rows.reduce(0) { $0 + $1.win } }
+    public var totalDeath: Int { rows.reduce(0) { $0 + $1.lose } }
     public var totalBuilding: Int { rows.reduce(0) { $0 + $1.building } }
+    /// 整体 K/D = 总击杀 ÷ 总死亡（总死亡为 0 时按总击杀计）。
+    public var overallKDText: String {
+        totalDeath > 0 ? String(format: "%.2f", Double(totalKill) / Double(totalDeath))
+                       : String(format: "%.2f", Double(totalKill))
+    }
 }
 
 // MARK: - 颜色

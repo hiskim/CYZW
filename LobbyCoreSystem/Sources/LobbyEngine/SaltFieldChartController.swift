@@ -706,8 +706,10 @@ public final class SaltFieldChartController: ObservableObject {
         return rows.sorted { $0.rank != $1.rank ? $0.rank < $1.rank : $0.score > $1.score }
     }
 
-    /// `legionwar_getdetails` → 成员明细（roleDetailsList；胜次降序 = 猫助手排序口径）。
+    /// `legionwar_getdetails` → 成员明细（roleDetailsList；击杀降序 = 猫助手排序口径）。
     /// 容错：roleDetailsList 优先，退化尝试 body 顶层同名数组。
+    /// 字段口径：winCnt=击杀、loseCnt=死亡、buildingCnt=攻城；
+    /// 总积分本地计算 = 击杀×10 + 死亡×1 + 攻城×1（用户确认口径）。
     static func parseWarDetails(inner: BonValue?) -> [SaltWarDetailRow] {
         var rows: [SaltWarDetailRow] = []
         let source = inner?.path("roleDetailsList") ?? inner
