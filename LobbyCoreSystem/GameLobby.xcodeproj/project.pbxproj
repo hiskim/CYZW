@@ -60,6 +60,7 @@
 		C1000000000000000000001E /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000001E /* DiagnosticsLog.swift */; };
 		C10000000000000000000037 /* PacketCaptureWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000037 /* PacketCaptureWindow.swift */; };
 		C10000000000000000000036 /* PacketCaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000036 /* PacketCaptureController.swift */; };
+		C10000000000000000000038 /* GameCommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000038 /* GameCommandCatalog.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -205,6 +206,7 @@
 		C2000000000000000000001E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsLog.swift; sourceTree = "<group>"; };
 		C20000000000000000000037 /* PacketCaptureWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketCaptureWindow.swift; sourceTree = "<group>"; };
 		C20000000000000000000036 /* PacketCaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketCaptureController.swift; sourceTree = "<group>"; };
+		C20000000000000000000038 /* GameCommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameCommandCatalog.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -323,6 +325,7 @@
 				C2000000000000000000000F /* GameInstancePool.swift */,
 				C20000000000000000000036 /* PacketCaptureController.swift */,
 				C2000000000000000000001F /* PacketCaptureScript.swift */,
+				C20000000000000000000038 /* GameCommandCatalog.swift */,
 			);
 			path = LobbyEngine;
 			sourceTree = "<group>";
@@ -635,6 +638,7 @@
 				C1000000000000000000000F /* GameInstancePool.swift in Sources */,
 				C10000000000000000000036 /* PacketCaptureController.swift in Sources */,
 				C1000000000000000000001F /* PacketCaptureScript.swift in Sources */,
+				C10000000000000000000038 /* GameCommandCatalog.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

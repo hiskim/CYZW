@@ -7,13 +7,19 @@ import Foundation
 //
 // 抓包链路（参考猫助手的页面级 hook + 自助手仓 `wsAgent.js` 的帧语义）：
 //
-//   游戏 `new WebSocket(...)` → 构造器已被替换 → 实例登记
+//   游戏 `new WebSocket(...)` → 构造器已被替换 → 实例登记（activeSockets）
 //        │  send(data)                      ← 包装（先抓后透传，永不吞帧）
 //        │  addEventListener('message')     ← 常驻旁路监听（不碰游戏自己的 handler）
 //        ▼
 //   字节 → base64 → `webkit.messageHandlers.ios2Game.postMessage({type:'packet',…})`
 //        ▼
 //   宿主 `PacketCaptureController`：px 信封解封 → BON 解码 → cmd / body → 过滤 + 窗口展示
+//
+// 反向通道（发送指令）：宿主把**完整帧**（x 信封编码好的字节，base64）经
+// `__LOBBY_CAPTURE__.sendRaw(b64)` 交给页面 → 从 `activeSockets` 里挑 OPEN 的游戏
+// socket → `socket.send(bytes)`。构帧全在宿主（BonCodec + XorFrameCipher），
+// 页面零协议知识、不依赖 `g_utils` 等游戏内部符号；且注入帧会再次经过 send 包装
+// 上报抓包流——请求-响应配对照常工作。
 //
 // 职责红线（与宿主的分工）：
 //   · 页面侧**只抓原始字节**，不解 px 信封、不解 BON、不做过滤——解码统一在宿主，
@@ -28,7 +34,8 @@ import Foundation
 //      `new` 的每一个 WebSocket 都必然经过替换后的构造器，一个都漏不掉；
 //   ② 捕获具体对象引用的方案（猫助手 / `ios2-script-runtime.js` 的别名捕获）
 //      只能 hook 到「捕获那一刻已存在的对象」，并且要在游戏封装层上逐个适配；
-//      构造器层 hook 与封装无关，天然覆盖二进制帧与文本帧。
+//      构造器层 hook 与封装无关，天然覆盖二进制帧与文本帧，还顺带维护了
+//      `activeSockets`——发送指令的出口正是它。
 //
 // `class extends WebSocket` 的兼容性：WebKit 下实例的 `instanceof WebSocket`
 // 仍然成立（原型链通过 `extends` 保持），静态常量（`OPEN` 等）随原型链继承。
@@ -39,7 +46,7 @@ import Foundation
 //   心跳每 2s 一条由宿主窗口的「排除心跳」开关过滤，页面不特判。
 public enum PacketCaptureScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**（诊断串里带 `v=`，用于确认页面在跑哪一版）。
-    public static let agentVersion = "1"
+    public static let agentVersion = "2"
 
     /// 单帧上报字节上限（192 KiB）。超出部分丢弃并打 `trunc` 标记。
     private static let maxFrameBytes = 192 * 1024
@@ -57,6 +64,12 @@ public enum PacketCaptureScript {
         "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.status() : 'no-handler'"
     }
 
+    /// 发送一帧（base64 编码的完整 x 信封帧，由宿主构好）。
+    /// 返回诊断串：`sent bytes=N socket=…` / `no-open-socket …` / `no-handler`。
+    public static func sendRaw(_ base64: String) -> String {
+        "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendRaw('\(base64)') : 'no-handler'"
+    }
+
     /// 代理脚本本体（`atDocumentStart` 注入，只注入主框架）。
     public static let agent: String = {
         let version = agentVersion
@@ -70,7 +83,7 @@ public enum PacketCaptureScript {
           const channel = (window.webkit && window.webkit.messageHandlers &&
                            window.webkit.messageHandlers.ios2Game) || null;
 
-          const state = { enabled: false, hooked: 0, sent: 0, dropped: 0 };
+          const state = { enabled: false, hooked: 0, sent: 0, dropped: 0, sockets: new Set() };
 
           // 字节 → base64。分块拼二进制串再 btoa：大帧一次性 apply 会撞参数个数上限。
           function toBase64(bytes) {
@@ -80,6 +93,14 @@ public enum PacketCaptureScript {
               binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
             }
             return btoa(binary);
+          }
+
+          // base64 → 字节（sendRaw 用）。
+          function fromBase64(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
           }
 
           // 统一上报入口。开关关闭时是零开销路径（第一行就返回）。
@@ -131,6 +152,10 @@ public enum PacketCaptureScript {
             constructor(url, protocols) {
               super(url, protocols);
               state.hooked++;
+              state.sockets.add(this);
+              // 关闭 / 失败时摘出登记表，发送指令只挑还活着的连接。
+              this.addEventListener('close', function () { state.sockets.delete(this); });
+              this.addEventListener('error', function () { state.sockets.delete(this); });
               this.addEventListener('message', function (event) {
                 if (event.data instanceof Blob) reportBlob('recv', event.data);
                 else report('recv', event.data);
@@ -148,19 +173,43 @@ public enum PacketCaptureScript {
             // 理论上不可达（window 属性可写）；保守起见不阻断页面。
           }
 
+          // 发送指令：挑 OPEN 的游戏连接（优先 agent 端点），字节原样交出。
+          // 注入帧会经过上面的 send 包装 → 正常上报抓包流，配对逻辑不受影响。
+          function sendRaw(base64) {
+            const open = Array.from(state.sockets).filter(function (socket) {
+              return socket.readyState === 1;
+            });
+            if (!open.length) {
+              return 'no-open-socket hooked=' + state.hooked;
+            }
+            const target = open.find(function (socket) {
+              return (socket.url || '').indexOf('agent') >= 0;
+            }) || open[open.length - 1];
+            try {
+              const bytes = fromBase64(base64);
+              target.send(bytes);
+              return 'sent bytes=' + bytes.length + ' socket=' + (target.url || '').slice(0, 60);
+            } catch (error) {
+              return 'send-failed ' + (error && error.message ? error.message : String(error));
+            }
+          }
+
           window.__LOBBY_CAPTURE__ = {
             version: VERSION,
             setEnabled(enabled) {
               state.enabled = !!enabled;
               return 'capture v=' + VERSION + ' hooked=' + state.hooked +
+                     ' open=' + Array.from(state.sockets).filter(function (s) { return s.readyState === 1; }).length +
                      ' enabled=' + state.enabled +
                      ' sent=' + state.sent + ' dropped=' + state.dropped;
             },
             status() {
               return 'capture v=' + VERSION + ' hooked=' + state.hooked +
+                     ' open=' + Array.from(state.sockets).filter(function (s) { return s.readyState === 1; }).length +
                      ' enabled=' + state.enabled +
                      ' sent=' + state.sent + ' dropped=' + state.dropped;
-            }
+            },
+            sendRaw: sendRaw
           };
         })();
         """

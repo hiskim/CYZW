@@ -436,6 +436,21 @@ public final class GameViewportInstance: NSView {
         }
     }
 
+    /// 把宿主构好的完整帧（base64）交给页面代理发送。
+    /// 返回页面侧诊断串（`sent bytes=N socket=…` / `no-open-socket …`）。
+    public func sendRawFrame(base64: String) async -> String {
+        guard !isStopped else { return "instance-stopped" }
+        return await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(PacketCaptureScript.sendRaw(base64)) { result, error in
+                if let error {
+                    continuation.resume(returning: "evaluate-failed \(error.localizedDescription)")
+                    return
+                }
+                continuation.resume(returning: (result as? String) ?? String(describing: result ?? "nil"))
+            }
+        }
+    }
+
     /// 抢焦点：键盘事件只会派发给第一响应者。
     public func focusWebView() {
         guard let window = webView.window ?? self.window else { return }

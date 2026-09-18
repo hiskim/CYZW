@@ -28,13 +28,22 @@ public final class PacketCaptureController: ObservableObject {
     /// 单会话留存上限。超出 FIFO 挤掉最旧（抓包窗口显示的是「最近 5000 条」）。
     public static let maxFrames = 5000
 
+    /// 参与请求-响应配对的命令黑名单：心跳不配对（没有「请求」语义）。
+    static let heartbeatCommands: Set<String> = ["heart_beat", "_sys/ack"]
+
     /// 账号 ID → 抓包会话。窗口与列表都从这里取。
     @Published public private(set) var sessions: [String: PacketCaptureSession] = [:]
     /// 正在抓包的账号 ID（矩阵卡片按钮的高亮态）。
     @Published public private(set) var capturingAccountIDs: Set<String> = []
 
+    /// 指令库（抓包发现的新 cmd 自动入库；发送面板也从这里选）。
+    public let catalog: GameCommandStore
+
     /// 账号名缓存（导出 JSON 里带上，窗口标题也用）。
     private var accountNames: [String: String] = [:]
+
+    /// 发送历史（跨账号共享，最近 30 条；不持久化——发送是一次性操作记录）。
+    @Published public private(set) var sendHistory: [SendRecord] = []
 
     /// 页面侧代理的诊断串（账号 ID → 最近一次 `capture.status()` 回执）。
     ///
@@ -44,7 +53,9 @@ public final class PacketCaptureController: ObservableObject {
     /// `enabled=false` = 开关没推上去。窗口里常驻显示，一眼定性，不用捞日志。
     @Published public private(set) var pageDiagnostics: [String: String] = [:]
 
-    public init() {}
+    public init(catalog: GameCommandStore) {
+        self.catalog = catalog
+    }
 
     /// 记录一次页面侧诊断回执（实例查询回来后写入）。
     public func notePageDiagnostics(_ text: String, accountID: String) {
@@ -100,7 +111,119 @@ public final class PacketCaptureController: ObservableObject {
 
     public func ingest(frame: PacketFrame, accountID: String) {
         guard isCapturing(accountID: accountID), let session = sessions[accountID] else { return }
-        session.append(Self.decode(frame))
+        let packet = Self.decode(frame)
+        // 自动发现：抓包流里出现的新 cmd 进指令库（幂等，心跳除外）。
+        if !packet.command.hasPrefix("‹"), !Self.heartbeatCommands.contains(packet.command) {
+            catalog.addDiscovered(packet.command)
+        }
+        // 维护服务端 seq（发送构帧时的 ack 取这里）。
+        if packet.direction == "recv", let seq = packet.seq, seq > 0 {
+            session.noteServerSeq(seq)
+        }
+        session.append(packet)
+    }
+
+    // MARK: - 发送指令
+
+    /// 构帧并发送。走**游戏已建立的连接**（独立连接会顶掉大厅实例的会话）：
+    /// 宿主把完整帧编码好（BonCodec + XorFrameCipher，不依赖游戏内部符号），
+    /// 页面代理只负责把字节交给登记的活跃 socket。
+    ///
+    /// - `ack` 取抓包里最近一个 recv 帧的服务端 seq（比猫助手的 ack=0 更符合协议）；
+    /// - `seq` 用毫秒时间戳（大数，绝不与游戏递增的小 seq 撞车——猫助手实测可行）；
+    /// - 注入帧会经过页面代理的 send 包装，**自然进入抓包流**，响应配对照常工作。
+    @discardableResult
+    public func sendCommand(accountID: String,
+                            instance: GameViewportInstance,
+                            entry: GameCommandEntry,
+                            paramsJSON: String) async -> SendRecord {
+        let record = await sendCommand(accountID: accountID, instance: instance,
+                                       command: entry.command,
+                                       chineseName: entry.chineseName,
+                                       paramsJSON: paramsJSON)
+        return record
+    }
+
+    @discardableResult
+    public func sendCommand(accountID: String,
+                            instance: GameViewportInstance,
+                            command: String,
+                            chineseName: String,
+                            paramsJSON: String) async -> SendRecord {
+        var record = SendRecord(command: command,
+                                chineseName: chineseName.isEmpty ? command : chineseName,
+                                paramsJSON: paramsJSON)
+        let trimmedParams = paramsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ack：会话里最近的服务端 seq（没开抓包就 0——猫助手实测 ack=0 可用）。
+        let ack = sessions[accountID]?.lastServerSeq ?? 0
+        do {
+            let frame = try Self.buildFrame(command: command, paramsJSON: trimmedParams, ack: ack)
+            let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString())
+            record.status = diagnostic.hasPrefix("sent") ? "已发送" : diagnostic
+            record.succeeded = diagnostic.hasPrefix("sent")
+            LobbyLog.info("[capture] 发送指令 %@(%@) → %@", chineseName, command, diagnostic)
+        } catch {
+            record.status = "构帧失败：\(error.localizedDescription)"
+            record.succeeded = false
+            LobbyLog.warn("[capture] 构帧失败 %@：%@", command, String(describing: error))
+        }
+        sendHistory.insert(record, at: 0)
+        if sendHistory.count > 30 {
+            sendHistory.removeLast(sendHistory.count - 30)
+        }
+        return record
+    }
+
+    /// 组装完整帧：`x` 信封（BON `{cmd, ack, seq, time, body=内层BON(params)}`）。
+    static func buildFrame(command: String, paramsJSON: String, ack: Int64) throws -> Data {
+        let params = try Self.jsonToBonValue(paramsJSON)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let body = Bon.encode(params)
+        let message = BonValue.object(BonObject([
+            .init("cmd", .string(command)),
+            .init("ack", .long(ack)),
+            .init("seq", .long(now)),
+            .init("time", .long(now)),
+            .init("body", .binary(body)),
+        ]))
+        return XorFrameCipher.seal(Bon.encode(message))
+    }
+
+    /// JSON 文本 → BonValue（发送参数编辑器的输入）。非法 JSON 抛错给 UI 展示。
+    static func jsonToBonValue(_ text: String) throws -> BonValue {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .object(BonObject()) }
+        // JSONSerialization 顶层可以是任意值（对象 / 数组 / 字面量），都接受。
+        let object = try JSONSerialization.jsonObject(with: Data(trimmed.utf8))
+        return bonValue(from: object)
+    }
+
+    private static func bonValue(from any: Any) -> BonValue {
+        switch any {
+        case is NSNull:
+            return .null
+        case let number as NSNumber:
+            // JSONSerialization 的 Bool 也是 NSNumber，用 CF 类型区分（否则 true 变 1）。
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return .bool(number.boolValue)
+            }
+            let double = number.doubleValue
+            if double == double.rounded() && abs(double) < 9.007_199_254_740_992e15 {
+                return .long(number.int64Value)
+            }
+            return .double(double)
+        case let text as String:
+            return .string(text)
+        case let array as [Any]:
+            return .array(array.map(bonValue(from:)))
+        case let dictionary as [String: Any]:
+            let fields = dictionary.map { key, value in
+                BonObject.Field(key, bonValue(from: value))
+            }
+            return .object(BonObject(fields))
+        default:
+            return .string(String(describing: any))
+        }
     }
 
     // MARK: - 导出
@@ -171,6 +294,8 @@ public final class PacketCaptureController: ObservableObject {
             return packet
         }
         packet.command = object["cmd"]?.stringValue ?? "‹无cmd›"
+        packet.seq = object["seq"]?.intValue
+        packet.ack = object["ack"]?.intValue
         // detail：外层对象渲染。body（binary）在渲染时尝试解内层 BON，解不开就 hex。
         packet.detail = BonJSON.render(outer, bodyKey: "body")
         // summary：内层 body 的 JSON（列表行预览）。没有 body 的帧（如心跳）留空。
@@ -214,6 +339,24 @@ public struct CapturedPacket: Identifiable, Sendable {
     /// 详情面板全文（渲染后的外层 JSON；解不开时是 hex 预览 + 原因）。
     public var detail: String
 
+    // ── 协议字段（外层 BON 的 seq / ack，配对与发送构帧都要用）──
+    /// 帧内 seq（请求=客户端序，响应=服务端序，心跳恒 0）。
+    public var seq: Int64?
+    /// 帧内 ack（客户端对服务端 seq 的确认）。
+    public var ack: Int64?
+
+    // ── 请求-响应配对（协议没有帧内请求 ID，按「同名 cmd + 方向 + 时间窗」配对）──
+    /// recv 帧：配对上的请求包 id。
+    public var matchedRequestUUID: UUID?
+    /// recv 帧：配对请求的页面时间戳（冗余存储，渲染时零查找）。
+    public var matchedRequestTime: Double?
+    /// 往返耗时（响应 − 请求，毫秒）。
+    public var roundTripMs: Double?
+    /// send 帧：已收到配对响应。
+    public var matchedResponseUUID: UUID?
+    /// recv 帧：没等到配对请求（服务端主动推送）。
+    public var isPush: Bool
+
     public var timeText: String {
         let date = Date(timeIntervalSince1970: timestampMs / 1000)
         let formatter = DateFormatter()
@@ -232,6 +375,13 @@ public struct CapturedPacket: Identifiable, Sendable {
         self.command = "?"
         self.summary = nil
         self.detail = ""
+        self.seq = nil
+        self.ack = nil
+        self.matchedRequestUUID = nil
+        self.matchedRequestTime = nil
+        self.roundTripMs = nil
+        self.matchedResponseUUID = nil
+        self.isPush = false
     }
 }
 
@@ -244,12 +394,19 @@ public struct CapturedPacket: Identifiable, Sendable {
 public final class PacketCaptureSession: ObservableObject {
     /// 批量转正的节奏（毫秒）。
     private static let flushIntervalNanos: UInt64 = 250_000_000
+    /// 请求-响应配对的时间窗：超过视为「无响应」（防误配 + 防积累）。
+    private static let matchWindowMs: Double = 30_000
 
     /// 留存帧（FIFO，上限 `PacketCaptureController.maxFrames`）。
     @Published public private(set) var frames: [CapturedPacket] = []
     /// 因容量上限被挤掉的最旧帧数（导出与状态栏展示，防止「总数对不上」的困惑）。
     @Published public private(set) var droppedTotal = 0
     @Published public private(set) var isCapturing = false
+
+    /// 最近收到的服务端 seq（发送构帧时的 ack 来源）。
+    public private(set) var lastServerSeq: Int64 = 0
+    /// 待配对请求队列：cmd → FIFO（同 cmd 连发多包时按发出顺序配回）。
+    private var pendingRequests: [String: [(uuid: UUID, time: Double)]] = [:]
 
     /// 待转正缓冲（`append` 只进这里，由 flush loop 批量搬到 `frames`）。
     private var pending: [CapturedPacket] = []
@@ -259,8 +416,68 @@ public final class PacketCaptureSession: ObservableObject {
 
     /// 摄入一条（来自控制器解码后的成品）。
     func append(_ packet: CapturedPacket) {
-        pending.append(packet)
+        var matched = packet
+        match(&matched)
+        pending.append(matched)
         startFlushLoopIfNeeded()
+    }
+
+    /// 记录服务端 seq（recv 帧，>0 才有意义）。
+    func noteServerSeq(_ seq: Int64) {
+        lastServerSeq = max(lastServerSeq, seq)
+    }
+
+    /// 请求-响应配对。
+    ///
+    /// 协议真相（对齐助手仓 `wsAgent.js`）：帧内**没有请求 ID**——请求 `{cmd, seq, ack}`、
+    /// 响应**同名 cmd** + 服务端自己的 seq。所以配对 = 同名 cmd 分桶 FIFO + 30s 时间窗：
+    /// send 压队，recv 弹队头；弹不到的 recv 标「推送」。心跳（`heart_beat`/`_sys/ack`）不参与。
+    private func match(_ packet: inout CapturedPacket) {
+        // 过期清理（顺手做，不引入定时器）。
+        for command in pendingRequests.keys {
+            pendingRequests[command]?.removeAll { packet.timestampMs - $0.time > Self.matchWindowMs }
+            if pendingRequests[command]?.isEmpty == true {
+                pendingRequests.removeValue(forKey: command)
+            }
+        }
+        guard Self.isPairable(packet.command) else { return }
+        if packet.direction == "send" {
+            pendingRequests[packet.command, default: []].append((packet.id, packet.timestampMs))
+            return
+        }
+        // recv：先于响应到达的同名请求（同 cmd 连发多包时 FIFO）。
+        guard var queue = pendingRequests[packet.command], let request = queue.first else {
+            packet.isPush = true
+            return
+        }
+        queue.removeFirst()
+        if queue.isEmpty {
+            pendingRequests.removeValue(forKey: packet.command)
+        } else {
+            pendingRequests[packet.command] = queue
+        }
+        packet.matchedRequestUUID = request.uuid
+        packet.matchedRequestTime = request.time
+        packet.roundTripMs = max(0, packet.timestampMs - request.time)
+        updateRequestSide(uuid: request.uuid,
+                          responseID: packet.id,
+                          roundTripMs: packet.roundTripMs ?? 0)
+    }
+
+    /// 双向标记响应指针（请求对象可能在 pending 或已 flush 进 frames）。
+    private func updateRequestSide(uuid: UUID, responseID: UUID, roundTripMs: Double) {
+        if let index = pending.firstIndex(where: { $0.id == uuid }) {
+            pending[index].matchedResponseUUID = responseID
+            pending[index].roundTripMs = roundTripMs
+        }
+        if let index = frames.firstIndex(where: { $0.id == uuid }) {
+            frames[index].matchedResponseUUID = responseID
+            frames[index].roundTripMs = roundTripMs
+        }
+    }
+
+    private static func isPairable(_ command: String) -> Bool {
+        !PacketCaptureController.heartbeatCommands.contains(command)
     }
 
     public func begin() {
@@ -304,6 +521,39 @@ public final class PacketCaptureSession: ObservableObject {
             frames.removeFirst(overflow)
             droppedTotal += overflow
         }
+    }
+}
+
+// MARK: - 发送记录
+
+/// 一次「发送指令」的记录（发送面板的历史列表；点击可回填参数）。
+public struct SendRecord: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let timestamp: Date
+    /// 指令字面值。
+    public let command: String
+    /// 中文名（指令库命中时的展示名）。
+    public let chineseName: String
+    /// 发送时的参数 JSON 原文（回填用）。
+    public let paramsJSON: String
+    /// 结果诊断（`已发送` / 页面回执错误 / 构帧失败原因）。
+    public var status: String
+    public var succeeded: Bool
+
+    public var timeText: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: timestamp)
+    }
+
+    init(command: String, chineseName: String, paramsJSON: String) {
+        self.id = UUID()
+        self.timestamp = Date()
+        self.command = command
+        self.chineseName = chineseName
+        self.paramsJSON = paramsJSON
+        self.status = "发送中…"
+        self.succeeded = false
     }
 }
 

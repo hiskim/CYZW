@@ -85,6 +85,8 @@ public final class LobbySessionModel: ObservableObject {
     /// 流向实例 B」的分裂——窗口正常弹出但一条帧都收不到；又因为实例 B 没有强
     /// 持有者，ARC 释放后实例里的 weak 引用直接变 nil。装配根两处传同一实例即可。
     public let capture: PacketCaptureController
+    /// 指令库（抓包窗口的指令库页签 / 发送面板共用；抓包发现的新 cmd 自动入库）。
+    public let commandCatalog: GameCommandStore
     /// 抓包窗口管理器：每账号一个独立 NSWindow（开抓时创建，关窗 = 自动停抓）。
     public let captureWindows = PacketCaptureWindowManager()
     /// 资料抓取器：**不启动游戏**，直接用 `.bin` 凭据问服务端（见 `AccountProfileFetcher`）。
@@ -99,7 +101,8 @@ public final class LobbySessionModel: ObservableObject {
                 scripts: ScriptStore,
                 enhancements: GameEnhancementStore,
                 avatars: AccountAvatarStore,
-                capture: PacketCaptureController) {
+                capture: PacketCaptureController,
+                commandCatalog: GameCommandStore) {
         self.bins = bins
         self.pool = pool
         self.sync = sync
@@ -108,6 +111,7 @@ public final class LobbySessionModel: ObservableObject {
         self.enhancements = enhancements
         self.avatars = avatars
         self.capture = capture
+        self.commandCatalog = commandCatalog
         pool.delegate = self
         groupDefinitions = groupStore.loadDefinitions().sorted(by: Self.groupOrder)
         assignments = groupStore.loadAssignments()
