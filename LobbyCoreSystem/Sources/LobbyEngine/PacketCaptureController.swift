@@ -542,6 +542,61 @@ public final class PacketCaptureSession: ObservableObject {
     }
 }
 
+// MARK: - JSON 美化（压缩 ↔ 展开）
+
+/// 单行 JSON → 缩进多行（**选中时懒计算**：留存帧只存压缩串，双份存储会让
+/// 5000 条上限下的内存翻倍；一次只美化当前查看的那条，开销可忽略）。
+/// 非 JSON 文本（hex 预览 / 解码失败原因）原样返回。
+public enum JSONBeautifier {
+    public static func pretty(_ text: String) -> String {
+        guard let first = text.first, first == "{" || first == "[" else { return text }
+        var result = ""
+        result.reserveCapacity(text.count + text.count / 4)
+        let indentUnit = "  "
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for character in text {
+            if escaped {
+                result.append(character)
+                escaped = false
+                continue
+            }
+            if inString {
+                result.append(character)
+                if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+            switch character {
+            case "\"":
+                inString = true
+                result.append(character)
+            case "{", "[":
+                depth += 1
+                result.append(character)
+                result.append("\n" + String(repeating: indentUnit, count: depth))
+            case "}", "]":
+                depth = max(0, depth - 1)
+                result.append("\n" + String(repeating: indentUnit, count: depth))
+                result.append(character)
+            case ",":
+                result.append(character)
+                result.append("\n" + String(repeating: indentUnit, count: depth))
+            case ":":
+                result.append(character)
+                result.append(" ")
+            default:
+                result.append(character)
+            }
+        }
+        return result
+    }
+}
+
 // MARK: - 发送记录
 
 /// 一次「发送指令」的记录（发送面板的历史列表；点击可回填参数）。

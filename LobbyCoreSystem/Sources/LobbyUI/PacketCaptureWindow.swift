@@ -118,6 +118,9 @@ struct PacketCaptureWindowView: View {
     @State private var hideHeartbeat = true
     @State private var searchText = ""
     @State private var selectedPacketID: UUID?
+    /// JSON 视图模式：false = 压缩单行（默认），true = 缩进展开（懒美化，仅当前查看的帧）。
+    /// 抓包流详情面板与配对页签的展开区共用这一开关。
+    @State private var jsonPretty = false
     // ── 跨页签联动：配对/指令库「填入发送」→ 发送页签预填；配对行点击 → 抓包流定位 ──
     @State private var sendDraftCommand: String?
 
@@ -200,6 +203,7 @@ struct PacketCaptureWindowView: View {
                 PairingPane(session: session,
                             captureSession: captureSession,
                             selectedPacketID: $selectedPacketID,
+                            jsonPretty: jsonPretty,
                             switchToStream: { activeTab = .stream })
             case .send:
                 SendCommandPane(session: session,
@@ -487,6 +491,37 @@ struct PacketCaptureWindowView: View {
                                      ? Color(lobbyRGB: 0x3B82F6).opacity(0.05)
                                      : Color(lobbyRGB: 0x22C55E).opacity(0.05)))
                     )
+                    // 右键 = 把该指令直接加进过滤（白名单 / 黑名单 / 包含正则 / 排除正则）。
+                    .contextMenu {
+                        Button("加入「只抓」白名单") {
+                            if !includeCommands.contains(packet.command) {
+                                includeCommands.append(packet.command)
+                            }
+                        }
+                        Button("加入「过滤」黑名单") {
+                            if !excludeCommands.contains(packet.command) {
+                                excludeCommands.append(packet.command)
+                            }
+                        }
+                        Divider()
+                        Button("追加到「包含正则」") {
+                            includeRegexText = appendRegexAlternative(includeRegexText,
+                                                                      command: packet.command)
+                        }
+                        Button("追加到「排除正则」") {
+                            excludeRegexText = appendRegexAlternative(excludeRegexText,
+                                                                      command: packet.command)
+                        }
+                        Divider()
+                        Button("复制命令名") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(packet.command, forType: .string)
+                        }
+                        Button("复制 JSON") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(packet.detail, forType: .string)
+                        }
+                    }
             }
         }
         .listStyle(.inset)
@@ -500,9 +535,10 @@ struct PacketCaptureWindowView: View {
                     Text(isCapturing ? "等待游戏流量…" : "未在抓包")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    Text("开始抓包后，在游戏里做任意操作即可看到 WSS 帧")
+                    Text("开始抓包后，在游戏里做任意操作即可看到 WSS 帧\n右键任意帧可直接加入过滤")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
                 }
             } else if filteredFrames.isEmpty {
                 Text("没有匹配过滤条件的帧")
@@ -510,6 +546,15 @@ struct PacketCaptureWindowView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// 正则追加：cmd 做字面转义后用 `|` 并入现有表达式（空则直接成为表达式）。
+    private func appendRegexAlternative(_ current: String, command: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: command)
+        if current.trimmingCharacters(in: .whitespaces).isEmpty {
+            return escaped
+        }
+        return current + "|" + escaped
     }
 
     // MARK: 详情（抓包流）
@@ -520,7 +565,8 @@ struct PacketCaptureWindowView: View {
                 detailHeader(packet)
                 Divider().overlay(Color.white.opacity(0.08))
                 ScrollView {
-                    Text(packet.detail)
+                    // 默认压缩单行；「展开」时对当前选中的帧懒美化（存储始终是压缩串）。
+                    Text(jsonPretty ? JSONBeautifier.pretty(packet.detail) : packet.detail)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.88))
                         .textSelection(.enabled)
@@ -558,6 +604,14 @@ struct PacketCaptureWindowView: View {
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
                 Spacer(minLength: 8)
+                // JSON 视图模式：默认压缩单行；展开 = 缩进美化（只对当前选中的帧懒计算）。
+                Picker("", selection: $jsonPretty) {
+                    Text("压缩").tag(false)
+                    Text("展开").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 110)
+                .help("JSON 内容的显示格式（导出始终是压缩单行）")
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(packet.detail, forType: .string)
@@ -718,6 +772,8 @@ private struct PairingPane: View {
     @ObservedObject var session: LobbySessionModel
     @ObservedObject var captureSession: PacketCaptureSession
     @Binding var selectedPacketID: UUID?
+    /// JSON 视图模式（与抓包流详情面板共用；默认压缩）。
+    let jsonPretty: Bool
     let switchToStream: () -> Void
 
     /// 一行 = 一个业务请求 + 它的响应（可能没有）。
@@ -767,10 +823,14 @@ private struct PairingPane: View {
         List {
             Section {
                 ForEach(pairRows) { row in
-                    pairSection(row, names: names)
+                    PairRowView(row: row,
+                                names: names,
+                                jsonPretty: jsonPretty,
+                                selectedPacketID: $selectedPacketID,
+                                switchToStream: switchToStream)
                 }
             } header: {
-                Text("请求 → 响应（\(pairRows.count) 对，\(unansweredCount) 条无响应）")
+                Text("请求 → 响应（\(pairRows.count) 对，\(unansweredCount) 条无响应）· 点 ⌄ 展开两帧 JSON")
             }
             if !pushes.isEmpty {
                 Section {
@@ -791,95 +851,6 @@ private struct PairingPane: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    /// 一个配对单元：请求行 + 响应行（缩进）。
-    @ViewBuilder
-    private func pairSection(_ row: PairRow, names: [String: String]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // 请求行
-            Button {
-                selectedPacketID = row.request.id
-                switchToStream()
-            } label: {
-                HStack(spacing: 6) {
-                    Text("#\(row.index)")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 30, alignment: .leading)
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color(lobbyRGB: 0x3B82F6))
-                    Text(names[row.request.command] ?? row.request.command)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(row.request.command)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if let seq = row.request.seq {
-                        Text("seq=\(seq)")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-                    Spacer(minLength: 4)
-                    Text(row.request.timeText)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 1)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            // 响应行
-            if let response = row.response {
-                Button {
-                    selectedPacketID = response.id
-                    switchToStream()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("└")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 30, alignment: .leading)
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(lobbyRGB: 0x22C55E))
-                        Text(response.command)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Color(lobbyRGB: 0x4ADE80))
-                            .lineLimit(1)
-                        if let roundTrip = response.roundTripMs {
-                            Text(String(format: "%.0f ms", roundTrip))
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color(lobbyRGB: 0x4ADE80).opacity(0.85))
-                        }
-                        Spacer(minLength: 4)
-                        Text(response.timeText)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.leading, 10)
-                    .padding(.vertical, 1)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                HStack(spacing: 6) {
-                    Text("└")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 30, alignment: .leading)
-                    Label("无响应（在途或服务端未回）", systemImage: "hourglass")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, 10)
-            }
-        }
-        .padding(.vertical, 2)
     }
 
     private func pushRow(_ packet: CapturedPacket, names: [String: String]) -> some View {
@@ -913,6 +884,191 @@ private struct PairingPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 配对单元视图：请求行 + 响应行（缩进），⌄ 展开后**内联显示两帧的 JSON 内容**
+/// （跟随全局「压缩/展开」模式；默认压缩——存储与显示口径一致，JSON 文本可选中复制）。
+private struct PairRowView: View {
+    let row: PairingPane.PairRow
+    let names: [String: String]
+    let jsonPretty: Bool
+    @Binding var selectedPacketID: UUID?
+    let switchToStream: () -> Void
+
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            // ── 请求行（右侧展开按钮：显眼胶囊 + 独立命中区，不与行点击混淆）──
+            HStack(spacing: 8) {
+                requestButton
+                expandButton
+            }
+            // ── 响应行（收起态摘要）──
+            if let response = row.response {
+                responseLine(response)
+            } else {
+                noResponseLine
+            }
+            // ── 展开态：两帧 JSON 内容内联 ──
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    jsonBlock(label: "请求", packet: row.request,
+                              tint: Color(lobbyRGB: 0x3B82F6))
+                    if let response = row.response {
+                        jsonBlock(label: "响应", packet: response,
+                                  tint: Color(lobbyRGB: 0x22C55E))
+                    }
+                }
+                .padding(.top, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        // 展开收起的动画挂在行容器上：高度变化整体平滑（List 行内 withAnimation 不连贯）。
+        .animation(.easeInOut(duration: 0.18), value: expanded)
+        .padding(.vertical, 2)
+    }
+
+    /// 展开按钮：青色胶囊（图标 + 文字），醒目且命中区大——灰色小圆图标
+    /// 太淡太小还贴着行点击区，实测经常误触跳转抓包流。
+    private var expandButton: some View {
+        Button {
+            expanded.toggle()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                Text("JSON")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundStyle(expanded ? Color.white : Color(lobbyRGB: 0x67E8F9))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(expanded ? Color.cyan.opacity(0.30) : Color.cyan.opacity(0.14)))
+            .overlay(Capsule().strokeBorder(Color.cyan.opacity(expanded ? 0.75 : 0.45), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(expanded ? "收起 JSON" : "展开请求与响应的 JSON 内容")
+    }
+
+    private var requestButton: some View {
+        Button {
+            selectedPacketID = row.request.id
+            switchToStream()
+        } label: {
+            HStack(spacing: 6) {
+                Text("#\(row.index)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 30, alignment: .leading)
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(lobbyRGB: 0x3B82F6))
+                Text(names[row.request.command] ?? row.request.command)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(row.request.command)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let seq = row.request.seq {
+                    Text("seq=\(seq)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                Text(row.request.timeText)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 6)
+            }
+            .padding(.vertical, 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func responseLine(_ response: CapturedPacket) -> some View {
+        Button {
+            selectedPacketID = response.id
+            switchToStream()
+        } label: {
+            HStack(spacing: 6) {
+                Text("└")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 30, alignment: .leading)
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(lobbyRGB: 0x22C55E))
+                Text(response.command)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color(lobbyRGB: 0x4ADE80))
+                    .lineLimit(1)
+                if let roundTrip = response.roundTripMs {
+                    Text(String(format: "%.0f ms", roundTrip))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color(lobbyRGB: 0x4ADE80).opacity(0.85))
+                }
+                Spacer(minLength: 4)
+                Text(response.timeText)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.leading, 10)
+            .padding(.vertical, 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var noResponseLine: some View {
+        HStack(spacing: 6) {
+            Text("└")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 30, alignment: .leading)
+            Label("无响应（在途或服务端未回）", systemImage: "hourglass")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 10)
+    }
+
+    /// 一帧的 JSON 内容块（跟随全局压缩/展开模式；高度封顶防大包撑爆列表）。
+    private func jsonBlock(label: String, packet: CapturedPacket, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(tint)
+                Text(packet.command)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("\(packet.byteCount) B")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+            ScrollView {
+                Text(jsonPretty ? JSONBeautifier.pretty(packet.detail) : packet.detail)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+            }
+            .frame(height: 150)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.10)))
+        }
+        .padding(.leading, 10)
     }
 }
 
