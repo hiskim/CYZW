@@ -342,4 +342,53 @@ enum SaltFieldRoadPoints {
 
     /// 静态点数量（诊断日志用）。
     static var count: Int { nodes.count }
+
+    // MARK: 大本营编号（俱乐部 ↔ 地图格子）
+
+    /// 大本营编号 position（1...20）→ 节点 id。
+    ///
+    /// 为什么需要：`legion_getopponent` 给的是每条 legion 的 `position`（大本营序号），
+    /// 服务端**不给坐标**——没有这张桥表，实时地图上「哪家俱乐部占哪个大本营」就落不了地。
+    ///
+    /// 编号口径来自参考脚本「星驰-无登录.js」的盐场地图（其 `renderSaltMap` 的
+    /// strongholdNumberMap）：以 20 个大本营的**质心**为原点，按
+    /// `atan2(dy, dx) + π/4` 归一化到 [0, 2π) 后升序 → 1...20，即从右上角起顺时针绕一圈。
+    /// 该脚本的静态建筑层与本文件 `nodes` 的大本营集合**逐点一致**（已核对 20/20，
+    /// 核心同为 "20_17"），所以同一套规则在本表上可直接用。
+    ///
+    /// 若将来发现与游戏内编号有出入，只改这一处即可（地图标签的唯一来源）。
+    static let strongholdNodeIDs: [Int: String] = {
+        func radians(_ x: Double, _ y: Double, _ cx: Double, _ cy: Double) -> Double {
+            var angle = atan2(y - cy, x - cx) + Double.pi / 4
+            if angle < 0 { angle += 2 * Double.pi }
+            return angle
+        }
+        let strongholds: [(x: Double, y: Double, id: String)] = nodes.compactMap { element in
+            guard element.value == 4 else { return nil }
+            let parts = element.key.split(separator: "_")
+            guard parts.count == 2,
+                  let x = Double(parts[0]), let y = Double(parts[1]) else { return nil }
+            return (x, y, element.key)
+        }
+        guard !strongholds.isEmpty else { return [:] }
+        let cx = strongholds.reduce(0.0) { $0 + $1.x } / Double(strongholds.count)
+        let cy = strongholds.reduce(0.0) { $0 + $1.y } / Double(strongholds.count)
+        let ordered = strongholds.sorted { lhs, rhs in
+            let a = radians(lhs.x, lhs.y, cx, cy)
+            let b = radians(rhs.x, rhs.y, cx, cy)
+            return a == b ? lhs.id < rhs.id : a < b
+        }
+        return Dictionary(uniqueKeysWithValues:
+            ordered.enumerated().map { ($0.offset + 1, $0.element.id) })
+    }()
+
+    /// 节点 id → 大本营编号（`strongholdNodeIDs` 的反查表）。
+    static let strongholdPositionByNodeID: [String: Int] = {
+        Dictionary(uniqueKeysWithValues: strongholdNodeIDs.map { ($0.value, $0.key) })
+    }()
+
+    /// 大本营编号对应的节点 id（越界返回 nil）。
+    static func strongholdNodeID(position: Int) -> String? {
+        strongholdNodeIDs[position]
+    }
 }

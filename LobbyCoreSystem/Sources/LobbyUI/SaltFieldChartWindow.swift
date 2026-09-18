@@ -284,6 +284,10 @@ struct SaltFieldChartWindowView: View {
     private var topInteractiveHeight: CGFloat { 28 + max(toolbarHeight, 44) }
 
     private var snapshot: SaltFieldSnapshot? { controller.snapshots[account.id] }
+    /// 主连接查到的实时落位（战场没进场也有）。
+    private var liveBattlefield: SaltLiveBattlefield? { controller.liveBattlefields[account.id] }
+    /// 实时地图链的进度 / 失败文案。
+    private var liveStatus: String? { controller.liveStatus[account.id] }
     private var isPolling: Bool { controller.pollingAccountIDs.contains(account.id) }
     private var warActive: Bool { controller.warActiveAccountIDs.contains(account.id) }
 
@@ -661,20 +665,32 @@ struct SaltFieldChartWindowView: View {
 
     private var statusColor: Color {
         if isPolling, snapshot != nil { return .green }
-        if warActive { return .yellow }
+        if liveBattlefield != nil { return .green }
+        if warActive || liveStatus != nil { return .yellow }
         return .gray
     }
 
+    /// 一行状态（优先级：战场快照 → 实时地图落位 → 链中途文案 → 连接探测）。
     private var statusText: String {
         if let snapshot {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm:ss"
-            let updated = formatter.string(from: Date(timeIntervalSince1970: snapshot.timestampMs / 1000))
+            let updated = Self.clockText(snapshot.timestampMs / 1000)
             let mode = isPolling ? "轮询中" : "手动"
             return "\(mode) · \(updated) 更新"
         }
+        if let live = liveBattlefield {
+            return "战场 #\(live.battlefieldID) · \(live.clubs.count) 家落位 · "
+                + "\(Self.clockText(live.fetchedAt.timeIntervalSince1970)) 更新（等战场数据）"
+        }
+        if let text = liveStatus { return text }
         if warActive { return "已检测到盐场连接，等待战场数据…" }
         return "未检测到盐场连接（请在游戏内进入盐场战场）"
+    }
+
+    /// 时间戳（秒）→ HH:mm:ss。
+    private static func clockText(_ seconds: TimeInterval) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date(timeIntervalSince1970: seconds))
     }
 
     // MARK: 内容（按窗口模式：实时 / 历史）
@@ -690,37 +706,107 @@ struct SaltFieldChartWindowView: View {
         }
     }
 
-    @ViewBuilder
+    /// 实时内容：**地图永远先画出来**（静态骨架打底），有数据再叠实时情况——
+    ///   · 有战场快照 → 用快照节点（服务端归属 + 占领路径染色）；
+    ///   · 只有主连接落位 → 静态骨架 + 大本营联盟色/俱乐部名（参考脚本「星驰」那条路）；
+    ///   · 什么都没有 → 纯静态骨架（道路/据点/大本营），左下角角标说明卡在哪一步。
+    /// 右侧表格在没有快照时显示占位，不遮挡地图。
     private var liveContent: some View {
-        if let snapshot {
-            HStack(spacing: 0) {
-                SaltFieldMapView(snapshot: snapshot,
-                                 layout: layout,
-                                 legionNameByID: Dictionary(uniqueKeysWithValues:
-                                    snapshot.legions.map { ($0.id, $0.name) }))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                SaltFieldStatView(snapshot: snapshot,
-                                  mode: statMode)
-                    .frame(width: 430)
+        liveSplit(nodes: snapshot?.nodes ?? Self.staticNodes, snapshot: snapshot)
+    }
+
+    /// 静态骨架节点（地图底图；与快照节点同构，窗口画法不变）。
+    private static let staticNodes: [String: SaltRenderedNode] =
+        SaltFieldChartController.staticNodes()
+
+    /// 左图右表（Mini 视图里改上下堆叠——320pt 宽塞不下 430pt 的表）。
+    private func liveSplit(nodes: [String: SaltRenderedNode],
+                           snapshot: SaltFieldSnapshot?) -> some View {
+        let map = SaltFieldMapView(nodes: nodes,
+                                   layout: layout,
+                                   legionNameByID: snapshot.map { snap in
+                                       Dictionary(uniqueKeysWithValues: snap.legions.map { ($0.id, $0.name) })
+                                   } ?? [:],
+                                   clubsByPosition: liveBattlefield?.clubByPosition ?? [:])
+        let table = Group {
+            if let snapshot {
+                SaltFieldStatView(snapshot: snapshot, mode: statMode)
+            } else {
+                statPlaceholder
             }
-        } else {
-            emptyState
+        }
+        return Group {
+            if isMini {
+                VStack(spacing: 0) {
+                    map.frame(height: 300)
+                        .overlay(alignment: .bottomLeading) { mapCaption }
+                    Divider()
+                    table.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    map
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .bottomLeading) { mapCaption }
+                    Divider()
+                    table.frame(width: 430)
+                }
+            }
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "map")
-                .font(.system(size: 40))
+    /// 地图左下角角标：有落位就报「哪一场 / 几家落位 / 什么时候拉的」，
+    /// 没有就报当前卡在哪一步（未进盐场 / 正在定位 / 本月非盐场周）。
+    private var mapCaption: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(mapCaptionColor)
+                .frame(width: 6, height: 6)
+            Text(mapCaptionText)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Color.white.opacity(0.85), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.black.opacity(0.10)))
+        .padding(8)
+    }
+
+    private var mapCaptionText: String {
+        if let live = liveBattlefield {
+            return "战场 #\(live.battlefieldID) · \(live.clubs.count) 家落位 · "
+                + "\(Self.clockText(live.fetchedAt.timeIntervalSince1970)) 更新"
+        }
+        if let text = liveStatus { return text }
+        if warActive { return "已检测到盐场连接，等待战场数据…" }
+        return "未检测到盐场连接（请在游戏内进入盐场战场）"
+    }
+
+    private var mapCaptionColor: Color {
+        if liveBattlefield != nil { return .green }
+        if liveStatus != nil || warActive { return .orange }
+        return .gray
+    }
+
+    /// 右侧表格占位：地图已经画出来了，实时战况还等战场数据。
+    private var statPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "tablecells")
+                .font(.system(size: 28))
                 .foregroundStyle(.quaternary)
-            Text("暂无战场数据")
-                .font(.headline)
-            Text("确认该实例已运行并进入游戏内的盐场战场界面；\n检测到盐场连接后图表会自动开始拉取。")
-                .font(.system(size: 12))
+            Text("等待战场数据")
+                .font(.system(size: 12, weight: .semibold))
+            Text("左侧地图已按静态骨架绘制"
+                 + (liveBattlefield == nil ? "；查到俱乐部落位后会自动标上大本营。"
+                                           : "，并已标出各俱乐部的大本营落位。")
+                 + "\n实时战况（击杀/死亡/积分）需要实例进入盐场战场后才有。")
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -745,9 +831,12 @@ struct SaltFieldChartWindowView: View {
 /// 盐场六边形地图（口径照抄自助手仓 LegionWar.vue 的绘制参数）：
 /// 错列六边形（odd-q），hexSize 13.25 / gap 2.75，41 列 × 32 行，整体自适应缩放。
 struct SaltFieldMapView: View {
-    let snapshot: SaltFieldSnapshot
+    /// 渲染节点（静态骨架 + 快照里的动态归属；无快照时只传静态骨架）。
+    let nodes: [String: SaltRenderedNode]
     let layout: SaltFieldChartWindowView.MapLayout
     let legionNameByID: [Int64: String]
+    /// 大本营序号 → 俱乐部（主连接 `legion_getopponent` 的实时落位；可为空）。
+    var clubsByPosition: [Int: SaltLiveClub] = [:]
 
     private let hexSize: CGFloat = 13.25
     private let gap: CGFloat = 2.75
@@ -777,9 +866,25 @@ struct SaltFieldMapView: View {
                height: centerY(31, col: 0) + hexHeight + gap)
     }
 
-    /// 节点的最终染色：占领布局用快照染好的 colorHex；分布布局只有大本营亮俱乐部色，
-    /// 其余统一道路蓝（照抄自助手仓的分布布局口径）。
-    private func color(of node: SaltRenderedNode) -> Color {
+    /// 该大本营在实时落位表里的俱乐部（快照给了归属就不用了——服务端数据更权威）。
+    private func liveClub(of node: SaltRenderedNode) -> SaltLiveClub? {
+        guard node.isStronghold, node.belongsLegionID == nil,
+              let position = SaltFieldChartController.strongholdPosition(nodeID: node.id) else { return nil }
+        return clubsByPosition[position]
+    }
+
+    /// 节点的最终染色：
+    ///   ① 大本营且**只有主连接落位**（快照还没来）→ 用该俱乐部的联盟色
+    ///      （参考脚本「星驰」getAllianceColor 口径：梦盟红 / 大联盟绿 / 龍盟蓝）；
+    ///      认不出联盟的用大本营底色 #DC143C（参考脚本 SALT_BUILDING_TYPES[57].bgColor）
+    ///      ——联盟色表里的「未知」是近白 #f8f9fa，直接刷在六边形上会看不见。
+    ///   ② 占领布局用快照染好的 colorHex；③ 分布布局只有大本营亮俱乐部色，其余统一道路蓝
+    ///      （照抄自助手仓的分布布局口径）。
+    private func color(of node: SaltRenderedNode, club: SaltLiveClub?) -> Color {
+        if let club {
+            return SaltColorPalette.color(club.alliance == .unknown
+                                          ? "#DC143C" : club.alliance.fillHex)
+        }
         if layout == .occupy {
             return SaltColorPalette.color(node.colorHex)
         }
@@ -796,7 +901,9 @@ struct SaltFieldMapView: View {
         let offsetY = max(0, (size.height - map.height * scale) / 2)
 
         var labels: [(CGPoint, String, Color)] = []
-        for node in snapshot.nodes.values {
+        /// 俱乐部名标签：带底色的胶囊（联盟色填充 + 对应文字色），画在大本营上方。
+        var clubChips: [(CGPoint, String, SaltAlliance.Name)] = []
+        for node in nodes.values {
             let center = CGPoint(x: offsetX + centerX(node.x) * scale,
                                  y: offsetY + centerY(node.y, col: node.x) * scale)
             let radius = hexSize * scale
@@ -808,14 +915,21 @@ struct SaltFieldMapView: View {
                 if corner == 0 { path.move(to: point) } else { path.addLine(to: point) }
             }
             path.closeSubpath()
-            let fill = color(of: node)
-            context.fill(path, with: .color(fill))
+            let club = liveClub(of: node)
+            context.fill(path, with: .color(color(of: node, club: club)))
             context.stroke(path, with: .color(.black.opacity(0.22)), lineWidth: 0.6)
 
-            // 标注：大本营 → 俱乐部名；据点 → 分值短名。
-            if node.isStronghold, let legionID = node.belongsLegionID,
-               let name = legionNameByID[legionID] {
-                labels.append((center, name, .black))
+            // 标注：大本营 → 俱乐部名（快照归属优先，其次主连接落位）；据点 → 分值短名。
+            if node.isStronghold {
+                if let club {
+                    clubChips.append((CGPoint(x: center.x, y: center.y - radius * 1.25),
+                                      club.labelText, club.alliance))
+                } else if let legionID = node.belongsLegionID, let name = legionNameByID[legionID] {
+                    labels.append((center, name, .black))
+                } else if let position = SaltFieldChartController.strongholdPosition(nodeID: node.id) {
+                    // 既没归属也没落位：至少把大本营序号标出来（方便对号入座）。
+                    labels.append((center, "\(position)", .black.opacity(0.75)))
+                }
             } else if !node.isRoad {
                 labels.append((center, node.typeName, .black.opacity(0.85)))
             }
@@ -827,12 +941,30 @@ struct SaltFieldMapView: View {
                 .foregroundStyle(tint),
                 at: center)
         }
+        let chipFont = max(7, 10.5 * scale)
+        for (center, text, alliance) in clubChips {
+            let resolved = context.resolve(Text(text)
+                .font(.system(size: chipFont, weight: .semibold))
+                .foregroundStyle(SaltColorPalette.color(alliance.textHex)))
+            let measured = resolved.measure(in: CGSize(width: 900, height: 60))
+            let rect = CGRect(x: center.x - measured.width / 2 - 3.5,
+                              y: center.y - measured.height / 2 - 2,
+                              width: measured.width + 7,
+                              height: measured.height + 4)
+            context.fill(Path(roundedRect: rect, cornerRadius: 3),
+                         with: .color(SaltColorPalette.color(alliance.fillHex)))
+            context.stroke(Path(roundedRect: rect, cornerRadius: 3),
+                           with: .color(.black.opacity(0.25)), lineWidth: 0.6)
+            context.draw(resolved, at: center)
+        }
     }
 }
 
 // MARK: - 战况表
 
-/// 右侧战况表：俱乐部模式（9 列）或个人模式（10 列，全部成员按击杀排序）。
+/// 右侧战况表：俱乐部模式（11 列）或个人模式（10 列，全部成员按击杀排序）。
+/// 死亡 / K/D 是参考脚本（雪碧助手 renderGlobalWarReport）在 legion 层没有、
+/// 由成员累加出来的两个量——服务端只给每人的 `d`，俱乐部口径靠 Σ 还原。
 struct SaltFieldStatView: View {
     let snapshot: SaltFieldSnapshot
     let mode: SaltFieldChartWindowView.StatMode
@@ -847,6 +979,10 @@ struct SaltFieldStatView: View {
             }
             .padding(8)
         }
+        // ⚠️ 双向 ScrollView 在内容小于视口时会把内容**居中**（实测：只有两行数据的表
+        // 浮在面板正中，看着像没加载出来）。`frame(maxHeight: .infinity)` 之类都没用，
+        // 只有 `defaultScrollAnchor(.topLeading)` 真管用（同场对照探针 /tmp/saltfield-anchor-probe）。
+        .defaultScrollAnchor(.topLeading)
     }
 
     // MARK: 俱乐部表
@@ -856,6 +992,8 @@ struct SaltFieldStatView: View {
             GridRow {
                 statHeader("俱乐部", width: 96)
                 statHeader("击杀", width: 44)
+                statHeader("死亡", width: 44)
+                statHeader("K/D", width: 46)
                 statHeader("免费复活", width: 56)
                 statHeader("积分", width: 56)
                 statHeader("红数", width: 40)
@@ -866,8 +1004,12 @@ struct SaltFieldStatView: View {
             }
             ForEach(snapshot.legions) { legion in
                 GridRow {
-                    statCell(legion.name, width: 96, bold: true)
+                    statCell(legion.isEliminated ? "\(legion.name)·淘汰" : legion.name,
+                             width: 96, bold: true,
+                             tint: legion.isEliminated ? .secondary : nil)
                     statCell("\(legion.killCount)", width: 44)
+                    statCell("\(legion.deaths)", width: 44)
+                    statCell(legion.kdText, width: 46)
                     statCell("\(legion.reviveCount)/150", width: 56)
                     statCell("\(legion.score)", width: 56, bold: true)
                     statCell("\(legion.redCount)", width: 40,

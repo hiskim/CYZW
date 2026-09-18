@@ -6,7 +6,7 @@ import LobbyIPC
 //
 // 与 `PacketCaptureController`（通用抓包）并行的一条**专题解码线**：
 // 同样的页面帧（`PageEvent.packet`）进来，这里只关心**盐场战场连接**（游戏进盐场
-// 时自建的第二条 WSS，`war_*` 命令族）上的流量，把 `war_getbattlefieldinfo`
+// 时自建的第二条 WSS，`war_*` 命令族）上的流量，把 `war_enterbattlefield`
 // 响应解成「地图占领 + 俱乐部/个人战况」快照，供独立图表窗口渲染。
 //
 //   PageEvent.packet(PacketFrame)
@@ -14,25 +14,39 @@ import LobbyIPC
 //     → body 内层再 BON → battlefield{buildingData, legions, roles}
 //     → SaltFieldSnapshot（静态骨架合并 + 占领布局 BFS 染色）
 //
+// ⚠️ 实时数据的**命令口径以参考脚本为准**（2026-09-18 核对 雪碧助手.js / 星驰-无登录.js）：
+//   · 战场连接（实时战况）：`war_enterbattlefield { battlefieldId }`
+//     —— 雪碧助手 fetchGlobalWarReport 的主命令，响应 `body.battlefield{legions,roles,...}`。
+//     早先这里发的是 `war_getbattlefieldinfo`（指令库里 inferred 的猜测名）——两个脚本里
+//     **都没有这个命令**，服务端不认，于是快照永远为空（就是「实时战况没有数据」的根因）。
+//   · 主连接（实时地图）：`legion_getbattlefield {}` → `info{phase, battlefieldId}`；
+//     `legion_getopponent { phase, battlefieldId }` → 每条 legion 的 `position`（大本营序号）；
+//     `legion_getinfo` / `legion_getinfobyid` → 俱乐部名/服号/红淬/公告。
+//     这两步**不依赖战场连接**，盐场没进场也能查到落位，是地图能在「没快照」时也画出来的原因。
+//
 // 与抓包的分工/共存：图表开着时若抓包没开，会话模型会顺手把页面上报打开
 // （见 `LobbySessionModel.toggleSaltFieldChart`）——页面帧只有一份，两条解码线
 // 各取所需互不干扰；抓包窗口照常能看见这些帧。
 //
 // 主动轮询（实时性）：游戏页面只有玩家操作时才拉战场信息，图表要"实时"就得
-// 自己发。这里每 4s 对已开启图表的账号构一帧 `war_getbattlefieldinfo`
+// 自己发。这里每 4s 对已开启图表的账号构一帧 `war_enterbattlefield`
 // （`PacketCaptureController.buildFrame` 同源构帧），**定向**发给盐场 socket：
 //   · socket 定向：主连接与盐场连接的 URL 都含 "agent"（实测主连接
 //     `wss://xxz-xyzw.hortorgames.com/agent?…`），按 URL 挑会发错——
 //     页面代理 v3 起给每个构造的 socket 发 `sid`，盐场帧路过时记住 sid，
-//     发送时点名（`sendRawFrame(base64:socketID:)`）；
+//     发送时点名（`sendRawFrame(base64:socketID:)`）；没有盐场 sid 就说明
+//     战场连接还没出现，此时不轮询（等玩家进场，游戏自己会发第一帧）；
 //   · seq 编址：盐场连接有**独立的** seq 序列（与主连接的计数值完全无关），
 //     这里只统计 war_* 帧的 seq 维护盐场自己的 client/server 游标；
-//   · battlefieldId：来自游戏自发的心跳 `war_ping` / `war_enterbattlefield`
-//     的 body（进盐场后每 5s 一条心跳，天然持续可得）。
+//   · battlefieldId：优先取主连接 `legion_getbattlefield` 的结果（不进场也有），
+//     兜底用游戏自发的心跳 `war_ping` / `war_enterbattlefield` body 里的值。
 @MainActor
 public final class SaltFieldChartController: ObservableObject {
     /// 轮询周期（毫秒）。盐场心跳 5s 一条，4s 拉一次信息在节流与实时之间取平衡。
     public static let pollIntervalNanos: UInt64 = 4_000_000_000
+
+    /// 实时地图归属的重查间隔（以轮询拍数计；8 拍 × 4s ≈ 32s）。
+    private static let liveMapRefreshTicks = 8
 
     /// 账号 ID → 最新战场快照（图表窗口的唯一数据源）。
     @Published public private(set) var snapshots: [String: SaltFieldSnapshot] = [:]
@@ -54,6 +68,36 @@ public final class SaltFieldChartController: ObservableObject {
     @Published public private(set) var historyBusy: Set<String> = []
     /// 每账号当月 warType 缓存（key = 首周六 "YYYY/MM/DD"）。
     private var monthlyWarTypes: [String: [String: Int]] = [:]
+
+    // MARK: 实时地图归属（主连接链；与战场快照相互独立）
+    /// 账号 → 实时地图归属（phase / battlefieldId / 各俱乐部落位）。
+    @Published public private(set) var liveBattlefields: [String: SaltLiveBattlefield] = [:]
+    /// 账号 → 实时地图状态文案（窗口顶部提示 / 排错用）。
+    @Published public private(set) var liveStatus: [String: String] = [:]
+    /// 正在跑实时地图链的账号（防重入）。
+    private var liveBusy: Set<String> = []
+    /// 链中途的暂存（battlefield → opponent → 各家详情逐级填充）。
+    private struct LiveMapDraft {
+        var phase = 0
+        var battlefieldID: Int64 = 0
+        var positions: [(legionID: Int64, position: Int)] = []
+        var clubs: [SaltLiveClub] = []
+        /// 已发起详情的家数 / 已回来的家数（全回来才发布）。
+        var requested = 0
+        var received = 0
+    }
+    private var liveDrafts: [String: LiveMapDraft] = [:]
+    /// 俱乐部详情缓存（legionID → 详情）：刷新时只补没缓存的，省掉每轮 20 次往返。
+    struct ClubDetail {
+        let name: String
+        let serverID: Int64
+        let power: Int64
+        let quench: Int
+        let announcement: String
+    }
+    private var clubDetails: [Int64: ClubDetail] = [:]
+    /// 每轮实时地图最多查多少家详情（对手名单可能很长，但盐场就是 20 个大本营）。
+    private static let maxClubDetailsPerRound = 24
 
     /// 发送轮询帧要借实例的 WebView 出口。会话模型装配时接上。
     public weak var pool: GameInstancePool?
@@ -83,6 +127,10 @@ public final class SaltFieldChartController: ObservableObject {
             case totalRank(battleDate: Date)
             case legionInfo                            // 我方历史场次（warMap 名次）
             case warDetails(battleDate: Date)          // 指定日期成员明细（主路径）
+            // ── 实时地图链（主连接；口径见文件头注释）──
+            case battlefieldInfo                       // legion_getbattlefield → phase + battlefieldId
+            case opponentLegions                       // legion_getopponent → 各家 position（大本营序号）
+            case legionDetail(legionID: Int64)         // legion_getinfobyid → 俱乐部详情
 
             /// 响应 cmd（小写）是否命中本请求。legionInfo 需排除 getinfobyid——
             /// 其响应名同样包含 "legion_getinfo" 前缀，会抢走配对。
@@ -101,10 +149,22 @@ public final class SaltFieldChartController: ObservableObject {
                 case .warDetails:
                     return loweredResponseCommand.contains("legionwar_getdetails")
                         || compact.contains("legionwargetdetails")
+                case .battlefieldInfo:
+                    return loweredResponseCommand.contains("legion_getbattlefield")
+                        || compact.contains("legiongetbattlefield")
+                case .opponentLegions:
+                    return loweredResponseCommand.contains("legion_getopponent")
+                        || compact.contains("legiongetopponent")
+                case .legionDetail:
+                    return loweredResponseCommand.contains("legion_getinfobyid")
+                        || compact.contains("legiongetinfobyid")
                 }
             }
         }
+        /// 请求所属通道：历史战绩 / 实时地图（决定状态文案与 busy 标记写哪一套）。
+        enum Channel { case history, live }
         let kind: Kind
+        let channel: Channel
         let command: String
         let paramsJSON: String
         var seq: Int64
@@ -164,6 +224,16 @@ public final class SaltFieldChartController: ObservableObject {
             state.battlefieldID = id
             changedLink = true
         }
+        // 游戏自己发的进场帧：把它的 body 结构打一条日志（每账号一次）——
+        // 我们轮询的 params 就是照它抄的，出问题时这是唯一可对照的现场。
+        if frame.direction == "send", lowered.contains("war_enterbattlefield") {
+            let key = "\(accountID)#enterSend"
+            if unmatchedLogCounts[key, default: 0] == 0 {
+                unmatchedLogCounts[key] = 1
+                LobbyLog.info("[saltfield] %@ 游戏进场帧结构：%@",
+                              accountID, Self.describeBodyKeys(inner: decoded.inner))
+            }
+        }
 
         // 盐场 seq 游标（与主连接完全独立的两套计数）。
         if let seq = decoded.seq, seq > 0 {
@@ -175,8 +245,20 @@ public final class SaltFieldChartController: ObservableObject {
         }
 
         // 战场信息响应 → 快照。
-        if frame.direction == "recv", lowered.contains("war_getbattlefieldinfo"),
+        //
+        // ⚠️ 命令是 `war_enterbattlefield`（不是早先猜的 war_getbattlefieldinfo）：
+        //    · 游戏自己在玩家进盐场时会发它 —— 白捡一份快照，不用等我们的轮询；
+        //    · 我们的 4s 轮询也发它（见 poll），响应走同一条路。
+        // 旧名保留在判断里只是为了兼容可能存在的服务端别名，无副作用。
+        if frame.direction == "recv",
+           lowered.contains("war_enterbattlefield") || lowered.contains("war_getbattlefieldinfo"),
            let body = decoded.inner, let battlefield = body.path("battlefield")?.objectValue {
+            // 响应里的 battlefieldId 优先（进战场那一刻我们可能还没学到 id）。
+            let responseID = body.path("battlefieldId")?.intValue ?? 0
+            if responseID > 0, state.battlefieldID != responseID {
+                state.battlefieldID = responseID
+                changedLink = true
+            }
             let snapshot = Self.buildSnapshot(battlefield: battlefield,
                                               battlefieldID: state.battlefieldID,
                                               timestampMs: frame.timestampMs)
@@ -187,6 +269,16 @@ public final class SaltFieldChartController: ObservableObject {
             LobbyLog.info("[saltfield] %@ 战场快照更新：据点 %ld 俱乐部 %ld 成员 %ld（%ld 字节）",
                           accountID, snapshot.nodes.count,
                           snapshot.legions.count, snapshot.members.count, frame.byteCount)
+        } else if frame.direction == "recv", lowered.contains("war_enterbattlefield") {
+            // 收到进场响应却解不出 battlefield：结构诊断（服务端换字段 / 压了 body /
+            // 我们发的 params 不对，都会落到这里）。限 3 条防刷屏。
+            let key = "\(accountID)#enter"
+            let count = unmatchedLogCounts[key, default: 0]
+            unmatchedLogCounts[key] = count + 1
+            if count < 3 {
+                LobbyLog.warn("[saltfield] %@ war_enterbattlefield 响应无 battlefield 字段（结构：%@）",
+                              accountID, Self.describeBodyKeys(inner: decoded.inner))
+            }
         }
 
         if !warActiveAccountIDs.contains(accountID) {
@@ -229,23 +321,32 @@ public final class SaltFieldChartController: ObservableObject {
         historyStatus.removeValue(forKey: accountID)
         historyDetails.removeValue(forKey: accountID)
         chainedBattleDate.removeValue(forKey: accountID)
+        // 实时地图归属（与快照同生命周期：实例关了就没有「实时」可言）
+        liveBattlefields.removeValue(forKey: accountID)
+        liveStatus.removeValue(forKey: accountID)
+        liveBusy.remove(accountID)
+        liveDrafts.removeValue(forKey: accountID)
     }
 
     // MARK: - 轮询
 
     /// 开/关某账号的主动轮询（图表窗口开关的直连入口）。
+    /// 开启时顺手拉一轮实时地图归属（主连接链）——它不依赖战场连接，
+    /// 是「窗口一打开就有东西看」的那条路。
     public func setPolling(_ enabled: Bool, accountID: String) {
         if enabled {
             pollingAccountIDs.insert(accountID)
+            refreshLiveMap(accountID: accountID)
         } else {
             pollingAccountIDs.remove(accountID)
         }
         startPollLoopIfNeeded()
     }
 
-    /// 立即对指定账号拉一轮（图表窗口的「立即拉取」按钮）。
+    /// 立即对指定账号拉一轮（图表窗口的「立即拉取」按钮）：战场快照 + 地图归属。
     public func pollNow(accountID: String) {
         poll(accountID: accountID)
+        refreshLiveMap(accountID: accountID)
     }
 
     // MARK: - 历史战绩查询（主连接；协议口径见 SaltFieldModels 注释）
@@ -299,13 +400,14 @@ public final class SaltFieldChartController: ObservableObject {
     private var historyChainTasks: [String: Task<Void, Never>] = [:]
 
     private func enqueueHistorySend(accountID: String, command: String, paramsJSON: String,
-                                    kind: PendingHistoryQuery.Kind, startStatus: String) {
+                                    kind: PendingHistoryQuery.Kind, startStatus: String,
+                                    channel: PendingHistoryQuery.Channel = .history) {
         let previous = historyChainTasks[accountID]
         historyChainTasks[accountID] = Task { @MainActor [weak self] in
             _ = await previous?.value
             await self?.performHistorySend(accountID: accountID, command: command,
                                            paramsJSON: paramsJSON, kind: kind,
-                                           startStatus: startStatus)
+                                           startStatus: startStatus, channel: channel)
         }
     }
 
@@ -314,15 +416,17 @@ public final class SaltFieldChartController: ObservableObject {
     /// 撞号 seq 会被服务端静默丢弃），且响应经封装的 Promise 直接带回（body 已由
     /// 游戏解码），无需抓包流配对。封装不可用时回退「原生日发 + pending 匹配」。
     private func performHistorySend(accountID: String, command: String, paramsJSON: String,
-                                    kind: PendingHistoryQuery.Kind, startStatus: String) async {
+                                    kind: PendingHistoryQuery.Kind, startStatus: String,
+                                    channel: PendingHistoryQuery.Channel) async {
         guard let instance = pool?.existingSurface(forAccountID: accountID) else {
-            historyStatus[accountID] = "实例未运行"
+            setBusy(channel, accountID: accountID, busy: false)
+            setStatus(channel, accountID: accountID, text: "实例未运行")
             return
         }
-        historyBusy.insert(accountID)
-        historyStatus[accountID] = startStatus
-        let pending = PendingHistoryQuery(kind: kind, command: command, paramsJSON: paramsJSON,
-                                          seq: 0, issuedAt: Date())
+        setBusy(channel, accountID: accountID, busy: true)
+        setStatus(channel, accountID: accountID, text: startStatus)
+        let pending = PendingHistoryQuery(kind: kind, channel: channel, command: command,
+                                          paramsJSON: paramsJSON, seq: 0, issuedAt: Date())
         let js = PacketCaptureScript.sendViaGame(command: command, paramsJSON: paramsJSON)
         let responseText = await instance.evaluatePageJS(js)
         guard let inner = Self.parseViaGameResponse(responseText) else {
@@ -332,6 +436,23 @@ public final class SaltFieldChartController: ObservableObject {
             return
         }
         handleHistoryResponse(pending: pending, inner: inner, accountID: accountID)
+    }
+
+    /// 通道 → 状态文案 / busy 标记（历史战绩与实时地图各一套，互不覆盖）。
+    private func setStatus(_ channel: PendingHistoryQuery.Channel, accountID: String, text: String) {
+        switch channel {
+        case .history: historyStatus[accountID] = text
+        case .live: liveStatus[accountID] = text
+        }
+    }
+
+    private func setBusy(_ channel: PendingHistoryQuery.Channel, accountID: String, busy: Bool) {
+        switch channel {
+        case .history:
+            if busy { historyBusy.insert(accountID) } else { historyBusy.remove(accountID) }
+        case .live:
+            if busy { liveBusy.insert(accountID) } else { liveBusy.remove(accountID) }
+        }
     }
 
     /// 解析 sendViaGame 的页面回执：`{"__ok":true,"data":…}` → data 的 BonValue 树。
@@ -349,22 +470,24 @@ public final class SaltFieldChartController: ObservableObject {
 
     /// 回退通道：原生日发（sendRawFrame + pending 响应匹配 + 超时重试）。
     private func fallbackSendRaw(accountID: String, pending: PendingHistoryQuery) {
+        let channel = pending.channel
         guard let main = mainStates[accountID],
               main.socketID >= 0 || main.serverSeq > 0 else {
-            historyBusy.remove(accountID)
-            historyStatus[accountID] = "主连接未就绪：请先启动该账号的游戏实例"
+            setBusy(channel, accountID: accountID, busy: false)
+            setStatus(channel, accountID: accountID, text: "主连接未就绪：请先启动该账号的游戏实例")
             return
         }
         guard let instance = pool?.existingSurface(forAccountID: accountID) else {
-            historyBusy.remove(accountID)
-            historyStatus[accountID] = "实例未运行"
+            setBusy(channel, accountID: accountID, busy: false)
+            setStatus(channel, accountID: accountID, text: "实例未运行")
             return
         }
         let seq = main.clientSeq + 1
         guard let frame = try? PacketCaptureController.buildFrame(
             command: pending.command, paramsJSON: pending.paramsJSON,
             ack: main.serverSeq, seq: seq) else {
-            historyStatus[accountID] = "构帧失败"
+            setBusy(channel, accountID: accountID, busy: false)
+            setStatus(channel, accountID: accountID, text: "构帧失败")
             return
         }
         mainStates[accountID]?.clientSeq = seq
@@ -378,7 +501,8 @@ public final class SaltFieldChartController: ObservableObject {
             let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString(),
                                                          socketID: socketID)
             if !diagnostic.hasPrefix("sent") {
-                self?.historyStatus[accountID] = "发送失败：\(diagnostic)"
+                self?.setStatus(pending.channel, accountID: accountID,
+                                text: "发送失败：\(diagnostic)")
                 self?.pendingHistory[accountID]?.removeAll { $0.seq == seq }
                 LobbyLog.warn("[saltfield-history] %@ 发送 %@ 失败：%@",
                               accountID, pending.command, diagnostic)
@@ -403,13 +527,13 @@ public final class SaltFieldChartController: ObservableObject {
                 LobbyLog.warn("[saltfield-history] %@ %@ 无响应（seq=%lld），重试 %ld/%ld",
                               accountID, pending.command, seq,
                               pending.retryCount + 1, Self.maxRetry)
-                self.historyStatus[accountID] =
-                    "无响应，自动重试 \(pending.retryCount + 1)/\(Self.maxRetry)（seq 序列校验或 cmd 匹配问题）"
+                self.setStatus(pending.channel, accountID: accountID,
+                               text: "无响应，自动重试 \(pending.retryCount + 1)/\(Self.maxRetry)（seq 序列校验或 cmd 匹配问题）")
                 self.resendHistoryFrame(accountID: accountID, pending: pending)
             } else {
-                self.historyBusy.remove(accountID)
-                self.historyStatus[accountID] =
-                    "查询失败：\(pending.command) 重试 \(Self.maxRetry) 次均无响应（服务端可能丢弃了不连续的 seq，建议稍后再试）"
+                self.setBusy(pending.channel, accountID: accountID, busy: false)
+                self.setStatus(pending.channel, accountID: accountID,
+                               text: "查询失败：\(pending.command) 重试 \(Self.maxRetry) 次均无响应（服务端可能丢弃了不连续的 seq，建议稍后再试）")
                 LobbyLog.warn("[saltfield-history] %@ %@ 重试耗尽", accountID, pending.command)
             }
         }
@@ -419,8 +543,8 @@ public final class SaltFieldChartController: ObservableObject {
     private func resendHistoryFrame(accountID: String, pending: PendingHistoryQuery) {
         guard let main = mainStates[accountID],
               let instance = pool?.existingSurface(forAccountID: accountID) else {
-            historyBusy.remove(accountID)
-            historyStatus[accountID] = "实例未运行，查询中断"
+            setBusy(pending.channel, accountID: accountID, busy: false)
+            setStatus(pending.channel, accountID: accountID, text: "实例未运行，查询中断")
             return
         }
         let seq = main.clientSeq + 1
@@ -548,7 +672,144 @@ public final class SaltFieldChartController: ObservableObject {
                                                           fetchedAt: Date())
             LobbyLog.info("[saltfield-history] %@ 榜单 %ld 条（date=%@）",
                           accountID, rows.count, SaltHistoryCatalog.yymmddString(of: battleDate))
+        case .battlefieldInfo:
+            // 第一步：legion_getbattlefield → phase + battlefieldId。
+            guard let info = Self.parseBattlefieldInfo(inner: inner) else {
+                setBusy(.live, accountID: accountID, busy: false)
+                setStatus(.live, accountID: accountID,
+                          text: "未找到盐场战场（本月非盐场周 / 尚未报名？）")
+                LobbyLog.warn("[saltfield-live] %@ legion_getbattlefield 无 battlefieldId，结构：%@",
+                              accountID, Self.describeBodyKeys(inner: inner))
+                return
+            }
+            var draft = LiveMapDraft()
+            draft.phase = info.phase
+            draft.battlefieldID = info.battlefieldID
+            liveDrafts[accountID] = draft
+            // 顺手喂给战场连接状态：即使游戏没发过心跳，战场轮询也能靠它起步。
+            var linkState = states[accountID] ?? WarLinkState()
+            if linkState.battlefieldID != info.battlefieldID {
+                linkState.battlefieldID = info.battlefieldID
+                states[accountID] = linkState
+            }
+            setStatus(.live, accountID: accountID,
+                      text: "已定位战场 #\(info.battlefieldID)（phase \(info.phase)），正在查对手…")
+            LobbyLog.info("[saltfield-live] %@ 战场 #%lld phase=%ld",
+                          accountID, info.battlefieldID, info.phase)
+            enqueueHistorySend(accountID: accountID,
+                               command: "legion_getopponent",
+                               paramsJSON: "{\"phase\":\(info.phase),\"battlefieldId\":\(info.battlefieldID)}",
+                               kind: .opponentLegions,
+                               startStatus: "正在查对手俱乐部…",
+                               channel: .live)
+        case .opponentLegions:
+            // 第二步：拿到各家 position（大本营序号）→ 补详情（缓存命中直接用）。
+            guard var draft = liveDrafts[accountID] else { return }
+            let entries = Self.parseOpponentLegions(inner: inner)
+            guard !entries.isEmpty else {
+                setBusy(.live, accountID: accountID, busy: false)
+                setStatus(.live, accountID: accountID,
+                          text: "战场 #\(draft.battlefieldID) 没有对手名单（可能尚未分组）")
+                LobbyLog.warn("[saltfield-live] %@ legion_getopponent 无 legions，结构：%@",
+                              accountID, Self.describeBodyKeys(inner: inner))
+                return
+            }
+            draft.positions = entries
+            draft.clubs = []
+            draft.requested = 0
+            draft.received = 0
+            var missing: [Int64] = []
+            for entry in entries {
+                if let detail = clubDetails[entry.legionID] {
+                    draft.clubs.append(Self.club(legionID: entry.legionID, position: entry.position,
+                                                 detail: detail))
+                } else if missing.count < Self.maxClubDetailsPerRound {
+                    missing.append(entry.legionID)
+                }
+            }
+            draft.requested = missing.count
+            liveDrafts[accountID] = draft
+            LobbyLog.info("[saltfield-live] %@ 对手 %ld 家（缓存命中 %ld，待补 %ld）",
+                          accountID, entries.count, draft.clubs.count, missing.count)
+            guard !missing.isEmpty else {
+                publishLiveBattlefield(accountID: accountID)
+                return
+            }
+            setStatus(.live, accountID: accountID,
+                      text: "战场 #\(draft.battlefieldID)：\(entries.count) 家俱乐部，正在补详情…")
+            for legionID in missing {
+                enqueueHistorySend(accountID: accountID,
+                                   command: "legion_getinfobyid",
+                                   paramsJSON: "{\"legionId\":\(legionID)}",
+                                   kind: .legionDetail(legionID: legionID),
+                                   startStatus: "正在补俱乐部详情…",
+                                   channel: .live)
+            }
+        case .legionDetail(let legionID):
+            // 第三步：逐家详情回填，全回来（或到上限）后发布。
+            guard var draft = liveDrafts[accountID] else { return }
+            if let detail = Self.parseClubDetail(inner: inner) {
+                clubDetails[legionID] = detail
+                if let position = draft.positions.first(where: { $0.legionID == legionID })?.position {
+                    draft.clubs.removeAll { $0.legionID == legionID }
+                    draft.clubs.append(Self.club(legionID: legionID, position: position,
+                                                 detail: detail))
+                }
+            } else {
+                LobbyLog.warn("[saltfield-live] %@ 俱乐部 %lld 详情解析为空，结构：%@",
+                              accountID, legionID, Self.describeBodyKeys(inner: inner))
+            }
+            draft.received += 1
+            liveDrafts[accountID] = draft
+            if draft.received >= draft.requested {
+                publishLiveBattlefield(accountID: accountID)
+            }
         }
+    }
+
+    /// 俱乐部详情 → 地图归属条目。
+    private static func club(legionID: Int64, position: Int,
+                             detail: ClubDetail) -> SaltLiveClub {
+        SaltLiveClub(legionID: legionID, position: position, name: detail.name,
+                     serverID: detail.serverID, power: detail.power,
+                     quench: detail.quench, announcement: detail.announcement)
+    }
+
+    /// 发布一轮实时地图归属（按大本营序号排序）。
+    private func publishLiveBattlefield(accountID: String) {
+        guard let draft = liveDrafts[accountID] else { return }
+        let clubs = draft.clubs.sorted {
+            $0.position != $1.position ? $0.position < $1.position : $0.legionID < $1.legionID
+        }
+        liveBattlefields[accountID] = SaltLiveBattlefield(phase: draft.phase,
+                                                          battlefieldID: draft.battlefieldID,
+                                                          clubs: clubs,
+                                                          fetchedAt: Date())
+        setBusy(.live, accountID: accountID, busy: false)
+        var counts: [SaltAlliance.Name: Int] = [:]
+        for club in clubs { counts[club.alliance, default: 0] += 1 }
+        let allianceText = SaltAlliance.Name.allCases
+            .filter { $0 != .unknown }
+            .compactMap { name in counts[name].map { "\(name.rawValue)\($0)" } }
+            .joined(separator: " ")
+        setStatus(.live, accountID: accountID,
+                  text: "战场 #\(draft.battlefieldID) 已定位：\(clubs.count) 家俱乐部落位"
+                        + (allianceText.isEmpty ? "" : "（\(allianceText)）"))
+        LobbyLog.info("[saltfield-live] %@ 实时地图归属发布：%ld 家（phase=%ld battlefieldId=%lld）",
+                      accountID, clubs.count, draft.phase, draft.battlefieldID)
+    }
+
+    /// 刷新实时地图归属（主连接链：战场 → 对手 → 各家详情）。**不依赖战场连接**。
+    public func refreshLiveMap(accountID: String) {
+        guard !liveBusy.contains(accountID) else { return }
+        liveBusy.insert(accountID)
+        setStatus(.live, accountID: accountID, text: "正在定位盐场战场…")
+        enqueueHistorySend(accountID: accountID,
+                           command: "legion_getbattlefield",
+                           paramsJSON: "{}",
+                           kind: .battlefieldInfo,
+                           startStatus: "正在定位盐场战场…",
+                           channel: .live)
     }
 
     /// warType 链式查询时的目标场次日期（在 issueTotalRank 之前由 UI 写入）。
@@ -574,15 +835,24 @@ public final class SaltFieldChartController: ObservableObject {
     private func startPollLoopIfNeeded() {
         guard pollTask == nil, !pollingAccountIDs.isEmpty else { return }
         pollTask = Task { @MainActor [weak self] in
+            var tick = 0
             while let self, !self.pollingAccountIDs.isEmpty {
                 self.pollOnce()
+                // 实时地图归属（主连接链）不必每 4s 重查：落位在开场几分钟内就定了，
+                // 每 8 拍（≈32s）刷一次足够，且不会跟战场轮询抢游戏封装的发送队列。
+                tick += 1
+                if tick % Self.liveMapRefreshTicks == 0 {
+                    for accountID in self.pollingAccountIDs {
+                        self.refreshLiveMap(accountID: accountID)
+                    }
+                }
                 try? await Task.sleep(nanoseconds: Self.pollIntervalNanos)
             }
             self?.pollTask = nil
         }
     }
 
-    /// 对所有开启轮询的账号发一轮 `war_getbattlefieldinfo`。
+    /// 对所有开启轮询的账号发一轮 `war_enterbattlefield`。
     private func pollOnce() {
         for accountID in pollingAccountIDs {
             poll(accountID: accountID)
@@ -590,14 +860,24 @@ public final class SaltFieldChartController: ObservableObject {
     }
 
     private func poll(accountID: String) {
-        guard let state = states[accountID], state.battlefieldID > 0 else { return }
         guard let instance = pool?.existingSurface(forAccountID: accountID) else { return }
+        // battlefieldId：优先游戏心跳/进场帧学到的，其次主连接查到的（legion_getbattlefield）。
+        let battlefieldID = states[accountID].flatMap { $0.battlefieldID > 0 ? $0.battlefieldID : nil }
+            ?? liveBattlefields[accountID]?.battlefieldID ?? 0
+        guard battlefieldID > 0 else { return }
+        // 盐场 socket 必须先出现过（sid 从 war_* 流量学到）。没出现 = 玩家还没进盐场，
+        // 此时发也没用，而且会误发到主连接上（主/盐场 URL 都含 "agent"，无法按 URL 区分）。
+        guard let state = states[accountID], state.socketID >= 0 else { return }
         // ack = 盐场最近响应 seq；seq = 盐场 client 游标 + 1（发送后即推进游标，
         // 与游戏自己的盐场请求交错使用同一连续序列——服务端按连续性校验）。
+        //
+        // ⚠️ 刻意**不带** `useGzip`（参考脚本传的是 useGzip:true）：我们这条是原生帧通道，
+        // body 由宿主自己解 BON；一旦服务端压了 body，`XorFrameCipher.open` + `Bon.decode`
+        // 就解不开（诊断日志会打「响应无 battlefield 字段」）。不带这个参数时服务端回明文。
         let seq = state.clientSeq + 1
         guard let frame = try? PacketCaptureController.buildFrame(
-            command: "war_getbattlefieldinfo",
-            paramsJSON: "{\"battlefieldId\":\(state.battlefieldID)}",
+            command: "war_enterbattlefield",
+            paramsJSON: "{\"battlefieldId\":\(battlefieldID)}",
             ack: state.serverSeq,
             seq: seq) else { return }
         states[accountID]?.clientSeq = seq
@@ -662,6 +942,9 @@ public final class SaltFieldChartController: ObservableObject {
             var colorIndex = 0
             var power: Int64 = 0
             var killCount: Int64 = 0
+            var deaths: Int64 = 0
+            var digGround: Int64 = 0
+            var combo: Int64 = 0
             var redCount: Int64 = 0
             var memberCount = 0
             var participantsCount = 0
@@ -673,6 +956,8 @@ public final class SaltFieldChartController: ObservableObject {
             var buildingIDs: [String] = []
             var strongholdID = ""
             var score: Int64 = 0
+            /// 服务端状态原文（normal=正常；其余按已淘汰处理）。
+            var state = ""
         }
         var drafts: [Int64: LegionDraft] = [:]
         forEachEntry(battlefield["legions"]) { _, value in
@@ -688,6 +973,7 @@ public final class SaltFieldChartController: ObservableObject {
             draft.blessingCount = object["blessingIdList"]?.arrayValue?.count ?? 0
             draft.blessingScore = object["blessingScore"]?.intValue ?? 0
             draft.strongholdID = object["strongholdId"]?.stringValue ?? ""
+            draft.state = object["state"]?.stringValue ?? ""
             var buildingIDs: [String] = []
             forEachEntry(object["buildings"]) { key, _ in
                 buildingIDs.append(key)
@@ -729,6 +1015,10 @@ public final class SaltFieldChartController: ObservableObject {
                 if object["isOnline"]?.boolValue == true { draft.onlineCount += 1 }
                 draft.reviveCount += revive
                 draft.danCount += max(0, die - 6)
+                // 参考脚本口径：死亡 / 刨地 / 连击在 legion 层没有，按成员累加。
+                draft.deaths += die
+                draft.digGround += object["aB"]?.intValue ?? 0
+                draft.combo += object["mCK"]?.intValue ?? 0
                 drafts[legionID] = draft
             }
         }
@@ -737,6 +1027,7 @@ public final class SaltFieldChartController: ObservableObject {
         let saltLegions = legions.map { draft in
             SaltLegion(id: draft.id, name: draft.name, colorIndex: draft.colorIndex,
                        power: draft.power, killCount: draft.killCount,
+                       deaths: draft.deaths, digGround: draft.digGround, combo: draft.combo,
                        reviveCount: draft.reviveCount, danCount: draft.danCount,
                        redCount: draft.redCount, memberCount: draft.memberCount,
                        participantsCount: draft.participantsCount,
@@ -745,7 +1036,8 @@ public final class SaltFieldChartController: ObservableObject {
                        blessingScore: draft.blessingScore, score: draft.score,
                        buildingCount: draft.buildingIDs.count,
                        buildingIDs: draft.buildingIDs,
-                       strongholdID: draft.strongholdID)
+                       strongholdID: draft.strongholdID,
+                       state: draft.state)
         }
 
         // ── 4. 地图渲染节点（静态骨架 + 动态归属 + 占领路径染色）──
@@ -769,7 +1061,66 @@ public final class SaltFieldChartController: ObservableObject {
         }
     }
 
+    // MARK: 实时地图链解析（主连接；口径见文件头注释与 SaltFieldModels）
+    //
+    // 三个响应都是「业务体」，与战场快照一样可能被 `info` / `legionData` 包一层，
+    // 也可能直接摊在顶层——统一按「先取包装、再退化到顶层」解析，结构出入靠诊断日志定位。
+
+    /// `legion_getbattlefield` → (phase, battlefieldId)。
+    static func parseBattlefieldInfo(inner: BonValue?) -> (phase: Int, battlefieldID: Int64)? {
+        let node = inner?.path("info") ?? inner
+        let id = node?.path("battlefieldId")?.intValue
+            ?? node?.path("battlefieldID")?.intValue
+            ?? 0
+        guard id > 0 else { return nil }
+        let phase = node?.path("phase")?.intValue ?? 0
+        return (Int(phase), id)
+    }
+
+    /// `legion_getopponent` → [(legionID, position)]（position = 大本营序号）。
+    static func parseOpponentLegions(inner: BonValue?) -> [(legionID: Int64, position: Int)] {
+        var result: [(legionID: Int64, position: Int)] = []
+        let container = inner?.path("legions") ?? inner?.path("info")?.path("legions")
+        forEachEntry(container) { _, value in
+            guard let object = value.objectValue else { return }
+            let id = object["legionId"]?.intValue ?? object["id"]?.intValue ?? 0
+            guard id > 0 else { return }
+            let position = object["position"]?.intValue ?? 0
+            result.append((id, Int(position)))
+        }
+        return result.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
+    }
+
+    /// `legion_getinfobyid` / `legion_getinfo` → 俱乐部详情（名字是必需项，缺了当解析失败）。
+    static func parseClubDetail(inner: BonValue?) -> ClubDetail? {
+        let node = inner?.path("legionData") ?? inner?.path("info") ?? inner
+        guard let object = node?.objectValue else { return nil }
+        let name = object["name"]?.stringValue ?? ""
+        guard !name.isEmpty else { return nil }
+        return ClubDetail(name: name,
+                          serverID: object["serverId"]?.intValue ?? object["serverID"]?.intValue ?? 0,
+                          power: object["power"]?.intValue ?? 0,
+                          quench: Int(object["quenchNum"]?.intValue ?? 0),
+                          announcement: object["announcement"]?.stringValue ?? "")
+    }
+
     // MARK: 历史响应解析
+
+    /// 静态骨架的渲染节点（无战场快照时地图的底图：道路 + 各分据点 + 大本营 + 核心，
+    /// 不带任何归属染色）。给 UI 用，所以是 public。
+    public static func staticNodes() -> [String: SaltRenderedNode] {
+        renderNodes(buildings: [:], legions: [])
+    }
+
+    /// 大本营序号 → 地图节点 id（静态表见 `SaltFieldRoadPoints.strongholdNodeIDs`）。
+    public static func strongholdNodeID(position: Int) -> String? {
+        SaltFieldRoadPoints.strongholdNodeID(position: position)
+    }
+
+    /// 地图节点 id → 大本营序号（实时落位查表用）。
+    public static func strongholdPosition(nodeID: String) -> Int? {
+        SaltFieldRoadPoints.strongholdPositionByNodeID[nodeID]
+    }
 
     /// `legion_getinfo` → 我方历史场次（口径照抄自助手仓 ClubHistoryRecords：
     /// warMap 按周分组 → flatten → reverse；warRank 同步 reverse 对齐）。

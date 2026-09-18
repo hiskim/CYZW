@@ -26,6 +26,12 @@ public struct SaltLegion: Sendable, Identifiable {
     public let power: Int64
     /// 击杀数（`killCnt`）。
     public let killCount: Int64
+    /// 死亡数（Σ role.d——服务端 legion 层不给，参考脚本同样按成员累加）。
+    public let deaths: Int64
+    /// 刨地次数（Σ role.aB）。
+    public let digGround: Int64
+    /// 连击（Σ role.mCK）。
+    public let combo: Int64
     /// 免费复活已用合计（Σ role.revive，上限 150）。
     public let reviveCount: Int64
     /// 复活丹合计（Σ max(0, role.d - 6)）。
@@ -47,9 +53,22 @@ public struct SaltLegion: Sendable, Identifiable {
     public let buildingIDs: [String]
     /// 大本营坐标（"x_y"）。
     public let strongholdID: String
+    /// 服务端状态原文（`state`：normal=正常，其余=已淘汰）。
+    public let state: String
 
     /// 免费复活剩余（150 − 已用，下限 0）。
     public var reviveRemaining: Int64 { max(0, 150 - reviveCount) }
+
+    /// 是否已淘汰（`state != "normal"`）。
+    public var isEliminated: Bool { state != "normal" }
+
+    public var stateText: String { isEliminated ? "已淘汰" : "正常" }
+
+    /// K/D（击杀 ÷ 死亡；零死亡按击杀数展示，口径同参考脚本）。
+    public var kdText: String {
+        guard deaths > 0 else { return "\(killCount)" }
+        return String(format: "%.2f", Double(killCount) / Double(deaths))
+    }
 }
 
 /// 一个成员的战况（`roles` 条目）。
@@ -134,6 +153,107 @@ public struct SaltFieldSnapshot: Sendable {
     public let legions: [SaltLegion]
     /// 成员战况（击杀降序）。
     public let members: [SaltMember]
+}
+
+// MARK: - 实时地图归属（主连接查询：战场 → 对手 → 俱乐部详情）
+//
+// 两个参考脚本各出一半，合起来才是完整的「实时盐场」：
+//   · 雪碧助手 → **战场连接** `war_enterbattlefield { battlefieldId }` 拿实时战况
+//     （`battlefield.legions` / `battlefield.roles`，见 renderGlobalWarReport 的统计口径）；
+//   · 星驰     → **主连接** `legion_getbattlefield`（phase + battlefieldId）→
+//     `legion_getopponent { phase, battlefieldId }`（每条 legion 的 `position` = 大本营序号）→
+//     `legion_getinfo` / `legion_getinfobyid`（俱乐部名 / 服号 / 红淬 / 公告）。
+//     这是**实时地图**的数据源：服务端只给序号，坐标由静态表换算
+//     （`SaltFieldRoadPoints.strongholdNodeID(position:)`）。
+//
+// 为什么两条都要：战场连接只在「玩家人在盐场战场界面」时存在；主连接任何时候都在。
+// 所以没进场时地图仍能标出各俱乐部的落位，进场后叠加实时战况。
+
+/// 联盟口径（参考脚本「星驰」`getAllianceColor`：靠俱乐部公告里的关键词分盟）。
+public enum SaltAlliance {
+    public enum Name: String, CaseIterable, Sendable {
+        case meng = "梦盟"
+        case union = "大联盟"
+        case dragon = "龍盟"
+        case unknown = "未知联盟"
+
+        /// 地图填充色（参考脚本三盟配色原值）。
+        public var fillHex: String {
+            switch self {
+            case .meng: return "#ff6b6b"
+            case .union: return "#26de81"
+            case .dragon: return "#48dbfb"
+            case .unknown: return "#f8f9fa"
+            }
+        }
+
+        /// 标签文字色（深底白字 / 浅底深字）。
+        public var textHex: String {
+            switch self {
+            case .meng, .union: return "#ffffff"
+            case .dragon, .unknown: return "#333333"
+            }
+        }
+    }
+
+    /// 公告 → 联盟（大小写不敏感；「龍盟」与「龙盟」都认）。
+    public static func name(of announcement: String) -> Name {
+        let text = announcement.lowercased()
+        if text.contains("梦盟") { return .meng }
+        if text.contains("大联盟") { return .union }
+        if text.contains("龍盟") || text.contains("龙盟") { return .dragon }
+        return .unknown
+    }
+}
+
+/// 一家参战俱乐部（`legion_getopponent` 的 position + `legion_getinfobyid` 的详情）。
+public struct SaltLiveClub: Sendable, Identifiable {
+    public let legionID: Int64
+    /// 大本营序号（1...20；格子由 `SaltFieldRoadPoints.strongholdNodeID(position:)` 换算）。
+    public let position: Int
+    public let name: String
+    public let serverID: Int64
+    public let power: Int64
+    /// 红淬数（`quenchNum`）。
+    public let quench: Int
+    /// 俱乐部公告（联盟色靠它识别）。
+    public let announcement: String
+
+    public var id: Int64 { legionID }
+
+    /// 地图标签（参考脚本口径：`【N服】俱乐部名`；服号缺失时只留名字）。
+    public var labelText: String { serverID > 0 ? "【\(serverID)服】\(name)" : name }
+
+    public var alliance: SaltAlliance.Name { SaltAlliance.name(of: announcement) }
+
+    /// 战力显示（亿/万档，与战况表同口径）。
+    public var powerText: String {
+        if power >= 100_000_000 { return String(format: "%.2f亿", Double(power) / 100_000_000) }
+        if power >= 10_000 { return String(format: "%.1f万", Double(power) / 10_000) }
+        return "\(power)"
+    }
+}
+
+/// 一次实时地图归属查询的结果（主连接链：战场 → 对手 → 各家详情）。
+public struct SaltLiveBattlefield: Sendable {
+    /// 场次阶段（查对手要带上）。
+    public let phase: Int
+    public let battlefieldID: Int64
+    /// 参战俱乐部（按大本营序号升序）。
+    public let clubs: [SaltLiveClub]
+    public let fetchedAt: Date
+
+    /// 大本营序号 → 俱乐部（地图标签查表用）。
+    public var clubByPosition: [Int: SaltLiveClub] {
+        Dictionary(uniqueKeysWithValues: clubs.map { ($0.position, $0) })
+    }
+
+    /// 按联盟分组的俱乐部数（诊断 / 图例用）。
+    public var allianceCounts: [SaltAlliance.Name: Int] {
+        var counts: [SaltAlliance.Name: Int] = [:]
+        for club in clubs { counts[club.alliance, default: 0] += 1 }
+        return counts
+    }
 }
 
 // MARK: - 历史战绩（主连接查询，任意时间可查）
