@@ -743,22 +743,22 @@ struct SaltHistoryView: View {
     private var isBusy: Bool { controller.historyBusy.contains(account.id) }
     private var statusText: String { controller.historyStatus[account.id] ?? "" }
 
-    /// 当前月里 day → 我方场次（日历徽标）。
-    private var battleByDay: [Int: SaltHistoryBattle] {
-        var result: [Int: SaltHistoryBattle] = [:]
-        for battle in battles where isSameMonth(battle.date, month) {
-            result[Calendar.current.component(.day, from: battle.date)] = battle
-        }
-        return result
+    /// 当前月的我方场次。
+    private var battlesOfMonth: [SaltHistoryBattle] {
+        battles.filter { isSameMonth($0.date, month) }
     }
 
-    /// 当前月的盐场日（day → 该日 Date）。
-    private var saltDays: [Int: Date] {
-        var result: [Int: Date] = [:]
-        for date in SaltHistoryCatalog.saltDates(in: month) where isSameMonth(date, month) {
-            result[Calendar.current.component(.day, from: date)] = date
-        }
-        return result
+    /// 当前月的盐场日。
+    private var saltDatesOfMonth: [Date] {
+        SaltHistoryCatalog.saltDates(in: month).filter { isSameMonth($0, month) }
+    }
+
+    private func battle(on date: Date) -> SaltHistoryBattle? {
+        battlesOfMonth.first { SaltHistoryCatalog.isSameDay($0.date, date) }
+    }
+
+    private func isSaltDay(_ date: Date) -> Bool {
+        saltDatesOfMonth.contains { SaltHistoryCatalog.isSameDay($0, date) }
     }
 
     /// 同月判断（日历过滤用；isSameDay 只对同一天成立，语义不同）。
@@ -820,23 +820,18 @@ struct SaltHistoryView: View {
         .padding(.vertical, 6)
     }
 
-    // MARK: 月历
+    // MARK: 月历（行式显式构建）
+    //
+    // ⚠️ 不用 LazyVGrid + 多 ForEach 混排：实测（2026-09-18）占位与日期两个
+    // ForEach 在 LazyVGrid 里渲染不完整（第一周 1-6 号整段缺失，id 去重修复无效），
+    // 改为按「行」显式组装 HStack——结构完全确定，1 号必然在第 leading+1 列。
 
     private var calendarView: some View {
         VStack(spacing: 6) {
-            let weekdaySymbols = Calendar.current.veryShortWeekdaySymbols
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
-                      spacing: 4) {
-                ForEach(weekdaySymbols.indices, id: \.self) { index in
-                    Text(weekdaySymbols[index])
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                }
-                calendarDayCells
-            }
+            calendarHeader
+            calendarGrid
             if statusText.isEmpty {
-                Text("点击盐场日期查询当场总榜")
+                Text("点击任意日期查询该日盐场战绩；周六（盐场日）高亮")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             } else {
@@ -849,70 +844,101 @@ struct SaltHistoryView: View {
         }
     }
 
-    @ViewBuilder
-    private var calendarDayCells: some View {
+    /// 星期表头：跟随系统「每周第一天」设置旋转（与网格 leading 同口径）。
+    private var calendarHeader: some View {
+        let calendar = Calendar.current
+        let symbols = calendar.veryShortWeekdaySymbols
+        let ordered = (0..<7).map { symbols[($0 + calendar.firstWeekday - 1) % 7] }
+        return HStack(spacing: 4) {
+            ForEach(ordered, id: \.self) { symbol in
+                Text(symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    /// 网格：显式按「行」构建（每行 7 格，前 leading 格为占位）。
+    private var calendarGrid: some View {
         let calendar = Calendar.current
         let components = calendar.dateComponents([.year, .month], from: month)
         let first = calendar.date(from: DateComponents(year: components.year,
                                                        month: components.month, day: 1)) ?? month
         let daysInMonth = calendar.range(of: .day, in: .month, for: first)?.count ?? 30
         let leading = (calendar.component(.weekday, from: first) - calendar.firstWeekday + 7) % 7
-        // ⚠️ 占位 id 必须与日期 id（1...daysInMonth）不在同一空间——曾经用 0..<leading
-        // 作 id，与 1/2 号撞车，SwiftUI 去重直接吞掉了日期格（实测 2026-09：1-6 号消失）。
-        ForEach(-leading..<0, id: \.self) { _ in
-            Color.clear.frame(height: 34)
+        let dates: [Date?] = Array(repeating: nil, count: leading)
+            + (1...daysInMonth).map { day in
+                calendar.date(from: DateComponents(year: components.year,
+                                                   month: components.month, day: day)) ?? first
+            }
+        let rows = stride(from: 0, to: dates.count, by: 7).map {
+            Array(dates[$0..<min($0 + 7, dates.count)])
         }
-        ForEach(1...daysInMonth, id: \.self) { day in
-            dayCell(day: day)
+        return VStack(spacing: 4) {
+            ForEach(rows.indices, id: \.self) { rowIndex in
+                HStack(spacing: 4) {
+                    ForEach(0..<7, id: \.self) { column in
+                        if column < rows[rowIndex].count, let date = rows[rowIndex][column] {
+                            dayCell(date: date)
+                        } else {
+                            Color.clear.frame(height: 34)
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// 日历格（浅色）：盐场日可点（查总榜）；有我方场次的标注名次。
-    private func dayCell(day: Int) -> some View {
-        let calendar = Calendar.current
-        let saltDate = saltDays[day]
-        let battle = battleByDay[day]
-        let isSelected = selectedDate.map({ SaltHistoryCatalog.isSameDay($0, saltDate ?? month) }) ?? false
-        let isSaltDay = saltDate != nil
+    /// 日历格（浅色）：所有日期可点（盐场日高亮，其他日期服务端无数据会有提示）；
+    /// 有我方场次的标注名次。
+    private func dayCell(date: Date) -> some View {
+        let battle = battle(on: date)
+        let isSelected = selectedDate.map({ SaltHistoryCatalog.isSameDay($0, date) }) ?? false
+        let salt = isSaltDay(date)
+        let dayNumber = Calendar.current.component(.day, from: date)
 
         return Button {
-            guard let date = saltDate else { return }
             selectedDate = date
             controller.requestWarDetails(accountID: account.id, battleDate: date)
         } label: {
             VStack(spacing: 1) {
-                Text("\(day)")
-                    .font(.system(size: 11, weight: isSaltDay ? .bold : .regular))
-                    .foregroundStyle(isSaltDay ? Color(red: 0.10, green: 0.26, blue: 0.20)
-                                               : Color.primary.opacity(0.35))
+                Text("\(dayNumber)")
+                    .font(.system(size: 11, weight: salt ? .bold : .regular))
+                    .foregroundStyle(salt ? Color(red: 0.10, green: 0.26, blue: 0.20)
+                                          : Color.primary.opacity(0.55))
                 if let battle {
                     Text(battle.rank > 0 ? "第\(battle.rank)名" : battle.warTypeName)
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(rankColor(battle.rank))
-                } else if isSaltDay {
+                } else if salt {
                     Text("盐场")
-                        .font(.system(size: 8))
-                        .foregroundStyle(Color.secondary.opacity(0.7))
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.75))
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 34)
-            .background(cellBackground(day: day, isSaltDay: isSaltDay,
+            .background(cellBackground(isSaltDay: salt,
                                        battle: battle, isSelected: isSelected))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(salt ? Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.35)
+                                       : Color.clear,
+                                  lineWidth: 1)
+            )
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!isSaltDay)
-        .help(isSaltDay ? "点击查询 \(day) 日盐场战绩" : "非盐场日（仅周六与第 4 周周日开放）")
-        .dayCellHover(day: day, calendar: calendar, saltDate: saltDate)
+        .help("点击查询 \(dayNumber) 日盐场战绩" + (salt ? "（盐场日）" : ""))
     }
 
-    private func cellBackground(day: Int, isSaltDay: Bool,
+    private func cellBackground(isSaltDay: Bool,
                                 battle: SaltHistoryBattle?, isSelected: Bool) -> Color {
         if isSelected { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.18) }
-        if battle != nil { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.08) }
-        if isSaltDay { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.045) }
-        return Color.black.opacity(0.02)
+        if isSaltDay { return Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.10) }
+        if battle != nil { return Color.black.opacity(0.05) }
+        return Color.black.opacity(0.015)
     }
 
     /// 我方名次徽标配色。
