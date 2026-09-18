@@ -151,19 +151,39 @@ public final class PacketCaptureController: ObservableObject {
                             instance: GameViewportInstance,
                             command: String,
                             chineseName: String,
-                            paramsJSON: String) async -> SendRecord {
+                            paramsJSON: String,
+                            autoAckSeq: Bool = true,
+                            manualAck: Int64? = nil,
+                            manualSeq: Int64? = nil) async -> SendRecord {
         var record = SendRecord(command: command,
                                 chineseName: chineseName.isEmpty ? command : chineseName,
                                 paramsJSON: paramsJSON)
         let trimmedParams = paramsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-        // ack：会话里最近的服务端 seq（没开抓包就 0——猫助手实测 ack=0 可用）。
-        let ack = sessions[accountID]?.lastServerSeq ?? 0
+        // ack/seq 编址（默认全自动，推荐）：
+        //   · ack = 会话里最近 recv 帧的服务端 seq（标准确认语义）；
+        //   · seq = 毫秒时间戳——**刻意不延续游戏的 1,2,3 序列**：撞号会让服务端
+        //     按序去重丢掉游戏自己的请求；大数区间独立编址游戏/服务端都容忍
+        //     （猫助手 Date.now seq 实测可用）。
+        //   · 手动模式给懂协议的人做实验（UI 上有风险提示）。
+        let ack: Int64
+        let seq: Int64
+        if autoAckSeq {
+            ack = manualAck ?? (sessions[accountID]?.lastServerSeq ?? 0)
+            seq = Int64(Date().timeIntervalSince1970 * 1000)
+        } else {
+            ack = manualAck ?? (sessions[accountID]?.lastServerSeq ?? 0)
+            seq = manualSeq ?? Int64(Date().timeIntervalSince1970 * 1000)
+        }
+        record.ackUsed = ack
+        record.seqUsed = seq
         do {
-            let frame = try Self.buildFrame(command: command, paramsJSON: trimmedParams, ack: ack)
+            let frame = try Self.buildFrame(command: command, paramsJSON: trimmedParams,
+                                            ack: ack, seq: seq)
             let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString())
             record.status = diagnostic.hasPrefix("sent") ? "已发送" : diagnostic
             record.succeeded = diagnostic.hasPrefix("sent")
-            LobbyLog.info("[capture] 发送指令 %@(%@) → %@", chineseName, command, diagnostic)
+            LobbyLog.info("[capture] 发送指令 %@(%@) ack=%lld seq=%lld → %@",
+                          chineseName, command, ack, seq, diagnostic)
         } catch {
             record.status = "构帧失败：\(error.localizedDescription)"
             record.succeeded = false
@@ -177,14 +197,15 @@ public final class PacketCaptureController: ObservableObject {
     }
 
     /// 组装完整帧：`x` 信封（BON `{cmd, ack, seq, time, body=内层BON(params)}`）。
-    static func buildFrame(command: String, paramsJSON: String, ack: Int64) throws -> Data {
+    static func buildFrame(command: String, paramsJSON: String,
+                           ack: Int64, seq: Int64? = nil) throws -> Data {
         let params = try Self.jsonToBonValue(paramsJSON)
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         let body = Bon.encode(params)
         let message = BonValue.object(BonObject([
             .init("cmd", .string(command)),
             .init("ack", .long(ack)),
-            .init("seq", .long(now)),
+            .init("seq", .long(seq ?? now)),
             .init("time", .long(now)),
             .init("body", .binary(body)),
         ]))
@@ -612,6 +633,10 @@ public struct SendRecord: Identifiable, Sendable, Equatable {
     /// 结果诊断（`已发送` / 页面回执错误 / 构帧失败原因）。
     public var status: String
     public var succeeded: Bool
+    /// 实际使用的 ack / seq（历史里展示编址依据；自动模式 ack=最新服务端 seq、
+    /// seq=毫秒时间戳）。
+    public var ackUsed: Int64?
+    public var seqUsed: Int64?
 
     public var timeText: String {
         let formatter = DateFormatter()
@@ -627,6 +652,8 @@ public struct SendRecord: Identifiable, Sendable, Equatable {
         self.paramsJSON = paramsJSON
         self.status = "发送中…"
         self.succeeded = false
+        self.ackUsed = nil
+        self.seqUsed = nil
     }
 }
 

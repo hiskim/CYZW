@@ -210,7 +210,8 @@ struct PacketCaptureWindowView: View {
                                 account: account,
                                 capture: capture,
                                 catalog: session.commandCatalog,
-                                draftCommand: $sendDraftCommand)
+                                draftCommand: $sendDraftCommand,
+                                jsonPretty: jsonPretty)
             case .catalog:
                 CommandCatalogPane(catalog: session.commandCatalog,
                                    includeCommands: $includeCommands,
@@ -1072,6 +1073,47 @@ private struct PairRowView: View {
     }
 }
 
+// MARK: - 流式布局（胶囊卡片横+竖排列）
+
+/// 自定义 Layout：子视图从左到右排列，放不下就换行（标签云 / 胶囊组）。
+/// 用于发送页签的指令卡片分类流（List 竖列选指令太难找，用户确认改胶囊卡片）。
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? 400
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX, x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
 // MARK: - 发送指令页签
 
 /// 发送指令：从指令库选指令（可搜索）→ 参数 JSON 编辑（预填模板）→ 二次确认发送。
@@ -1084,6 +1126,8 @@ private struct SendCommandPane: View {
     @ObservedObject var catalog: GameCommandStore
     /// 指令库页签「填入发送」的跨页签联动。
     @Binding var draftCommand: String?
+    /// JSON 视图模式（与抓包流详情面板共用；默认压缩）。
+    let jsonPretty: Bool
 
     @State private var search = ""
     @State private var selectedCommandID: String?
@@ -1091,17 +1135,58 @@ private struct SendCommandPane: View {
     @State private var sendStatus: String?
     @State private var sendStatusIsError = false
     @State private var confirmCandidate: GameCommandEntry?
+    /// 参数模式：自动 = 用指令库默认参数模板（推荐）；手动 = 编辑器可改。
+    @State private var paramModeAuto = true
+    /// ack/seq 编址模式：自动 = ack 取最新服务端 seq、seq 用时间戳（推荐，
+    /// 独立编址不碰游戏自己的 seq 序列）；手动 = 自行指定（实验用，有风险）。
+    @State private var autoAckSeq = true
+    @State private var manualAckText = ""
+    @State private var manualSeqText = ""
+    /// 最近一次发送捕获到的响应帧（页面底部结果窗口；靠抓包配对定位）。
+    @State private var resultResponse: CapturedPacket?
+    @State private var responseWatchTask: Task<Void, Never>?
 
-    /// 候选列表（搜索过滤 + 置顶已选）。
-    private var candidates: [GameCommandEntry] {
+    /// 搜索过滤后的条目。
+    private var filteredEntries: [GameCommandEntry] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = query.isEmpty
-            ? catalog.entries
-            : catalog.entries.filter {
-                $0.command.localizedCaseInsensitiveContains(query)
-                    || $0.chineseName.localizedCaseInsensitiveContains(query)
-            }
-        return Array(base.prefix(80))
+        guard !query.isEmpty else { return catalog.entries }
+        return catalog.entries.filter {
+            $0.command.localizedCaseInsensitiveContains(query)
+                || $0.chineseName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    /// 已识别（内置确认 / 语义推断 / 自定义）按分类分组。
+    private var identifiedGroups: [(category: String, entries: [GameCommandEntry])] {
+        let groups = Dictionary(grouping: filteredEntries.filter { $0.origin != "discovered" },
+                                by: \.category)
+        return catalog.categories.compactMap { category in
+            guard let entries = groups[category] else { return nil }
+            return (category, entries)
+        }
+    }
+
+    /// 未识别新指令（抓包自动发现、还没补中文名的）——单独一个区。
+    private var discoveredEntries: [GameCommandEntry] {
+        filteredEntries.filter { $0.origin == "discovered" }
+    }
+
+    /// 分类稳定色：同分类恒同色（unicode 求和散列，跨启动不变）。
+    private static let categoryPalette: [Color] = [
+        Color(lobbyRGB: 0x3B82F6), Color(lobbyRGB: 0x22C55E), Color(lobbyRGB: 0xF59E0B),
+        Color(lobbyRGB: 0xA78BFA), Color(lobbyRGB: 0x22D3EE), Color(lobbyRGB: 0xF472B6),
+        Color(lobbyRGB: 0xFACC15), Color(lobbyRGB: 0xFB7185), Color(lobbyRGB: 0x34D399),
+        Color(lobbyRGB: 0x60A5FA)
+    ]
+
+    private func categoryColor(_ category: String) -> Color {
+        let sum = category.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        return Self.categoryPalette[sum % Self.categoryPalette.count]
+    }
+
+    /// 自动模式下实际将使用的 ack / seq 预览。
+    private var previewAck: Int64 {
+        capture.session(forAccountID: account.id)?.lastServerSeq ?? 0
     }
 
     private var selectedEntry: GameCommandEntry? {
@@ -1114,10 +1199,14 @@ private struct SendCommandPane: View {
             commandPicker
             paramsEditor
             statusLine
+            resultPanel
             historyList
             Spacer(minLength: 0)
         }
         .padding(12)
+        .onDisappear {
+            responseWatchTask?.cancel()
+        }
         .onAppear {
             if selectedCommandID == nil, let first = catalog.entries.first {
                 selectedCommandID = first.id
@@ -1161,7 +1250,7 @@ private struct SendCommandPane: View {
 
     // MARK: 子视图（每条子表达式 ≤ 2 段链——本项目的 type-check 红线）
 
-    /// 指令选择区。
+    /// 指令选择区：**已识别**（分类分组 + 彩色胶囊流）与**未识别新指令**两个区。
     private var commandPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -1174,58 +1263,111 @@ private struct SendCommandPane: View {
                     .frame(maxWidth: 320)
                 if let entry = selectedEntry {
                     riskBadge(entry)
+                    Text("已选：\(entry.chineseName)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color(lobbyRGB: 0x67E8F9))
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
-            List(selection: $selectedCommandID) {
-                ForEach(candidates) { entry in
-                    candidateRow(entry)
-                        .tag(entry.id)
-                        .listRowBackground(RoundedRectangle(cornerRadius: 5)
-                            .fill(selectedCommandID == entry.id ? Color.cyan.opacity(0.14) : .clear))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    // ── 已识别指令（按分类着色，紧凑排列）──
+                    ForEach(identifiedGroups, id: \.category) { group in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(group.category)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(categoryColor(group.category))
+                            FlowLayout(spacing: 3) {
+                                ForEach(group.entries) { entry in
+                                    commandCard(entry, tint: categoryColor(group.category))
+                                }
+                            }
+                        }
+                    }
+                    // ── 未识别新指令（独立区，紫色系）──
+                    if !discoveredEntries.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("未识别新指令（\(discoveredEntries.count)，可在指令库页签补名）")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Color(lobbyRGB: 0xA78BFA))
+                            FlowLayout(spacing: 3) {
+                                ForEach(discoveredEntries) { entry in
+                                    commandCard(entry, tint: Color(lobbyRGB: 0xA78BFA))
+                                }
+                            }
+                        }
+                    }
                 }
+                .padding(2)
             }
-            .listStyle(.bordered)
-            .scrollContentBackground(.hidden)
-            .frame(height: 150)
+            .frame(height: 190)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
         }
     }
 
-    private func candidateRow(_ entry: GameCommandEntry) -> some View {
-        HStack(spacing: 6) {
-            Text(entry.chineseName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            Text(entry.command)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            if entry.isHighRisk {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color(lobbyRGB: 0xF59E0B))
+    /// 指令胶囊卡片：分类着色（背景浅 / 描边中），高危橙警示覆盖，选中青色高亮。
+    private func commandCard(_ entry: GameCommandEntry, tint: Color) -> some View {
+        let isSelected = selectedCommandID == entry.id
+        return Button {
+            selectedCommandID = entry.id
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 2) {
+                    Text(entry.chineseName)
+                        .font(.system(size: 10, weight: .semibold))
+                        .lineLimit(1)
+                    if entry.isHighRisk {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(Color(lobbyRGB: 0xF59E0B))
+                    }
+                }
+                Text(entry.command)
+                    .font(.system(size: 8, design: .monospaced))
+                    .opacity(0.55)
+                    .lineLimit(1)
             }
+            .foregroundStyle(Color.white.opacity(isSelected ? 1 : 0.82))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(isSelected ? Color.cyan.opacity(0.30) : tint.opacity(0.13)))
+            .overlay(Capsule().strokeBorder(isSelected ? Color.cyan.opacity(0.85) : tint.opacity(0.4), lineWidth: 1))
+            .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .help("\(entry.chineseName) · \(entry.command)\(entry.isHighRisk ? "\n⚠️ 高危：可能消耗资源" : "")")
     }
 
-    /// 参数编辑区（模板预填 / 还原 / 发送按钮）。
+    /// 参数编辑区：自动模式（模板只读）/ 手动模式（编辑器可改）+ ack/seq 编址行。
     private var paramsEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text("参数 (JSON)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Button("还原模板") {
-                    if let entry = selectedEntry {
-                        paramsDraft = entry.defaultParamsJSON
-                    }
+                // 参数模式：自动 = 用指令库默认模板；手动 = 编辑器可改。
+                Picker("", selection: $paramModeAuto) {
+                    Text("自动参数").tag(true)
+                    Text("手动参数").tag(false)
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 10))
-                .foregroundStyle(Color(lobbyRGB: 0x93C5FD))
-                .disabled(selectedEntry == nil)
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                .help("自动参数 = 使用指令库默认参数模板；手动参数 = 自行编辑 JSON")
+                if paramModeAuto {
+                    Text("（使用指令库模板）")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Button("还原模板") {
+                        if let entry = selectedEntry {
+                            paramsDraft = entry.defaultParamsJSON
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color(lobbyRGB: 0x93C5FD))
+                }
                 Spacer(minLength: 0)
                 if !canSend {
                     Label("实例未运行", systemImage: "pause.circle")
@@ -1239,7 +1381,49 @@ private struct SendCommandPane: View {
                 .scrollContentBackground(.hidden)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.12)))
-                .frame(height: 110)
+                .frame(height: 100)
+                .disabled(paramModeAuto)
+                .opacity(paramModeAuto ? 0.75 : 1)
+            ackSeqRow
+        }
+    }
+
+    /// ack / seq 编址行：自动（推荐）或手动指定。
+    private var ackSeqRow: some View {
+        HStack(spacing: 8) {
+            Text("ack / seq")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Toggle(isOn: $autoAckSeq) {
+                Text("自动编址")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .toggleStyle(.checkbox)
+            .help("自动 = ack 取最近服务端 seq、seq 用毫秒时间戳（独立编址，不占用游戏自己的 seq 序列——撞号会让服务端按序去重丢掉游戏的请求）。推荐保持勾选。")
+            if autoAckSeq {
+                Text("ack=\(previewAck) · seq=发送时刻时间戳")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            } else {
+                metaField("ack", text: $manualAckText, placeholder: "如 132")
+                metaField("seq", text: $manualSeqText, placeholder: "如 1789697114559")
+                Text("⚠️ 手动编址可能与游戏自身请求冲突，仅供实验")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color(lobbyRGB: 0xF59E0B))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func metaField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 10, design: .monospaced))
+                .frame(width: 130)
         }
     }
 
@@ -1271,6 +1455,83 @@ private struct SendCommandPane: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(tint)
                 .lineLimit(2)
+        }
+    }
+
+    // MARK: 响应结果窗口
+
+    /// 页面底部结果窗口：发送后捕获到的响应帧内容（靠抓包配对定位——
+    /// 注入帧经 send 包装进抓包流，业务序号对齐会把它和响应配上；
+    /// 用 seq 精确定位注入帧，因此要求抓包处于开启状态）。
+    @ViewBuilder
+    private var resultPanel: some View {
+        if let response = resultResponse {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("响应结果")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color(lobbyRGB: 0x4ADE80))
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(lobbyRGB: 0x22C55E))
+                    Text(response.command)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color(lobbyRGB: 0x4ADE80))
+                        .lineLimit(1)
+                    if let roundTrip = response.roundTripMs {
+                        Text(String(format: "%.0f ms", roundTrip))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color(lobbyRGB: 0x4ADE80).opacity(0.85))
+                    }
+                    Spacer(minLength: 8)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(response.detail, forType: .string)
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.8))
+                }
+                ScrollView {
+                    Text(jsonPretty ? JSONBeautifier.pretty(response.detail) : response.detail)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                }
+                .frame(height: 130)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(lobbyRGB: 0x22C55E).opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(lobbyRGB: 0x22C55E).opacity(0.18)))
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(lobbyRGB: 0x22C55E).opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(lobbyRGB: 0x22C55E).opacity(0.22)))
+        }
+    }
+
+    /// 发送后监视配对响应：用**注入帧自己的 seq**（时间戳全局唯一）在抓包流里
+    /// 定位 send 帧 → 它的配对响应。轮询 10s（250ms 一次，抓包流 0.25s 批量上屏
+    /// + 配对在摄入时完成）；抓包未开启 / 超时未收到 → 结果区不出现，仅状态行提示。
+    private func startResponseWatch(_ record: SendRecord) {
+        resultResponse = nil
+        responseWatchTask?.cancel()
+        guard let seq = record.seqUsed else { return }
+        let deadline = Date().addingTimeInterval(10)
+        responseWatchTask = Task { @MainActor in
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard let session = capture.session(forAccountID: account.id) else { continue }
+                if let sent = session.frames.first(where: {
+                    $0.direction == "send" && $0.command == record.command && $0.seq == seq
+                }), let responseID = sent.matchedResponseUUID,
+                   let response = session.frames.first(where: { $0.id == responseID }) {
+                    resultResponse = response
+                    return
+                }
+            }
         }
     }
 
@@ -1317,6 +1578,12 @@ private struct SendCommandPane: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                if let ack = record.ackUsed, let seq = record.seqUsed {
+                    Text("ack=\(ack) seq=\(seq)")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
                 Text(record.status)
                     .font(.system(size: 9))
                     .foregroundStyle(statusColor)
@@ -1347,7 +1614,11 @@ private struct SendCommandPane: View {
 
     private var confirmMessage: String {
         guard let entry = confirmCandidate else { return "" }
-        var lines = "cmd = \(entry.command)\n参数 = \(paramsDraft)\n\n将注入到「\(account.nickname)」的游戏连接并真实执行。"
+        let effectiveParams = paramModeAuto ? (selectedEntry?.defaultParamsJSON ?? paramsDraft) : paramsDraft
+        var lines = "cmd = \(entry.command)\n参数 = \(effectiveParams)\n\n将注入到「\(account.nickname)」的游戏连接并真实执行。"
+        if !autoAckSeq {
+            lines += "\nack / seq = 手动指定（注意：与游戏自身请求撞 seq 可能被服务端去重）。"
+        }
         if entry.isHighRisk {
             lines += "\n\n该指令可能消耗游戏资源（购买 / 招募 / 抽取类），请确认参数。"
         }
@@ -1366,15 +1637,45 @@ private struct SendCommandPane: View {
 
     private func send(_ entry: GameCommandEntry) {
         guard let instance = session.pool.existingSurface(forAccountID: account.id) else { return }
+        // 自动参数模式：直接用指令库模板（编辑器在自动态只读显示同一份内容）。
+        let effectiveParams = paramModeAuto ? entry.defaultParamsJSON : paramsDraft
+        // 手动 ack/seq 解析（非法值回落自动，状态行提示）。
+        var manualAck: Int64?
+        var manualSeq: Int64?
+        if !autoAckSeq {
+            manualAck = Int64(manualAckText.trimmingCharacters(in: .whitespaces))
+            manualSeq = Int64(manualSeqText.trimmingCharacters(in: .whitespaces))
+            if manualAck == nil || manualSeq == nil {
+                sendStatus = "手动 ack/seq 必须是整数，已回落自动编址。"
+                sendStatusIsError = true
+                return
+            }
+        }
         sendStatus = "发送中…"
         sendStatusIsError = false
         Task { @MainActor in
             let record = await capture.sendCommand(accountID: account.id,
                                                    instance: instance,
-                                                   entry: entry,
-                                                   paramsJSON: paramsDraft)
-            sendStatus = record.status
+                                                   command: entry.command,
+                                                   chineseName: entry.chineseName,
+                                                   paramsJSON: effectiveParams,
+                                                   autoAckSeq: autoAckSeq,
+                                                   manualAck: manualAck,
+                                                   manualSeq: manualSeq)
+            var detailText = record.status
+            if record.succeeded, let ack = record.ackUsed, let seq = record.seqUsed {
+                detailText += "（ack=\(ack) seq=\(seq)）"
+                if capture.isCapturing(accountID: account.id) {
+                    detailText += " · 等待响应…"
+                } else {
+                    detailText += " · 抓包未开启，无法追踪响应"
+                }
+            }
+            sendStatus = detailText
             sendStatusIsError = !record.succeeded
+            if record.succeeded {
+                startResponseWatch(record)
+            }
         }
     }
 }
