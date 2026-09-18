@@ -52,7 +52,7 @@ public final class SaltFieldChartWindowManager: NSObject, NSWindowDelegate {
                               backing: .buffered, defer: false)
         window.title = "盐场战况 · \(account.nickname)"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 900, height: 560)
+        window.minSize = NSSize(width: 500, height: 500)
         // 浅色主题（2026-09-18 用户要求白底）：实时地图本来就是白底绘制，
         // 历史战报浅色化后对比度更好；控件随 aqua 自动深字。
         window.appearance = NSAppearance(named: .aqua)
@@ -79,6 +79,18 @@ public final class SaltFieldChartWindowManager: NSObject, NSWindowDelegate {
         let window = windows.removeValue(forKey: accountID)
         passthroughs.removeValue(forKey: accountID)?.stop()
         window?.close()
+    }
+
+    /// Mini 视图窗口尺寸切换：mini = 320 宽单列（minSize 同步放宽）；
+    /// 退出恢复标准 1180 宽两栏。
+    public func applyMiniMode(_ mini: Bool, window: NSWindow) {
+        if mini {
+            window.minSize = NSSize(width: 300, height: 480)
+            window.setContentSize(NSSize(width: 320, height: 780))
+        } else {
+            window.minSize = NSSize(width: 500, height: 500)
+            window.setContentSize(NSSize(width: 1180, height: 780))
+        }
     }
 
     /// 用户点红点关窗（NSWindowDelegate）：摘除登记 + 回调会话模型收尾。
@@ -250,6 +262,8 @@ struct SaltFieldChartWindowView: View {
     @ObservedObject private var controller: SaltFieldChartController
 
     @State private var mode: WindowMode = .live
+    /// Mini 视图：320 宽单列纵向布局（窗口尺寸随切换调整）。
+    @State private var isMini = UserDefaults.standard.bool(forKey: "salt.chart.mini")
     @State private var layout: MapLayout = .occupy
     @State private var statMode: StatMode = .legion
     @State private var opacity: Double = UserDefaults.standard.object(forKey: Self.opacityKey) as? Double ?? 0.92
@@ -274,14 +288,58 @@ struct SaltFieldChartWindowView: View {
     private var warActive: Bool { controller.warActiveAccountIDs.contains(account.id) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
-            content
+        Group {
+            if isMini {
+                miniBody
+            } else {
+                VStack(spacing: 0) {
+                    toolbar
+                    Divider()
+                    content
+                }
+            }
         }
         .background(Color(nsColor: NSColor(calibratedWhite: 0.99, alpha: 1)))
         .preferredColorScheme(.light)
         .onAppear(perform: applyWindowSettings)
+    }
+
+    /// Mini 视图：320 宽单列（工具条精简为 模式切换 + 退出 mini）。
+    private var miniBody: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Picker("", selection: $mode) {
+                        ForEach(WindowMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
+                    Spacer()
+                    Button {
+                        toggleMini()
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
+                    }
+                    .buttonStyle(.plain)
+                    .help("退出 Mini 视图（恢复标准窗口）")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                Divider()
+                content
+            }
+        }
+    }
+
+    /// 进入/退出 Mini：窗口尺寸与 minSize 同步切换（见 WindowManager.applyMiniMode）。
+    private func toggleMini() {
+        isMini.toggle()
+        UserDefaults.standard.set(isMini, forKey: "salt.chart.mini")
+        guard let window = windowRef.window else { return }
+        session.saltFieldWindows.applyMiniMode(isMini, window: window)
+        applyWindowSettings()
     }
 
     // MARK: 工具栏（模式切换 + 按模式的控件组）
@@ -373,6 +431,16 @@ struct SaltFieldChartWindowView: View {
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.secondary)
             .frame(width: 34)
+        Divider().frame(height: 16)
+        Button {
+            toggleMini()
+        } label: {
+            Image(systemName: "rectangle.compress.vertical")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
+        }
+        .buttonStyle(.plain)
+        .help("切换 Mini 视图：窗口缩到 320 宽单列（总览+明细+榜单+日历纵向排列），适合贴边悬浮")
     }
 
     /// 历史战绩的工具栏控件（月份导航 + 状态 + 拉取场次）。
@@ -400,6 +468,16 @@ struct SaltFieldChartWindowView: View {
         .buttonStyle(.plain)
         .disabled(controller.historyBusy.contains(account.id))
         .help("拉取本账号的盐场历史场次（legion_getinfo），日历上会标注我方名次")
+        Divider().frame(height: 16)
+        Button {
+            toggleMini()
+        } label: {
+            Image(systemName: "rectangle.compress.vertical")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
+        }
+        .buttonStyle(.plain)
+        .help("切换 Mini 视图：窗口缩到 320 宽单列（总览+明细+榜单+日历纵向排列）")
     }
 
     /// 连接/轮询状态（一眼定性「没数据」是哪一环）。
@@ -440,7 +518,7 @@ struct SaltFieldChartWindowView: View {
         case .live:
             liveContent
         case .history:
-            SaltHistoryView(session: session, account: account)
+            SaltHistoryView(session: session, account: account, isMini: isMini)
                 .id(account.id)
         }
     }
@@ -733,10 +811,25 @@ struct SaltHistoryView: View {
     /// 明细表排序（点表头切换；默认击杀降序）。
     @State private var sortKey: HistorySortKey = .kill
     @State private var sortAscending = false
+    /// 容器实际宽度（窄窗口自适应：缩日历/隐藏积分榜/缩列宽）。
+    @State private var availableWidth: CGFloat = 0
 
-    init(session: LobbySessionModel, account: GameAccount) {
+    /// 紧凑判定：< 800 视为紧凑布局（5 张总览卡 + 4 张 TOP3 至少需要 ~880 宽）。
+    private var isCompact: Bool { availableWidth > 0 && availableWidth < 800 }
+
+    /// 极窄判定：< 500（窗口缩到最小）：TOP 榜移到日历上方、总览隐藏总积分。
+    private var isUltraNarrow: Bool { availableWidth > 0 && availableWidth < 500 }
+
+    /// 列宽自适应：紧凑/极窄布局下按 0.8 缩。
+    private func cw(_ regular: CGFloat) -> CGFloat { isCompact ? regular * 0.8 : regular }
+
+    /// Mini 单列布局标志（由窗口视图传入；窗口宽 320 时为 true）。
+    let isMini: Bool
+
+    init(session: LobbySessionModel, account: GameAccount, isMini: Bool) {
         _controller = ObservedObject(wrappedValue: session.saltField)
         self.account = account
+        self.isMini = isMini
     }
 
     private var battles: [SaltHistoryBattle] { controller.historyBattles[account.id] ?? [] }
@@ -768,17 +861,34 @@ struct SaltHistoryView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            monthNavigator
-            Divider()
-            HStack(spacing: 0) {
-                calendarView
-                    .frame(width: 330)
-                    .padding(8)
-                Divider()
-                rankView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            if isMini {
+                miniLayout
+            } else {
+                VStack(spacing: 0) {
+                    monthNavigator
+                    Divider()
+                    HStack(spacing: 0) {
+                        // 极窄时左栏 = TOP 榜（竖排，在日历上方）+ 日历；明细独占右侧全高。
+                        VStack(spacing: 8) {
+                            if isUltraNarrow, let result = controller.historyDetails[account.id] {
+                                topPodiums(result)
+                            }
+                            calendarView
+                        }
+                        .frame(width: isUltraNarrow ? 170 : (isCompact ? 190 : 330))
+                        .padding(isCompact ? 3 : 8)
+                        Divider()
+                        rankView
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            availableWidth = width
         }
         .onAppear {
             // 窗口切到历史模式自动拉一次我方场次（幂等：已有数据也刷新）。
@@ -840,6 +950,98 @@ struct SaltHistoryView: View {
     // ⚠️ 不用 LazyVGrid + 多 ForEach 混排：实测（2026-09-18）占位与日期两个
     // ForEach 在 LazyVGrid 里渲染不完整（第一周 1-6 号整段缺失，id 去重修复无效），
     // 改为按「行」显式组装 HStack——结构完全确定，1 号必然在第 leading+1 列。
+
+    /// Mini 单列布局：我的场次 → 总览卡 → 成员明细 → TOP 榜 → 日历。
+    private var miniLayout: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Button {
+                        controller.fetchHistoryBattles(accountID: account.id)
+                    } label: {
+                        Text("我的场次")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                if let result = controller.historyDetails[account.id] {
+                    overviewCards(result)
+                    Divider()
+                    miniDetailTable(result)
+                    Divider()
+                    topPodiums(result)
+                }
+                calendarView
+            }
+            .padding(8)
+        }
+    }
+
+    /// Mini 成员明细（4 列：# / 成员 / 击杀 / 死亡；死亡 ≥6 红胶囊提示）。
+    private func miniDetailTable(_ result: SaltWarDetailsResult) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Text("#").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 20, alignment: .leading)
+                Text("成员").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    if sortKey == .kill { sortAscending.toggle() } else { sortKey = .kill; sortAscending = false }
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("击杀")
+                        if sortKey == .kill {
+                            Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                        }
+                    }
+                    .font(.system(size: 10, weight: sortKey == .kill ? .bold : .semibold))
+                    .foregroundStyle(sortKey == .kill ? Color(red: 0.10, green: 0.26, blue: 0.20) : .secondary)
+                    .frame(width: 40, alignment: .trailing)
+                }
+                .buttonStyle(.plain)
+                Text("死亡").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 36, alignment: .trailing)
+            }
+            .frame(height: 20)
+            ForEach(Array(sortedRows(result.rows).enumerated()), id: \.element.id) { index, row in
+                HStack(spacing: 0) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, alignment: .leading)
+                    Text(row.name)
+                        .font(.system(size: 10.5, weight: index < 3 ? .semibold : .regular))
+                        .foregroundStyle(.primary.opacity(index < 3 ? 0.95 : 0.82))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(row.win)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
+                        .frame(width: 40, alignment: .trailing)
+                    Group {
+                        if row.lose >= 6 {
+                            Text("\(row.lose)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Color(red: 0.86, green: 0.15, blue: 0.15)))
+                        } else {
+                            Text("\(row.lose)")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.80, green: 0.32, blue: 0.25))
+                        }
+                    }
+                    .frame(width: 36, alignment: .trailing)
+                }
+                .frame(height: 24)
+                .background(index < 3 ? Color.yellow.opacity(0.08) : Color.clear)
+            }
+        }
+    }
 
     private var calendarView: some View {
         VStack(spacing: 6) {
@@ -919,20 +1121,20 @@ struct SaltHistoryView: View {
         } label: {
             VStack(spacing: 1) {
                 Text("\(dayNumber)")
-                    .font(.system(size: 11, weight: salt ? .bold : .regular))
+                    .font(.system(size: isCompact ? 9.5 : 11, weight: salt ? .bold : .regular))
                     .foregroundStyle(salt ? Color(red: 0.10, green: 0.26, blue: 0.20)
                                           : Color.primary.opacity(0.55))
                 if let battle {
                     Text(battle.rank > 0 ? "第\(battle.rank)名" : battle.warTypeName)
-                        .font(.system(size: 8, weight: .semibold))
+                        .font(.system(size: isCompact ? 7 : 8, weight: .semibold))
                         .foregroundStyle(rankColor(battle.rank))
-                } else if salt {
+                } else if salt && !isCompact {
                     Text("盐场")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(Color(red: 0.10, green: 0.26, blue: 0.20).opacity(0.75))
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 34)
+            .frame(maxWidth: .infinity, minHeight: isCompact ? 26 : 34)
             .background(cellBackground(isSaltDay: salt,
                                        battle: battle, isSelected: isSelected))
             .overlay(
@@ -984,31 +1186,35 @@ struct SaltHistoryView: View {
                 overviewCards(result)
                     .padding(.horizontal, 10)
                     .padding(.top, 8)
-                // 上栏二：四个 TOP3 榜单。
-                topPodiums(result)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                Divider()
+                // 上栏二：四个 TOP3 榜单（极窄时已移到左栏日历上方）。
+                if !isUltraNarrow {
+                    topPodiums(result)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    Divider()
+                }
                 // 底部：全部成员明细（可点表头排序；默认击杀降序）。
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 0) {
-                            rankHeader("#", width: 40, alignment: .center)
-                            // 成员列弹性拉伸，让明细表与上栏榜单卡同宽（下限 520）。
+                            rankHeader("#", width: cw(40), alignment: .center)
+                            // 成员列弹性拉伸，让明细表与上栏榜单卡同宽。
                             Text("成员")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.primary.opacity(0.75))
-                                .frame(minWidth: 122, maxWidth: .infinity, alignment: .leading)
+                                .frame(minWidth: cw(60), maxWidth: .infinity, alignment: .leading)
                                 .frame(height: 24)
                                 .padding(.horizontal, 4)
                                 .background(Color.black.opacity(0.05))
-                            sortableHeader("攻城", key: .siege, width: 72)
-                            sortableHeader("击杀", key: .kill, width: 60)
-                            sortableHeader("死亡", key: .death, width: 60)
-                            sortableHeader("K/D", key: .kd, width: 62)
-                            sortableHeader("总积分", key: .score, width: 70)
+                            if !isUltraNarrow {
+                                sortableHeader("攻城", key: .siege, width: cw(72))
+                            }
+                            sortableHeader("击杀", key: .kill, width: cw(60))
+                            sortableHeader("死亡", key: .death, width: cw(60))
+                            sortableHeader("K/D", key: .kd, width: cw(62))
+                            sortableHeader("总积分", key: .score, width: cw(70))
                         }
-                        .frame(minWidth: 520, maxWidth: .infinity, alignment: .leading)
+                        .frame(minWidth: isCompact ? 380 : 520, maxWidth: .infinity, alignment: .leading)
                         let maxBuilding = result.rows.map(\.building).max() ?? 0
                         ForEach(Array(sortedRows(result.rows).enumerated()), id: \.element.id) { index, row in
                             warDetailRow(index: index, row: row, maxBuilding: maxBuilding)
@@ -1090,6 +1296,7 @@ struct SaltHistoryView: View {
 
     /// 总览卡（标题在上、数字在下，按指标着色）：
     /// 总击杀=绿 · 总死亡=红 · 总攻城=橙 · 平均 K/D=紫 · 总积分=蓝。
+    @ViewBuilder
     private func overviewCards(_ result: SaltWarDetailsResult) -> some View {
         let totalScore = result.rows.reduce(0) { $0 + $1.score }
         return HStack(spacing: 8) {
@@ -1101,21 +1308,27 @@ struct SaltHistoryView: View {
                          icon: "building.castle.fill", value: "\(result.totalBuilding)")
             overviewCard(label: "平均 K/D", tint: Color(red: 0.49, green: 0.23, blue: 0.93),
                          icon: "divide", value: result.overallKDText)
-            overviewCard(label: "总积分", tint: Color(red: 0.15, green: 0.39, blue: 0.92),
-                         icon: "star.fill", value: "\(totalScore)")
+            // 极窄时总积分卡隐藏（重要数据在明细表里都有）。
+            if !isUltraNarrow {
+                overviewCard(label: "总积分", tint: Color(red: 0.15, green: 0.39, blue: 0.92),
+                             icon: "star.fill", value: "\(totalScore)")
+            }
         }
     }
 
     /// 紧凑总览卡：标题（着色）在上、大数字（同色）在下。
     private func overviewCard(label: String, tint: Color, icon: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: isCompact ? 2 : 4) {
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(tint)
-            Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.system(size: isCompact ? 10 : 12, weight: .semibold))
                 .foregroundStyle(tint)
                 .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(value)
+                .font(.system(size: isCompact ? 16 : 22, weight: .bold, design: .rounded))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
@@ -1126,16 +1339,29 @@ struct SaltHistoryView: View {
             .strokeBorder(tint.opacity(0.22)))
     }
 
+    @ViewBuilder
     private func topPodiums(_ result: SaltWarDetailsResult) -> some View {
         let killTop3 = result.rows.sorted { $0.win > $1.win }.prefix(3)
         let siegeTop3 = result.rows.sorted { $0.building > $1.building }.prefix(3)
         let kdTop3 = result.rows.sorted { $0.kd > $1.kd }.prefix(3)
         let scoreTop3 = result.rows.sorted { $0.score > $1.score }.prefix(3)
-        return HStack(alignment: .top, spacing: 8) {
-            podiumCard(title: "⚔️ 击杀榜 TOP3", rows: Array(killTop3)) { "\($0.win)" }
-            podiumCard(title: "🏰 攻城榜 TOP3", rows: Array(siegeTop3)) { "\($0.building)" }
-            podiumCard(title: "📈 K/D 榜 TOP3", rows: Array(kdTop3)) { $0.kdText }
-            podiumCard(title: "⭐️ 积分榜 TOP3", rows: Array(scoreTop3)) { "\($0.score)" }
+        // 极窄：三张榜单竖排堆叠（放日历上方）。
+        if isUltraNarrow {
+            VStack(alignment: .leading, spacing: 6) {
+                podiumCard(title: "⚔️ 击杀榜", rows: Array(killTop3)) { "\($0.win)" }
+                podiumCard(title: "🏰 攻城榜", rows: Array(siegeTop3)) { "\($0.building)" }
+                podiumCard(title: "📈 K/D 榜", rows: Array(kdTop3)) { $0.kdText }
+            }
+        } else {
+            HStack(alignment: .top, spacing: isCompact ? 5 : 8) {
+                podiumCard(title: "⚔️ 击杀榜", rows: Array(killTop3)) { "\($0.win)" }
+                podiumCard(title: "🏰 攻城榜", rows: Array(siegeTop3)) { "\($0.building)" }
+                podiumCard(title: "📈 K/D 榜", rows: Array(kdTop3)) { $0.kdText }
+                // 窄窗口挤不下四个榜：隐藏积分榜（宽度足够才显示）。
+                if !isCompact {
+                    podiumCard(title: "⭐️ 积分榜", rows: Array(scoreTop3)) { "\($0.score)" }
+                }
+            }
         }
     }
 
@@ -1216,20 +1442,22 @@ struct SaltHistoryView: View {
                         .frame(width: 40)
                 }
             }
-            // 成员（左对齐，弹性宽度——明细表与上栏同宽）。
+            // 成员（左对齐，弹性宽度）：游戏名称最多 6 字，列宽按 6 字约 76pt 起步。
             Text(row.name)
                 .font(.system(size: 11, weight: index < 3 ? .semibold : .regular))
                 .foregroundStyle(.primary.opacity(index < 3 ? 0.95 : 0.82))
                 .lineLimit(1)
-                .frame(minWidth: 116, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 60, maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
-            // 攻城：DataBar 底 + 数字（右对齐）。
-            HStack {
-                Spacer()
-                buildingBar(value: row.building, maxValue: maxBuilding)
+            // 攻城：DataBar 底 + 数字（右对齐）；极窄时整列隐藏（击杀/死亡更重要）。
+            if !isUltraNarrow {
+                HStack {
+                    Spacer()
+                    buildingBar(value: row.building, maxValue: maxBuilding)
+                }
+                .frame(width: cw(72))
+                .padding(.horizontal, 4)
             }
-            .frame(width: 76)
-            .padding(.horizontal, 4)
             // 击杀（绿）。
             HStack {
                 Spacer()
@@ -1237,7 +1465,7 @@ struct SaltHistoryView: View {
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
             }
-            .frame(width: 56)
+            .frame(width: cw(56))
             .padding(.horizontal, 4)
             // 死亡：≥6 = 免费复活额度耗尽（1 条命 + 5 次免费复活），
             // 红底白字胶囊加粗提示「不能再免费复活」；<6 普通暗红。
@@ -1257,7 +1485,7 @@ struct SaltHistoryView: View {
                         .foregroundStyle(Color(red: 0.80, green: 0.32, blue: 0.25))
                 }
             }
-            .frame(width: 56)
+            .frame(width: cw(56))
             .padding(.horizontal, 4)
             // K/D：≥2 绿、≥1 中性、<1 暗红（右对齐）。
             HStack {
@@ -1268,7 +1496,7 @@ struct SaltHistoryView: View {
                                                     : (row.kd >= 1 ? .primary.opacity(0.75)
                                                        : Color(red: 0.80, green: 0.32, blue: 0.25)))
             }
-            .frame(width: 56)
+            .frame(width: cw(56))
             .padding(.horizontal, 4)
             // 总积分 = 击杀×10 + 死亡×1 + 攻城×1（本地计算，墨绿加粗突出）。
             HStack {
@@ -1277,10 +1505,10 @@ struct SaltHistoryView: View {
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.10, green: 0.26, blue: 0.20))
             }
-            .frame(width: 56)
+            .frame(width: cw(56))
             .padding(.horizontal, 4)
         }
-        .frame(minWidth: 520, maxWidth: .infinity, alignment: .leading)
+        .frame(minWidth: isCompact ? 380 : 520, maxWidth: .infinity, alignment: .leading)
         .frame(height: 30)
         .background(rankRowBackground(index))
     }
