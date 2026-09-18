@@ -4,6 +4,60 @@ import LobbyEngine
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - 大 JSON 显示优化
+
+/// 详情文本的显示策略：
+///   · 超过阈值截断（导出 JSON 有全文，窗口里排版几十 KB 是卡顿主源之一）；
+///   · 展开模式先截断再美化（避免对全文做无谓的 3 倍字符串展开）。
+private enum DetailDisplay {
+    static let limit = 64 * 1024
+
+    static func text(of packet: CapturedPacket, pretty: Bool) -> String {
+        let base = packet.detail
+        guard base.count > limit else {
+            return pretty ? JSONBeautifier.pretty(base) : base
+        }
+        let prefix = String(base.prefix(limit))
+        let rendered = pretty ? JSONBeautifier.pretty(prefix) : prefix
+        let kb = base.count / 1024
+        return rendered + "\n\n…（内容过大，已截断显示前 64 KB / 共 \(kb) KB；导出 JSON 可获取全文）"
+    }
+}
+
+/// 等宽只读文本视图：SwiftUI `Text` 对超长字符串是一次性全量排版（大 JSON 卡顿
+/// 的主源），`NSTextView` 走 AppKit 懒排版（逐页布局），几十 KB 文本也能秒开。
+private struct MonospacedTextView: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        let textView = NSTextView(frame: .zero)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.allowsUndo = false
+        textView.drawsBackground = false
+        textView.textColor = NSColor.white.withAlphaComponent(0.88)
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.string = text
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView,
+              textView.string != text else { return }
+        textView.string = text
+        textView.scrollToBeginningOfDocument(nil)
+    }
+}
+
 // MARK: - 抓包窗口管理
 //
 // 每个账号一个**独立 NSWindow**（与多开矩阵一一对应）：
@@ -122,6 +176,13 @@ struct PacketCaptureWindowView: View {
     /// JSON 视图模式：false = 压缩单行（默认），true = 缩进展开（懒美化，仅当前查看的帧）。
     /// 抓包流详情面板与配对页签的展开区共用这一开关。
     @State private var jsonPretty = false
+    // ── 过滤结果缓存（性能红线）──
+    // filteredFrames 若是 computed，任何 @State 变化（含点击选中）都会触发
+    // 5000 条 × 正则匹配的全量重算 + 每行 O(指令库) 的中文名查找——点击详情就卡。
+    // 改为缓存：只在过滤条件变化 / 帧批量上屏时重算，行渲染全走字典。
+    @State private var cachedFrames: [CapturedPacket] = []
+    @State private var cachedDisplayNames: [String: String] = [:]
+    @State private var searchDebounceTask: Task<Void, Never>?
     // ── 跨页签联动：配对/指令库「填入发送」→ 发送页签预填；配对行点击 → 抓包流定位 ──
     @State private var sendDraftCommand: String?
 
@@ -161,29 +222,39 @@ struct PacketCaptureWindowView: View {
         return regex.firstMatch(in: command, options: [], range: range) != nil
     }
 
-    private var filteredFrames: [CapturedPacket] {
+    // MARK: 过滤（结果缓存在 cachedFrames，见属性注释）
+
+    private func recomputeFiltered() {
         let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let include = includeRegex
         let exclude = excludeRegex
-        return captureSession.frames.filter { packet in
+        var names = cachedDisplayNames
+        var result: [CapturedPacket] = []
+        result.reserveCapacity(captureSession.frames.count)
+        for packet in captureSession.frames {
             switch directionFilter {
-            case 1: if packet.direction != "send" { return false }
-            case 2: if packet.direction != "recv" { return false }
+            case 1: if packet.direction != "send" { continue }
+            case 2: if packet.direction != "recv" { continue }
             default: break
             }
-            if hideHeartbeat, Self.systemCommands.contains(packet.command) { return false }
+            if hideHeartbeat, Self.systemCommands.contains(packet.command) { continue }
             // 白名单 chip（精确）+ 包含正则；黑名单 chip + 排除正则（黑名单优先级最高）。
-            if !includeCommands.isEmpty, !includeCommands.contains(packet.command) { return false }
-            if let hit = matchesRegex(include, command: packet.command), !hit { return false }
-            if excludeCommands.contains(packet.command) { return false }
-            if let hit = matchesRegex(exclude, command: packet.command), hit { return false }
+            if !includeCommands.isEmpty, !includeCommands.contains(packet.command) { continue }
+            if let hit = matchesRegex(include, command: packet.command), !hit { continue }
+            if excludeCommands.contains(packet.command) { continue }
+            if let hit = matchesRegex(exclude, command: packet.command), hit { continue }
             if !search.isEmpty {
                 let hit = packet.command.localizedCaseInsensitiveContains(search)
                     || (packet.summary?.localizedCaseInsensitiveContains(search) ?? false)
-                if !hit { return false }
+                if !hit { continue }
             }
-            return true
+            if names[packet.command] == nil {
+                names[packet.command] = session.commandCatalog.displayName(for: packet.command)
+            }
+            result.append(packet)
         }
+        cachedFrames = result
+        cachedDisplayNames = names
     }
 
     private var selectedPacket: CapturedPacket? {
@@ -221,6 +292,26 @@ struct PacketCaptureWindowView: View {
             }
         }
         .background(Color(lobbyRGB: 0x14161B).ignoresSafeArea())
+        .onAppear { recomputeFiltered() }
+        .onChange(of: directionFilter) { _, _ in recomputeFiltered() }
+        .onChange(of: includeCommands) { _, _ in recomputeFiltered() }
+        .onChange(of: excludeCommands) { _, _ in recomputeFiltered() }
+        .onChange(of: includeRegexText) { _, _ in recomputeFiltered() }
+        .onChange(of: excludeRegexText) { _, _ in recomputeFiltered() }
+        .onChange(of: hideHeartbeat) { _, _ in recomputeFiltered() }
+        .onChange(of: searchText) { _, newValue in
+            // 搜索框逐键输入：防抖 120ms，避免每键一次 5000 条全量重算。
+            searchDebounceTask?.cancel()
+            searchDebounceTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled, searchText == newValue else { return }
+                recomputeFiltered()
+            }
+        }
+        .onReceive(captureSession.$frames) { _ in
+            // 帧批量上屏（0.25s 一批）后重算一次过滤。
+            recomputeFiltered()
+        }
         .task {
             // 页面回执轮询（三页签共用，抓包流诊断行 + 发送可用性都看它）。
             while !Task.isCancelled {
@@ -421,7 +512,7 @@ struct PacketCaptureWindowView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11))
             }
-            Text("\(filteredFrames.count) / \(captureSession.frames.count)")
+            Text("\(cachedFrames.count) / \(captureSession.frames.count)")
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -481,9 +572,9 @@ struct PacketCaptureWindowView: View {
 
     private var packetList: some View {
         List(selection: $selectedPacketID) {
-            ForEach(filteredFrames) { packet in
+            ForEach(cachedFrames) { packet in
                 PacketRow(packet: packet,
-                          displayName: session.commandCatalog.displayName(for: packet.command))
+                          displayName: cachedDisplayNames[packet.command] ?? packet.command)
                     .tag(packet.id)
                     .listRowBackground(
                         RoundedRectangle(cornerRadius: 5)
@@ -542,7 +633,7 @@ struct PacketCaptureWindowView: View {
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
                 }
-            } else if filteredFrames.isEmpty {
+            } else if cachedFrames.isEmpty {
                 Text("没有匹配过滤条件的帧")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -566,15 +657,9 @@ struct PacketCaptureWindowView: View {
             if let packet = selectedPacket {
                 detailHeader(packet)
                 Divider().overlay(Color.white.opacity(0.08))
-                ScrollView {
-                    // 默认压缩单行；「展开」时对当前选中的帧懒美化（存储始终是压缩串）。
-                    Text(jsonPretty ? JSONBeautifier.pretty(packet.detail) : packet.detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.88))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
+                // 等宽只读文本（AppKit 懒排版）：大 JSON 秒开；超 64KB 截断提示。
+                MonospacedTextView(text: DetailDisplay.text(of: packet, pretty: jsonPretty))
+                    .padding(12)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.text.magnifyingglass")
@@ -1058,15 +1143,8 @@ private struct PairRowView: View {
                     .foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
             }
-            ScrollView {
-                Text(jsonPretty ? JSONBeautifier.pretty(packet.detail) : packet.detail)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-            }
-            .frame(height: 150)
+            MonospacedTextView(text: DetailDisplay.text(of: packet, pretty: jsonPretty))
+                .frame(height: 150)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.10)))
         }
@@ -1507,15 +1585,8 @@ private struct SendCommandPane: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.white.opacity(0.8))
                 }
-                ScrollView {
-                    Text(jsonPretty ? JSONBeautifier.pretty(response.detail) : response.detail)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
-                }
-                .frame(height: 130)
+                MonospacedTextView(text: DetailDisplay.text(of: response, pretty: jsonPretty))
+                    .frame(height: 130)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(lobbyRGB: 0x22C55E).opacity(0.04)))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(lobbyRGB: 0x22C55E).opacity(0.18)))
             }
