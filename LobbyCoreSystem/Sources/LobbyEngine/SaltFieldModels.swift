@@ -770,17 +770,38 @@ public enum SaltColorPalette {
         return legionColors[index]
     }
 
-    /// 类型底色（typeBg 口径）。
+    /// 类型底色。
+    ///
+    /// **重要性 → 视觉权重**（用户口径 2026-09-19）：据点重要性 1 < 2 < 5 < 3，
+    /// 越重要越"重"——饱和度递增、明度递减，同时色相彼此隔开：
+    ///
+    ///   | 类型 | 重要性 | 色 | 说明 |
+    ///   |---|---|---|---|
+    ///   | 1 | 最低（62 个） | 淡紫 `#C9BEEA` | 大面积铺底，最淡最冷，退到背景层 |
+    ///   | 2 | 中低（10 个） | 暖黄 `#E8CE5C` | 比淡紫"实"一档（黄天生高明度，压了饱和度） |
+    ///   | 5 | 中高（2 个） | 翠绿 `#4CCB72` | 中等明度、饱和更高 |
+    ///   | 3 | 最高（4 个） | 洋红 `#C724B1` | 全图唯一的高饱和深色，最跳 |
+    ///
+    /// 大本营（4）红、核心（6）青、核心圈粉**刻意不动**（用户要求）；
+    /// 洋红与大本营红差 58°、与核心圈粉（#FF69B4）差 25° 且深得多，都能分开。
+    ///
+    /// 道路（9）改成**中性浅灰**（2026-09-19 第二次调）：原来是浅蓝 `#BDD1F7`，
+    /// 与最不重要的 type 1 淡紫都是「浅冷色 + 明度接近」，放在一起分不清。
+    /// 道路是地形底网、本来就不该有"颜色"——退回中性灰后，任何据点色都不会跟它撞，
+    /// 同时 type 1 仍保持最淡（重要性阶梯里它必须最轻）。
+    ///
+    /// ⚠️ 全部用十六进制字面量（不再是 `"red"` 这类具名色）：地图要按填充色**算亮度**
+    /// 决定标注用黑字还是白字——洋红/大本营这种深底必须配白字。想调色只改这一处。
     public static func typeColor(_ type: Int) -> String {
         switch type {
-        case 1: return "orange"
-        case 2: return "yellow"
-        case 3: return "gray"
-        case 4: return "red"
-        case 5: return "green"
-        case 6: return "#1bd7d7"
-        case 9: return "#2452f7"
-        default: return "#3a3a3a"
+        case 1: return "#C9BEEA"
+        case 2: return "#E8CE5C"
+        case 3: return "#C724B1"
+        case 4: return "#EB4740"
+        case 5: return "#4CCB72"
+        case 6: return "#1BD7D7"
+        case 9: return "#DFE2E8"
+        default: return "#3A3A3A"
         }
     }
 }

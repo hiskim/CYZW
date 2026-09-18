@@ -204,8 +204,25 @@ extension SaltColorPalette {
         case "gray": return Color(red: 0.55, green: 0.55, blue: 0.58)
         case "red": return Color(red: 0.92, green: 0.28, blue: 0.24)
         case "green": return Color(red: 0.30, green: 0.78, blue: 0.42)
+        // 据点 1 的紫色（原 orange：与 type2 黄、大本营红太接近，用户 2026-09-19 要求换掉）。
+        // 淡紫底 + 黑字对比度好，且与黄/绿/灰/红/浅蓝/粉都不撞。
+        case "purple": return Color(red: 0.702, green: 0.616, blue: 0.859)
         default: return Color(red: 0.25, green: 0.25, blue: 0.28)
         }
+    }
+
+    /// 颜色字面量的近似亮度（0...1）：用来决定标注写**黑字还是白字**。
+    /// 深底（洋红 `#C724B1`、大本营红 `#EB4740`）必须配白字，否则看不清。
+    /// 具名色（"red" 之类）返回 nil，调用方按浅色处理。
+    static func brightness(of literal: String) -> Double? {
+        guard literal.hasPrefix("#") else { return nil }
+        let hex = literal.dropFirst()
+        guard hex.count == 6 || hex.count == 8, let value = UInt64(hex, radix: 16) else { return nil }
+        let shift = hex.count == 6 ? 16 : 24
+        let r = Double((value >> UInt64(shift)) & 0xFF) / 255
+        let g = Double((value >> UInt64(shift - 8)) & 0xFF) / 255
+        let b = Double((value >> UInt64(shift - 16)) & 0xFF) / 255
+        return 0.299 * r + 0.587 * g + 0.114 * b
     }
 
     private static func hexRGBA(_ text: String) -> Color? {
@@ -922,21 +939,18 @@ struct SaltFieldMapView: View {
     ///      ——联盟色表里的「未知」是近白 #f8f9fa，直接刷在六边形上会看不见。
     ///   ② 占领布局用快照染好的 colorHex；③ 分布布局只有大本营亮俱乐部色，其余统一道路蓝
     ///      （照抄自助手仓的分布布局口径）。
-    private func color(of node: SaltRenderedNode, club: SaltLiveClub?) -> Color {
-        if Self.coreRingIDs.contains(node.id) {
-            return SaltColorPalette.color(SaltColorPalette.coreRingColor)
-        }
+    private func colorLiteral(of node: SaltRenderedNode, club: SaltLiveClub?) -> String {
+        if Self.coreRingIDs.contains(node.id) { return SaltColorPalette.coreRingColor }
         if let club {
-            return SaltColorPalette.color(club.alliance == .unknown
-                                          ? "#DC143C" : club.alliance.fillHex)
+            return club.alliance == .unknown ? "#DC143C" : club.alliance.fillHex
         }
-        if layout == .occupy {
-            return SaltColorPalette.color(node.colorHex)
-        }
-        if node.isStronghold, node.belongsLegionID != nil {
-            return SaltColorPalette.color(node.colorHex)
-        }
-        return SaltColorPalette.color(SaltColorPalette.typeColor(9))
+        if layout == .occupy { return node.colorHex }
+        if node.isStronghold, node.belongsLegionID != nil { return node.colorHex }
+        return SaltColorPalette.typeColor(9)
+    }
+
+    private func color(of node: SaltRenderedNode, club: SaltLiveClub?) -> Color {
+        SaltColorPalette.color(colorLiteral(of: node, club: club))
     }
 
     /// 六边形路径（顶点角 0/60/120…；与 centerX/centerY 同一套几何）。
@@ -950,6 +964,13 @@ struct SaltFieldMapView: View {
         }
         path.closeSubpath()
         return path
+    }
+
+    /// 标注文本（字号由调用方按格子宽度收缩；小字号降字重，免得糊成一团）。
+    private func labelText(_ text: String, size: CGFloat, tint: Color) -> Text {
+        Text(text)
+            .font(.system(size: size, weight: size >= 8.5 ? .semibold : .medium))
+            .foregroundStyle(tint)
     }
 
     private func draw(context: inout GraphicsContext, size: CGSize) {
@@ -981,31 +1002,45 @@ struct SaltFieldMapView: View {
             let center = screenCenter(col: node.x, row: node.y)
             let path = hexPath(center: center, radius: radius)
             let club = liveClub(of: node)
-            context.fill(path, with: .color(color(of: node, club: club)))
+            let fill = colorLiteral(of: node, club: club)
+            context.fill(path, with: .color(SaltColorPalette.color(fill)))
             context.stroke(path, with: .color(.black.opacity(0.22)), lineWidth: 0.6)
+            // 深底配白字（洋红据点、大本营红、核心圈粉），浅底配黑字。
+            let ink: Color = (SaltColorPalette.brightness(of: fill) ?? 1) < 0.6 ? .white : .black
 
             // 标注：大本营 → 俱乐部名（快照归属优先，其次主连接落位）；
-            //       据点 → 血量短名（30/50/80/100 血）。
+            //       据点 → 坐标表里的名字（没填则退回「30血」）。
             if node.isStronghold {
                 if let club {
                     clubChips.append((CGPoint(x: center.x, y: center.y - radius * 1.25),
                                       club.labelText, club.alliance))
                 } else if let legionID = node.belongsLegionID, let name = legionNameByID[legionID] {
-                    labels.append((center, name, .black))
+                    labels.append((center, name, ink))
                 } else if let position = SaltFieldChartController.strongholdPosition(nodeID: node.id) {
                     // 既没归属也没落位：至少把大本营序号标出来（方便对号入座）。
-                    labels.append((center, "\(position)", .black.opacity(0.75)))
+                    labels.append((center, "\(position)", ink.opacity(0.9)))
                 }
             } else if !node.isRoad {
-                labels.append((center, node.labelText, .black.opacity(0.85)))
+                labels.append((center, node.labelText, ink.opacity(0.9)))
             }
         }
-        let fontSize = max(6.5, 11 * scale)
+        // 标注：按**实际字体度量**把文字收进六边形。
+        //
+        // 固定字号在「30血」这种 2 字标签上没问题，但坐标表填进 3–4 字的名字
+        // （荒芜1 / 綠洲13 / 靈山20）就会顶出格子边框（用户反馈 2026-09-19）。
+        // 这里用 `context.resolve(...).measure()` 量真实宽度，超了就按比例缩字号；
+        // 缩到 8.5pt 以下时降字重（semibold → medium），小字才不糊。
+        let capFont = max(6.5, 11 * scale)
+        let labelLimit = radius * 2 * 0.92      // 六边形中心处最宽横线 ≈ 2R，留 8% 边距
         for (center, text, tint) in labels {
-            context.draw(Text(text)
-                .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(tint),
-                at: center)
+            var size = capFont
+            var resolved = context.resolve(labelText(text, size: size, tint: tint))
+            let width = resolved.measure(in: CGSize(width: 4000, height: 200)).width
+            if width > labelLimit, width > 0 {
+                size = max(5.5, size * labelLimit / width)
+                resolved = context.resolve(labelText(text, size: size, tint: tint))
+            }
+            context.draw(resolved, at: center)
         }
         let chipFont = max(7, 10.5 * scale)
         for (center, text, alliance) in clubChips {
