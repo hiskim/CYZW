@@ -30,8 +30,12 @@ public final class PacketCaptureController: ObservableObject {
 
     /// 系统帧：不参与请求-响应配对（心跳/确认/错误）。
     /// 实测口径（导出数据 103 帧验证）：`_sys/ack` 是确认帧（双向都有）、
-    /// `_sys/error` 是服务端错误推送；业务配对必须把它们剔除后按序对齐。
-    static let systemCommands: Set<String> = ["_sys/ack", "_sys/error", "heart_beat"]
+    /// `_sys/error` 是服务端错误推送；`_ws/ping` 是 WebSocket 应用层心跳
+    /// （单字节 0x80，每 5s 一条，非 px 协议帧）。
+    static let systemCommands: Set<String> = ["_sys/ack", "_sys/error", "heart_beat", wsPingCommand]
+
+    /// WebSocket 应用层心跳帧的归一命令名（单字节 0x80 ping）。
+    static let wsPingCommand = "_ws/ping"
 
     /// 账号 ID → 抓包会话。窗口与列表都从这里取。
     @Published public private(set) var sessions: [String: PacketCaptureSession] = [:]
@@ -316,6 +320,15 @@ public final class PacketCaptureController: ObservableObject {
             packet.detail = "base64 还原失败（\(frame.payloadBase64.prefix(32))…）"
             return packet
         }
+        // WebSocket **应用层心跳**（非 px 协议帧）：实测游戏客户端每 5s 发一个
+        // 单字节 0x80（私有 ping，浏览器 API 层看不到），服务端不回业务响应。
+        // 必须归为系统帧：否则每个 ping 都会在配对队列里占一个坑，把后面
+        // 真实请求的响应全部错位（导出数据里 21 条「未解码」即此）。
+        if data.count == 1 {
+            packet.command = Self.wsPingCommand
+            packet.detail = "WebSocket 应用层心跳（0x\(String(data[data.startIndex], radix: 16))）"
+            return packet
+        }
         // 文本帧：不走 px/BON，直接把原文当内容展示（游戏协议是二进制 px，文本帧极少见，
         // 出现时通常意味着服务端/网关在发别的——原样保留最有排查价值）。
         if frame.kind == "text" {
@@ -340,6 +353,7 @@ public final class PacketCaptureController: ObservableObject {
         packet.command = object["cmd"]?.stringValue ?? "‹无cmd›"
         packet.seq = object["seq"]?.intValue
         packet.ack = object["ack"]?.intValue
+        packet.isProtocolFrame = true
         // detail：外层对象渲染。body（binary）在渲染时尝试解内层 BON，解不开就 hex。
         packet.detail = BonJSON.render(outer, bodyKey: "body")
         // summary：内层 body 的 JSON（列表行预览）。没有 body 的帧（如心跳）留空。
@@ -400,6 +414,14 @@ public struct CapturedPacket: Identifiable, Sendable {
     public var matchedResponseUUID: UUID?
     /// recv 帧：没等到配对请求（服务端主动推送）。
     public var isPush: Bool
+    /// 是否为**合法协议帧**（px 信封解封 + BON 解码都成功）。
+    /// 应用层心跳（0x80）、hex 失败帧、文本帧都不是——它们不进配对队列
+    /// （占坑会把后续真实响应错位），但在抓包流里照常可见。
+    public var isProtocolFrame: Bool
+
+    public var isSystem: Bool {
+        PacketCaptureController.systemCommands.contains(command)
+    }
 
     public var timeText: String {
         let date = Date(timeIntervalSince1970: timestampMs / 1000)
@@ -426,6 +448,7 @@ public struct CapturedPacket: Identifiable, Sendable {
         self.roundTripMs = nil
         self.matchedResponseUUID = nil
         self.isPush = false
+        self.isProtocolFrame = false
     }
 }
 
@@ -483,12 +506,13 @@ public final class PacketCaptureSession: ObservableObject {
     ///   · recv 业务帧（非 `_sys/ack`/`_sys/error`）弹队头配对——服务端串行处理，
     ///     响应顺序 = 请求顺序；
     ///   · 没有等待中的请求 → 服务端主动推送（`isPush`）；
-    ///   · `ack`/`seq` 仅作详情展示（ack 语义是「服务端处理进度」，分布集中在
-    ///     `send.seq - 1`，**不能**当精确配对键）；
-    ///   · 超过时间窗的等待请求留在队列里（导出/停止时表现为「无响应」，不误配）。
+    ///   · **非协议帧不参与配对**（应用层心跳 0x80 每 5s 一个占坑，会把后续
+    ///     真实响应全部错位——实测教训）；`ack`/`seq` 仅作详情展示。
     private func match(_ packet: inout CapturedPacket) {
-        let isSystem = PacketCaptureController.systemCommands.contains(packet.command)
-        guard !isSystem else { return }
+        // 非协议帧（心跳 ping / 解码失败 / 文本帧）：照常展示，不碰配对队列。
+        guard packet.isProtocolFrame else { return }
+        // 系统帧（服务端确认/错误推送）：同样不参与业务配对。
+        guard !PacketCaptureController.systemCommands.contains(packet.command) else { return }
         if packet.direction == "send" {
             pendingBusinessSends.append((packet.id, packet.timestampMs))
             return

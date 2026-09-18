@@ -97,8 +97,9 @@ struct PacketCaptureWindowView: View {
         }
     }
 
-    /// 系统帧（与引擎侧口径一致：配对页签不展示，心跳排除开关同时滤掉）。
-    static let systemCommands: Set<String> = ["heart_beat", "_sys/ack", "_sys/error"]
+    /// 系统帧（与引擎侧口径一致：配对页签不展示，心跳排除开关同时滤掉——
+    /// 含 WebSocket 应用层心跳 0x80 ping）。
+    static let systemCommands: Set<String> = ["heart_beat", "_sys/ack", "_sys/error", "_ws/ping"]
 
     @ObservedObject var session: LobbySessionModel
     /// 抓包控制器（capturing 状态 + 发送历史 + 页面回执）。
