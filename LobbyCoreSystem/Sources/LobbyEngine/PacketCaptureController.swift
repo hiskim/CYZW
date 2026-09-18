@@ -28,8 +28,10 @@ public final class PacketCaptureController: ObservableObject {
     /// 单会话留存上限。超出 FIFO 挤掉最旧（抓包窗口显示的是「最近 5000 条」）。
     public static let maxFrames = 5000
 
-    /// 参与请求-响应配对的命令黑名单：心跳不配对（没有「请求」语义）。
-    static let heartbeatCommands: Set<String> = ["heart_beat", "_sys/ack"]
+    /// 系统帧：不参与请求-响应配对（心跳/确认/错误）。
+    /// 实测口径（导出数据 103 帧验证）：`_sys/ack` 是确认帧（双向都有）、
+    /// `_sys/error` 是服务端错误推送；业务配对必须把它们剔除后按序对齐。
+    static let systemCommands: Set<String> = ["_sys/ack", "_sys/error", "heart_beat"]
 
     /// 账号 ID → 抓包会话。窗口与列表都从这里取。
     @Published public private(set) var sessions: [String: PacketCaptureSession] = [:]
@@ -112,8 +114,8 @@ public final class PacketCaptureController: ObservableObject {
     public func ingest(frame: PacketFrame, accountID: String) {
         guard isCapturing(accountID: accountID), let session = sessions[accountID] else { return }
         let packet = Self.decode(frame)
-        // 自动发现：抓包流里出现的新 cmd 进指令库（幂等，心跳除外）。
-        if !packet.command.hasPrefix("‹"), !Self.heartbeatCommands.contains(packet.command) {
+        // 自动发现：抓包流里出现的新 cmd 进指令库（幂等，系统帧除外）。
+        if !packet.command.hasPrefix("‹"), !Self.systemCommands.contains(packet.command) {
             catalog.addDiscovered(packet.command)
         }
         // 维护服务端 seq（发送构帧时的 ack 取这里）。
@@ -229,16 +231,36 @@ public final class PacketCaptureController: ObservableObject {
     // MARK: - 导出
 
     /// 导出载荷（JSON）。失败返回 nil（调用方提示）。
+    ///
+    /// 配对字段自解释：`pairIndex`（1-based，指向配对帧在 frames 数组里的位置，
+    /// 请求/响应双向都有）、`roundTripMs`、`isPush`——导出文件离线分析时
+    /// 不需要再猜 seq/ack 的关系。
     public func exportPayload(accountID: String) -> Data? {
         guard let session = sessions[accountID] else { return nil }
-        let frames: [[String: Any]] = session.frames.map { packet in
+        // uuid → 1-based 序号（配对方位）。
+        let pairIndexByID = Dictionary(uniqueKeysWithValues:
+            session.frames.enumerated().map { index, packet in (packet.id, index + 1) })
+        let frames: [[String: Any]] = session.frames.enumerated().map { index, packet in
             var item: [String: Any] = [
+                "index": index + 1,
                 "time": packet.timeText,
                 "direction": packet.direction,
                 "command": packet.command,
                 "bytes": packet.byteCount,
                 "kind": packet.kind
             ]
+            if let seq = packet.seq { item["seq"] = Int(seq) }
+            if let ack = packet.ack { item["ack"] = Int(ack) }
+            if !PacketCaptureController.systemCommands.contains(packet.command) {
+                if let responseIndex = packet.matchedResponseUUID.flatMap({ pairIndexByID[$0] }) {
+                    item["pairIndex"] = responseIndex
+                }
+                if let requestIndex = packet.matchedRequestUUID.flatMap({ pairIndexByID[$0] }) {
+                    item["pairIndex"] = requestIndex
+                }
+                if packet.isPush { item["isPush"] = true }
+                if let roundTrip = packet.roundTripMs { item["roundTripMs"] = Int(roundTrip) }
+            }
             if let summary = packet.summary, !summary.isEmpty { item["summary"] = summary }
             item["detail"] = packet.detail
             if packet.truncated { item["truncated"] = true }
@@ -250,6 +272,7 @@ public final class PacketCaptureController: ObservableObject {
             "exportedAt": ISO8601DateFormatter().string(from: Date()),
             "captured": session.frames.count,
             "dropped": session.droppedTotal,
+            "pairing": "业务序号对齐（服务端串行处理）：第 k 个业务请求 ↔ 第 k 个业务响应；ack 是处理进度不是配对键",
             "frames": frames
         ]
         return try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
@@ -394,8 +417,6 @@ public struct CapturedPacket: Identifiable, Sendable {
 public final class PacketCaptureSession: ObservableObject {
     /// 批量转正的节奏（毫秒）。
     private static let flushIntervalNanos: UInt64 = 250_000_000
-    /// 请求-响应配对的时间窗：超过视为「无响应」（防误配 + 防积累）。
-    private static let matchWindowMs: Double = 30_000
 
     /// 留存帧（FIFO，上限 `PacketCaptureController.maxFrames`）。
     @Published public private(set) var frames: [CapturedPacket] = []
@@ -405,8 +426,15 @@ public final class PacketCaptureSession: ObservableObject {
 
     /// 最近收到的服务端 seq（发送构帧时的 ack 来源）。
     public private(set) var lastServerSeq: Int64 = 0
-    /// 待配对请求队列：cmd → FIFO（同 cmd 连发多包时按发出顺序配回）。
-    private var pendingRequests: [String: [(uuid: UUID, time: Double)]] = [:]
+    /// 待配对的业务请求 FIFO（全局队列，跨 cmd）。
+    ///
+    /// ⚠️ 为什么是**全局**队列而不是按 cmd 分桶（2026-09-18.8 的方案，导出数据
+    /// 103 帧实测推翻）：响应的 cmd 是游戏内部定义的 `Resp` 名——`role_getroleinfo`
+    /// → `Role_GetRoleInfoResp`、`mergebox_getinfo` → `MergeBoxInfoResp`（内部缩写，
+    /// **无法从请求名推导**），按 cmd 相等配对永远落空。真实机制是服务端**串行**
+    /// 处理：排除系统帧后第 k 个业务请求 ↔ 第 k 个业务响应（实测 32/41 形态完全
+    /// 吻合，剩余错位全部由推送帧与无响应请求解释）。
+    private var pendingBusinessSends: [(uuid: UUID, time: Double)] = []
 
     /// 待转正缓冲（`append` 只进这里，由 flush loop 批量搬到 `frames`）。
     private var pending: [CapturedPacket] = []
@@ -427,41 +455,35 @@ public final class PacketCaptureSession: ObservableObject {
         lastServerSeq = max(lastServerSeq, seq)
     }
 
-    /// 请求-响应配对。
+    /// 请求-响应配对（业务序号对齐）。
     ///
-    /// 协议真相（对齐助手仓 `wsAgent.js`）：帧内**没有请求 ID**——请求 `{cmd, seq, ack}`、
-    /// 响应**同名 cmd** + 服务端自己的 seq。所以配对 = 同名 cmd 分桶 FIFO + 30s 时间窗：
-    /// send 压队，recv 弹队头；弹不到的 recv 标「推送」。心跳（`heart_beat`/`_sys/ack`）不参与。
+    /// 规则（导出数据实测口径）：
+    ///   · send 业务帧（非 `_sys/ack`/`heart_beat`）压入全局 FIFO；
+    ///   · recv 业务帧（非 `_sys/ack`/`_sys/error`）弹队头配对——服务端串行处理，
+    ///     响应顺序 = 请求顺序；
+    ///   · 没有等待中的请求 → 服务端主动推送（`isPush`）；
+    ///   · `ack`/`seq` 仅作详情展示（ack 语义是「服务端处理进度」，分布集中在
+    ///     `send.seq - 1`，**不能**当精确配对键）；
+    ///   · 超过时间窗的等待请求留在队列里（导出/停止时表现为「无响应」，不误配）。
     private func match(_ packet: inout CapturedPacket) {
-        // 过期清理（顺手做，不引入定时器）。
-        for command in pendingRequests.keys {
-            pendingRequests[command]?.removeAll { packet.timestampMs - $0.time > Self.matchWindowMs }
-            if pendingRequests[command]?.isEmpty == true {
-                pendingRequests.removeValue(forKey: command)
-            }
-        }
-        guard Self.isPairable(packet.command) else { return }
+        let isSystem = PacketCaptureController.systemCommands.contains(packet.command)
+        guard !isSystem else { return }
         if packet.direction == "send" {
-            pendingRequests[packet.command, default: []].append((packet.id, packet.timestampMs))
+            pendingBusinessSends.append((packet.id, packet.timestampMs))
             return
         }
-        // recv：先于响应到达的同名请求（同 cmd 连发多包时 FIFO）。
-        guard var queue = pendingRequests[packet.command], let request = queue.first else {
-            packet.isPush = true
-            return
-        }
-        queue.removeFirst()
-        if queue.isEmpty {
-            pendingRequests.removeValue(forKey: packet.command)
+        // recv 业务帧：配队头。
+        if let request = pendingBusinessSends.first {
+            pendingBusinessSends.removeFirst()
+            packet.matchedRequestUUID = request.uuid
+            packet.matchedRequestTime = request.time
+            packet.roundTripMs = max(0, packet.timestampMs - request.time)
+            updateRequestSide(uuid: request.uuid,
+                              responseID: packet.id,
+                              roundTripMs: packet.roundTripMs ?? 0)
         } else {
-            pendingRequests[packet.command] = queue
+            packet.isPush = true
         }
-        packet.matchedRequestUUID = request.uuid
-        packet.matchedRequestTime = request.time
-        packet.roundTripMs = max(0, packet.timestampMs - request.time)
-        updateRequestSide(uuid: request.uuid,
-                          responseID: packet.id,
-                          roundTripMs: packet.roundTripMs ?? 0)
     }
 
     /// 双向标记响应指针（请求对象可能在 pending 或已 flush 进 frames）。
@@ -474,10 +496,6 @@ public final class PacketCaptureSession: ObservableObject {
             frames[index].matchedResponseUUID = responseID
             frames[index].roundTripMs = roundTripMs
         }
-    }
-
-    private static func isPairable(_ command: String) -> Bool {
-        !PacketCaptureController.heartbeatCommands.contains(command)
     }
 
     public func begin() {

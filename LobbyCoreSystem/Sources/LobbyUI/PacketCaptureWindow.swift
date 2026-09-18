@@ -85,19 +85,20 @@ public final class PacketCaptureWindowManager: NSObject, NSWindowDelegate {
 /// 发送与指令库独立成页签，各自有完整的操作空间。
 struct PacketCaptureWindowView: View {
     enum CaptureTab: Int, CaseIterable, Identifiable {
-        case stream, send, catalog
+        case stream, pairs, send, catalog
         var id: Int { rawValue }
         var title: String {
             switch self {
             case .stream: return "抓包流"
+            case .pairs: return "配对"
             case .send: return "发送指令"
             case .catalog: return "指令库"
             }
         }
     }
 
-    /// 心跳命令（与游戏侧一致；「排除心跳」开关同时滤掉两者）。
-    static let heartbeatCommands: Set<String> = ["heart_beat", "_sys/ack"]
+    /// 系统帧（与引擎侧口径一致：配对页签不展示，心跳排除开关同时滤掉）。
+    static let systemCommands: Set<String> = ["heart_beat", "_sys/ack", "_sys/error"]
 
     @ObservedObject var session: LobbySessionModel
     /// 抓包控制器（capturing 状态 + 发送历史 + 页面回执）。
@@ -111,10 +112,13 @@ struct PacketCaptureWindowView: View {
     @State private var directionFilter = 0 // 0 全部 1 发送 2 接收
     @State private var includeCommands: [String] = [] // 白名单 chip（精确 cmd）
     @State private var excludeCommands: [String] = [] // 黑名单 chip（精确 cmd）
+    /// 正则过滤（大小写不敏感；非法表达式不生效并在栏上提示）。
+    @State private var includeRegexText = ""
+    @State private var excludeRegexText = ""
     @State private var hideHeartbeat = true
     @State private var searchText = ""
     @State private var selectedPacketID: UUID?
-    // ── 跨页签联动：指令库「填入发送」→ 发送页签预填 ──
+    // ── 跨页签联动：配对/指令库「填入发送」→ 发送页签预填；配对行点击 → 抓包流定位 ──
     @State private var sendDraftCommand: String?
 
     init(session: LobbySessionModel, account: GameAccount) {
@@ -133,20 +137,42 @@ struct PacketCaptureWindowView: View {
 
     private var isCapturing: Bool { capture.isCapturing(accountID: account.id) }
 
+    // MARK: 正则过滤（编译失败返回 nil = 不生效，由过滤栏提示）
+
+    private var includeRegex: NSRegularExpression? {
+        guard !includeRegexText.isEmpty else { return nil }
+        return try? NSRegularExpression(pattern: includeRegexText, options: [.caseInsensitive])
+    }
+
+    private var excludeRegex: NSRegularExpression? {
+        guard !excludeRegexText.isEmpty else { return nil }
+        return try? NSRegularExpression(pattern: excludeRegexText, options: [.caseInsensitive])
+    }
+
     // MARK: 过滤
+
+    private func matchesRegex(_ regex: NSRegularExpression?, command: String) -> Bool? {
+        guard let regex else { return nil }
+        let range = NSRange(command.startIndex..., in: command)
+        return regex.firstMatch(in: command, options: [], range: range) != nil
+    }
 
     private var filteredFrames: [CapturedPacket] {
         let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let include = includeRegex
+        let exclude = excludeRegex
         return captureSession.frames.filter { packet in
             switch directionFilter {
             case 1: if packet.direction != "send" { return false }
             case 2: if packet.direction != "recv" { return false }
             default: break
             }
-            if hideHeartbeat, Self.heartbeatCommands.contains(packet.command) { return false }
-            // 白名单 chip = 精确 cmd 匹配；空 = 不过滤。黑名单优先级最高。
+            if hideHeartbeat, Self.systemCommands.contains(packet.command) { return false }
+            // 白名单 chip（精确）+ 包含正则；黑名单 chip + 排除正则（黑名单优先级最高）。
             if !includeCommands.isEmpty, !includeCommands.contains(packet.command) { return false }
+            if let hit = matchesRegex(include, command: packet.command), !hit { return false }
             if excludeCommands.contains(packet.command) { return false }
+            if let hit = matchesRegex(exclude, command: packet.command), hit { return false }
             if !search.isEmpty {
                 let hit = packet.command.localizedCaseInsensitiveContains(search)
                     || (packet.summary?.localizedCaseInsensitiveContains(search) ?? false)
@@ -170,6 +196,11 @@ struct PacketCaptureWindowView: View {
             switch activeTab {
             case .stream:
                 streamPane
+            case .pairs:
+                PairingPane(session: session,
+                            captureSession: captureSession,
+                            selectedPacketID: $selectedPacketID,
+                            switchToStream: { activeTab = .stream })
             case .send:
                 SendCommandPane(session: session,
                                 account: account,
@@ -216,7 +247,7 @@ struct PacketCaptureWindowView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 300)
+            .frame(width: 380)
             Spacer(minLength: 10)
             Button {
                 session.togglePacketCapture(account)
@@ -242,6 +273,7 @@ struct PacketCaptureWindowView: View {
         VStack(spacing: 0) {
             filterChipsBar
             filterBar
+            regexBar
             pageDiagnosticsLine
             Divider().overlay(Color.white.opacity(0.10))
             HStack(spacing: 0) {
@@ -251,6 +283,47 @@ struct PacketCaptureWindowView: View {
                 detailPane
             }
         }
+    }
+
+    /// 正则过滤行（大小写不敏感；非法表达式红色提示且不生效）。
+    private var regexBar: some View {
+        HStack(spacing: 8) {
+            Text("正则")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color(lobbyRGB: 0x3B82F6))
+            HStack(spacing: 4) {
+                Text("包含")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                TextField("如 ^(role|hero)_.*|Resp$", text: $includeRegexText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(includeRegex == nil && !includeRegexText.isEmpty ? .red : .primary)
+            }
+            HStack(spacing: 4) {
+                Text("排除")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                TextField("如 _sys|heart", text: $excludeRegexText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(excludeRegex == nil && !excludeRegexText.isEmpty ? .red : .primary)
+            }
+            if includeRegex == nil && !includeRegexText.isEmpty {
+                Text("包含正则非法")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+            if excludeRegex == nil && !excludeRegexText.isEmpty {
+                Text("排除正则非法")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(Color.white.opacity(0.02))
     }
 
     /// 白 / 黑名单 chip 行（从指令库页签「加入白名单 / 黑名单」或行内 + 添加）。
@@ -631,6 +704,215 @@ private struct PacketRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - 配对页签
+
+/// 请求-响应成对视图。
+///
+/// 组织方式 = 「业务序号对齐」（与引擎侧配对算法同一口径）：每个业务请求一行，
+/// 展开它的响应（含往返耗时）；无响应的请求标 ⏳（在途 / 服务端未回）；服务端
+/// 主动推送单独列在推送区。点行 = 选中该帧并切到抓包流看详情。
+private struct PairingPane: View {
+    @ObservedObject var session: LobbySessionModel
+    @ObservedObject var captureSession: PacketCaptureSession
+    @Binding var selectedPacketID: UUID?
+    let switchToStream: () -> Void
+
+    /// 一行 = 一个业务请求 + 它的响应（可能没有）。
+    struct PairRow: Identifiable {
+        let request: CapturedPacket
+        let index: Int
+        let response: CapturedPacket?
+        var id: UUID { request.id }
+    }
+
+    /// 指令库展示名缓存（一次构建，避免行渲染逐条查找）。
+    private var displayNames: [String: String] {
+        var map: [String: String] = [:]
+        for packet in captureSession.frames {
+            if map[packet.command] == nil {
+                map[packet.command] = session.commandCatalog.displayName(for: packet.command)
+            }
+        }
+        return map
+    }
+
+    private var pairRows: [PairRow] {
+        let lookup = Dictionary(uniqueKeysWithValues: captureSession.frames.map { ($0.id, $0) })
+        var rows: [PairRow] = []
+        var index = 0
+        for packet in captureSession.frames {
+            guard packet.direction == "send",
+                  !PacketCaptureWindowView.systemCommands.contains(packet.command) else { continue }
+            index += 1
+            rows.append(PairRow(request: packet,
+                                index: index,
+                                response: packet.matchedResponseUUID.flatMap { lookup[$0] }))
+        }
+        return rows
+    }
+
+    private var pushes: [CapturedPacket] {
+        captureSession.frames.filter { $0.direction == "recv" && $0.isPush }
+    }
+
+    private var unansweredCount: Int {
+        pairRows.filter { $0.response == nil }.count
+    }
+
+    var body: some View {
+        let names = displayNames
+        List {
+            Section {
+                ForEach(pairRows) { row in
+                    pairSection(row, names: names)
+                }
+            } header: {
+                Text("请求 → 响应（\(pairRows.count) 对，\(unansweredCount) 条无响应）")
+            }
+            if !pushes.isEmpty {
+                Section {
+                    ForEach(pushes) { packet in
+                        pushRow(packet, names: names)
+                    }
+                } header: {
+                    Text("服务端推送（\(pushes.count)，时间窗内没有对应请求）")
+                }
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .overlay {
+            if captureSession.frames.isEmpty {
+                Text("暂无帧。开始抓包后这里的配对会实时更新。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 一个配对单元：请求行 + 响应行（缩进）。
+    @ViewBuilder
+    private func pairSection(_ row: PairRow, names: [String: String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            // 请求行
+            Button {
+                selectedPacketID = row.request.id
+                switchToStream()
+            } label: {
+                HStack(spacing: 6) {
+                    Text("#\(row.index)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 30, alignment: .leading)
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(lobbyRGB: 0x3B82F6))
+                    Text(names[row.request.command] ?? row.request.command)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(row.request.command)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let seq = row.request.seq {
+                        Text("seq=\(seq)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer(minLength: 4)
+                    Text(row.request.timeText)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 1)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // 响应行
+            if let response = row.response {
+                Button {
+                    selectedPacketID = response.id
+                    switchToStream()
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("└")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 30, alignment: .leading)
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(lobbyRGB: 0x22C55E))
+                        Text(response.command)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color(lobbyRGB: 0x4ADE80))
+                            .lineLimit(1)
+                        if let roundTrip = response.roundTripMs {
+                            Text(String(format: "%.0f ms", roundTrip))
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color(lobbyRGB: 0x4ADE80).opacity(0.85))
+                        }
+                        Spacer(minLength: 4)
+                        Text(response.timeText)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.leading, 10)
+                    .padding(.vertical, 1)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 6) {
+                    Text("└")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 30, alignment: .leading)
+                    Label("无响应（在途或服务端未回）", systemImage: "hourglass")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 10)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func pushRow(_ packet: CapturedPacket, names: [String: String]) -> some View {
+        Button {
+            selectedPacketID = packet.id
+            switchToStream()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(lobbyRGB: 0xA78BFA))
+                Text(names[packet.command] ?? packet.command)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(packet.command)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let seq = packet.seq {
+                    Text("srvSeq=\(seq)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                Text(packet.timeText)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
