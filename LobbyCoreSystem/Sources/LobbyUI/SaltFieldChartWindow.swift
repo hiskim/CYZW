@@ -838,9 +838,11 @@ struct SaltFieldMapView: View {
     /// 大本营序号 → 俱乐部（主连接 `legion_getopponent` 的实时落位；可为空）。
     var clubsByPosition: [Int: SaltLiveClub] = [:]
 
-    private let hexSize: CGFloat = 13.25
-    private let gap: CGFloat = 2.75
-    private var hexHeight: CGFloat { sqrt(3) * hexSize }
+    /// 几何（格子中心 / 自适应 / 命中）统一在引擎里，绘制与悬停共用同一套数学。
+    private let geometry = SaltFieldMapGeometry()
+
+    /// 悬停中的格子（坐标固定显示在地图**右下角**，方便照着填 `SaltFieldNodeNames` 坐标表）。
+    @State private var hoveredID: String?
 
     var body: some View {
         GeometryReader { geo in
@@ -848,23 +850,58 @@ struct SaltFieldMapView: View {
                 draw(context: &context, size: size)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // 悬停命中：只在「格子变了」时改状态，避免鼠标每动一下都刷新。
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    let id = geometry.nodeID(at: location, in: geo.size)
+                    if id != hoveredID { hoveredID = id }
+                case .ended:
+                    hoveredID = nil
+                }
+            }
+            // 高亮与读数都放 overlay：Canvas 的绘制输入不含悬停状态，
+            // 鼠标移动不会触发整张地图（1312 个空格 + 300 多节点）重画。
+            .overlay(alignment: .topLeading) {
+                hoverHighlight(size: geo.size)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                hoverReadout
+            }
         }
     }
 
-    /// 列 x 的中心横坐标。
-    private func centerX(_ col: Int) -> CGFloat {
-        CGFloat(col) * (hexSize * 1.5 + gap) + hexSize
+    /// 悬停高亮：只给该格描一圈黑边（帮助对准要读的那一格）。
+    @ViewBuilder
+    private func hoverHighlight(size: CGSize) -> some View {
+        if let hoveredID, let node = nodes[hoveredID] {
+            let fit = geometry.fit(in: size)
+            hexPath(center: geometry.center(col: node.x, row: node.y, in: size),
+                    radius: geometry.hexSize * fit.scale)
+                .stroke(Color.black.opacity(0.85), lineWidth: 2)
+        }
     }
 
-    /// 列 x 行 y 的中心纵坐标（奇数列下错半格）。
-    private func centerY(_ row: Int, col: Int) -> CGFloat {
-        CGFloat(row) * (hexHeight + gap) + hexSize + (col % 2 == 1 ? hexHeight / 2 : 0)
+    /// 右下角读数：悬停据点的**坐标**（就是坐标表的 key）+ 类型/归属/血量。
+    /// 固定位置而不是跟随光标——靠下/靠右的据点，跟随式提示会被推出画布看不见
+    /// （用户反馈 2026-09-19）。没悬停时不占位。
+    @ViewBuilder
+    private var hoverReadout: some View {
+        if let hoveredID, let node = nodes[hoveredID] {
+            SaltFieldMapReadout(nodeID: hoveredID, detail: hoverDetail(node))
+        }
     }
 
-    private var mapSize: CGSize {
-        CGSize(width: centerX(40) + hexSize + gap,
-               height: centerY(31, col: 0) + hexHeight + gap)
+    /// 提示第二行：类型名（或道路）/ 归属俱乐部 / 血量。
+    private func hoverDetail(_ node: SaltRenderedNode) -> String {
+        var parts: [String] = [node.isRoad ? "道路" : node.labelText]
+        if let legionID = node.belongsLegionID {
+            parts.append(legionNameByID[legionID] ?? "俱乐部\(legionID)")
+        }
+        if node.maxHP > 0 { parts.append("\(node.hp)/\(node.maxHP)") }
+        return parts.joined(separator: " · ")
     }
+
 
     /// 该大本营在实时落位表里的俱乐部（快照给了归属就不用了——服务端数据更权威）。
     private func liveClub(of node: SaltRenderedNode) -> SaltLiveClub? {
@@ -916,15 +953,13 @@ struct SaltFieldMapView: View {
     }
 
     private func draw(context: inout GraphicsContext, size: CGSize) {
-        let map = mapSize
-        let scale = min(size.width / map.width, size.height / map.height, 1.6)
-        let offsetX = max(0, (size.width - map.width * scale) / 2)
-        let offsetY = max(0, (size.height - map.height * scale) / 2)
-        let radius = hexSize * scale
+        // 与悬停命中共用引擎里的几何：两边必须是同一套数学，否则会「描错格」。
+        let fit = geometry.fit(in: size)
+        let scale = fit.scale
+        let radius = geometry.hexSize * scale
 
         func screenCenter(col: Int, row: Int) -> CGPoint {
-            CGPoint(x: offsetX + centerX(col) * scale,
-                    y: offsetY + centerY(row, col: col) * scale)
+            geometry.center(col: col, row: row, in: size)
         }
 
         // ① 先铺**整张网格**：骨架之外的格子画成白色（细描边），地图边界一眼可见。
@@ -962,7 +997,7 @@ struct SaltFieldMapView: View {
                     labels.append((center, "\(position)", .black.opacity(0.75)))
                 }
             } else if !node.isRoad {
-                labels.append((center, node.typeName, .black.opacity(0.85)))
+                labels.append((center, node.labelText, .black.opacity(0.85)))
             }
         }
         let fontSize = max(6.5, 11 * scale)
@@ -988,6 +1023,34 @@ struct SaltFieldMapView: View {
                            with: .color(.black.opacity(0.25)), lineWidth: 0.6)
             context.draw(resolved, at: center)
         }
+    }
+}
+
+// MARK: - 地图右下角坐标读数
+
+/// 悬停据点时显示在地图**右下角**的读数：第一行是坐标（坐标表 `SaltFieldNodeNames`
+/// 的 key），第二行是类型 / 归属 / 血量。
+///
+/// 为什么固定右下角而不是跟随光标：靠下、靠右的据点，跟随式提示会被推出画布看不见
+/// （用户反馈 2026-09-19）。独立成类型也方便探针单独渲染、验证它确实贴在右下角。
+struct SaltFieldMapReadout: View {
+    let nodeID: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(nodeID)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(.primary)
+            Text(detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.black.opacity(0.18)))
+        .padding(8)
     }
 }
 

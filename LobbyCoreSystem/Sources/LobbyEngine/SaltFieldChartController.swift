@@ -269,6 +269,20 @@ public final class SaltFieldChartController: ObservableObject {
             LobbyLog.info("[saltfield] %@ 战场快照更新：据点 %ld 俱乐部 %ld 成员 %ld（%ld 字节）",
                           accountID, snapshot.nodes.count,
                           snapshot.legions.count, snapshot.members.count, frame.byteCount)
+            // 一次性诊断：据点条目里到底有哪些字段——「每个据点自己的名称」在不在服务端，
+            // 看这一条日志就知道（不在的话得另找来源，见 SaltBuilding.name 注释）。
+            let probeKey = "\(accountID)#buildingFields"
+            if unmatchedLogCounts[probeKey, default: 0] == 0 {
+                var logged = false
+                Self.forEachEntry(battlefield["buildingData"]) { _, value in
+                    guard !logged, let object = value.objectValue else { return }
+                    logged = true
+                    let keys = object.fields.map { $0.key }.joined(separator: ",")
+                    LobbyLog.info("[saltfield] %@ 据点条目字段：[%@] name=「%@」",
+                                  accountID, keys, object["name"]?.stringValue ?? "")
+                }
+                if logged { unmatchedLogCounts[probeKey] = 1 }
+            }
         } else if frame.direction == "recv", lowered.contains("war_enterbattlefield") {
             // 收到进场响应却解不出 battlefield：结构诊断（服务端换字段 / 压了 body /
             // 我们发的 params 不对，都会落到这里）。限 3 条防刷屏。
@@ -927,6 +941,8 @@ public final class SaltFieldChartController: ObservableObject {
             guard let object = value.objectValue, let id = object["id"]?.stringValue else { return }
             buildings[id] = SaltBuilding(
                 id: id,
+                // 每个据点自己的名称（同类型也不同名）；服务端不给就留空 → 类型表兜底。
+                name: object["name"]?.stringValue ?? object["nameStr"]?.stringValue ?? "",
                 type: object["type"]?.intValue.flatMap(Int.init(exactly:)) ?? 9,
                 belongsLegionID: object["belongsLegionId"]?.intValue.flatMap { $0 >= 0 ? $0 : nil },
                 hp: object["hP"]?.intValue ?? 0,
@@ -983,9 +999,10 @@ public final class SaltFieldChartController: ObservableObject {
                 return lx != rx ? lx < rx : ly < ry
             }
             // 积分 = 占领点的分值和 + 四圣分（口径照抄自助手仓 extractValidData）。
+            // 单点分值走 `buildingScore`：类型表优先（同类型同分），表里没填才用服务端 point。
             var score = draft.blessingScore
             for buildingID in draft.buildingIDs {
-                score += buildings[buildingID]?.point ?? 0
+                score += Self.buildingScore(buildings[buildingID])
             }
             draft.score = score
             drafts[id] = draft
@@ -1050,6 +1067,19 @@ public final class SaltFieldChartController: ObservableObject {
             legions: saltLegions,
             members: members.sorted { $0.kill != $1.kill ? $0.kill > $1.kill : $0.die < $1.die }
         )
+    }
+
+    /// 单个据点的积分（用户口径：**同类型同分**，所以优先查类型表）。
+    ///   ① 类型表 `score > 0` → 用表（最可靠，不依赖服务端是否给 point）；
+    ///   ② 否则用服务端 `buildingData[...].point`；
+    ///   ③ 都没有 → 0。
+    /// 表在 `SaltFieldModels.SaltFieldCatalog.strongholds`——要填的就是那里。
+    static func buildingScore(_ building: SaltBuilding?) -> Int64 {
+        guard let building else { return 0 }
+        if let spec = SaltFieldCatalog.stronghold(type: building.type), spec.score > 0 {
+            return spec.score
+        }
+        return building.point
     }
 
     /// BON 的对象（key 索引）与数组两种形态统一遍历（服务端结构形态不受文档约束）。
@@ -1305,8 +1335,12 @@ public final class SaltFieldChartController: ObservableObject {
             let (x, y) = coords(id)
             guard x >= 0 else { continue }
             let building = buildings[id]
+            // 名称优先级：**手填坐标表** → 服务端 buildingData.name → 类型表名 → 「N血」
+            // （后两级在 SaltRenderedNode.labelText 里兜底）。手填表放最前，是为了让
+            // 「骨架提前填好的名字」在进盐场前后表现一致——用户口径 2026-09-19。
+            let name = SaltFieldNodeNames.name(nodeID: id) ?? building?.name ?? ""
             result[id] = SaltRenderedNode(
-                id: id, x: x, y: y, type: type,
+                id: id, name: name, x: x, y: y, type: type,
                 colorHex: colorByID[id] ?? SaltColorPalette.typeColor(type),
                 belongsLegionID: belongsByID[id],
                 point: building?.point ?? 0,

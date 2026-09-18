@@ -9,6 +9,10 @@ import Foundation
 /// 一个建筑/据点/道路点（服务端 `buildingData` 条目）。
 public struct SaltBuilding: Sendable {
     public let id: String
+    /// **这个据点自己的名称**（服务端 `buildingData[...].name`；可能为空）。
+    /// 用户口径（2026-09-19）：同一类型的不同据点，名称也不一样 —— 所以名称是
+    /// **按点**的，不能只靠类型表；类型表里的 name 只是服务端没给名称时的兜底。
+    public let name: String
     /// 9=道路 · 1/2/3/5=据点（对应生命值 30/50/80/100）· 4=大本营 · 6=核心。
     ///
     /// ⚠️ 这几个数字是据点的**生命值（血量）**，不是分值——2026-09-18 用户纠正：
@@ -116,6 +120,8 @@ public struct SaltMember: Sendable, Identifiable {
 /// 渲染就绪的地图节点（染色已定，窗口直接画）。
 public struct SaltRenderedNode: Sendable {
     public let id: String
+    /// 据点自己的名称（服务端给的；空 = 用类型表兜底）。
+    public let name: String
     /// 列 0...40（奇数列下错半格）。
     public let x: Int
     /// 行 0...31。
@@ -132,11 +138,22 @@ public struct SaltRenderedNode: Sendable {
     public var isStronghold: Bool { type == 4 }
     public var isCore: Bool { type == 6 }
 
-    /// 据点短名（地图标注用；道路不参与）。
+    /// 地图标注文本，优先级：
+    ///   ① **这个据点自己的名称**（服务端 buildingData.name）——同类型不同点名称也不同；
+    ///   ② 类型表里的名称（服务端没给名称时的类型级兜底）；
+    ///   ③ 生命值短名「30血」（都没填时）。
+    public var labelText: String {
+        if !name.isEmpty { return name }
+        if let spec = SaltFieldCatalog.stronghold(type: type), !spec.name.isEmpty {
+            return spec.name
+        }
+        return typeName
+    }
+
+    /// 据点短名（**兜底**标签：类型表里名称没填时用，道路不参与）。
     ///
     /// ⚠️ 1/2/3/5 那四个数字是**据点生命值**（30/50/80/100 血），不是分值——
-    /// 2026-09-18 用户纠正。所以标签写「30血」而不是「30分」（分值另有其物：
-    /// 服务端 `point`，进俱乐部积分）。
+    /// 2026-09-18 用户纠正。分值另有其物，见 `SaltStrongholdSpec.score`。
     public var typeName: String {
         switch type {
         case 1: return "30血"
@@ -148,6 +165,170 @@ public struct SaltRenderedNode: Sendable {
         default: return ""
         }
     }
+}
+
+// MARK: - 据点目录（按类型固定的名称 / 生命值 / 积分）
+//
+// 用户口径（2026-09-19）：
+//   · **同一类型**的据点，生命值和积分都一样；不同类型不一样 → 两个值都按 type 定，
+//     不需要逐个据点填；
+//   · 名称**按据点实例**各不相同（同类型也不一样）→ 地图标注优先用服务端给的点名；
+//     本表 `name` 只是「服务端没给名称」时的**类型级兜底**（没填则退回「30血」）。
+//
+// 取值优先级（见 `SaltFieldChartController.buildingScore`）：
+//   ① 表里 `score > 0` → 用表（类型固定值，最可靠）；
+//   ② 否则用服务端 `buildingData[...].point`（服务端给了就用）；
+//   ③ 都没有 → 0（现状：积分只算四圣分）。
+//
+// ⚠️ **要填的就是这张表**：`name` 与 `score` 两列（生命值已知，已填好）。
+//    只改这里就行——地图标注与俱乐部积分都读它，不需要动别处。
+
+/// 一种据点的固定属性。
+public struct SaltStrongholdSpec: Sendable {
+    public let type: Int
+    /// 据点名称（地图标注用；空串 = 未填 → 退回生命值短名）。
+    public let name: String
+    /// 生命值（1/2/3/5 = 30/50/80/100，用户口径）。
+    public let hp: Int64
+    /// 积分（同类型同分；0 = 未填 → 退回服务端 `point`）。
+    public let score: Int64
+
+    public init(type: Int, name: String = "", hp: Int64, score: Int64 = 0) {
+        self.type = type
+        self.name = name
+        self.hp = hp
+        self.score = score
+    }
+
+    /// 地图标注文本（名称没填时退回「N血」）。
+    public var label: String { name.isEmpty ? "\(hp)血" : name }
+}
+
+// MARK: - 地图几何（错列六边形 odd-q）
+
+/// 盐场六边形地图的几何：格子中心 / 画布自适应 / **坐标命中**。
+///
+/// 为什么单独抽成一个类型：绘制与悬停命中**必须用同一套数学**——两处各算一遍必然漂移，
+/// 表现就是「鼠标指着 A 格，提示写 B 格」。抽出来后探针也能直接做
+/// 「格子中心 → 命中 → 回到原格子」的往返测试（见 /tmp/saltfield-live-probe）。
+///
+/// 口径：odd-q（奇数列下移半格），hexSize 13.25 / gap 2.75，与助手仓 LegionWar.vue 的
+/// 绘制参数一致；网格尺寸取自 `SaltFieldRoadPoints.columns/rows`（41×32）。
+public struct SaltFieldMapGeometry: Sendable {
+    public let hexSize: CGFloat
+    public let gap: CGFloat
+
+    public init(hexSize: CGFloat = 13.25, gap: CGFloat = 2.75) {
+        self.hexSize = hexSize
+        self.gap = gap
+    }
+
+    public var hexHeight: CGFloat { CGFloat(3).squareRoot() * hexSize }
+
+    /// 列 → 中心横坐标。
+    public func centerX(_ col: Int) -> CGFloat {
+        CGFloat(col) * (hexSize * 1.5 + gap) + hexSize
+    }
+
+    /// 行（列 col 内）→ 中心纵坐标（奇数列下错半格）。
+    public func centerY(_ row: Int, col: Int) -> CGFloat {
+        CGFloat(row) * (hexHeight + gap) + hexSize + (col % 2 == 1 ? hexHeight / 2 : 0)
+    }
+
+    /// 整张网格的画布尺寸。
+    public var mapSize: CGSize {
+        CGSize(width: centerX(SaltFieldRoadPoints.columns - 1) + hexSize + gap,
+               height: centerY(SaltFieldRoadPoints.rows - 1, col: 0) + hexHeight + gap)
+    }
+
+    /// 画布尺寸 → 缩放（上限 1.6）与居中偏移。
+    public func fit(in size: CGSize) -> (scale: CGFloat, offsetX: CGFloat, offsetY: CGFloat) {
+        let map = mapSize
+        guard map.width > 0, map.height > 0 else { return (1, 0, 0) }
+        let scale = min(size.width / map.width, size.height / map.height, 1.6)
+        return (scale,
+                max(0, (size.width - map.width * scale) / 2),
+                max(0, (size.height - map.height * scale) / 2))
+    }
+
+    /// 格子中心在画布里的位置。
+    public func center(col: Int, row: Int, in size: CGSize) -> CGPoint {
+        let fit = fit(in: size)
+        return CGPoint(x: fit.offsetX + centerX(col) * fit.scale,
+                       y: fit.offsetY + centerY(row, col: col) * fit.scale)
+    }
+
+    /// 画布坐标 → 节点 id（逆变换：先估列，再在 ±1 列/行里找最近且落在六边形内的格子）。
+    /// 命中不到（落在空白处）返回 nil。
+    public func nodeID(at point: CGPoint, in size: CGSize) -> String? {
+        let fit = fit(in: size)
+        let stepX = (hexSize * 1.5 + gap) * fit.scale
+        let stepY = (hexHeight + gap) * fit.scale
+        let radius = hexSize * fit.scale
+        guard stepX > 0, stepY > 0, radius > 0 else { return nil }
+        let colGuess = Int(((point.x - fit.offsetX - hexSize * fit.scale) / stepX).rounded())
+        for col in (colGuess - 1)...(colGuess + 1) {
+            guard col >= 0, col < SaltFieldRoadPoints.columns else { continue }
+            let stagger = (col % 2 == 1) ? hexHeight / 2 * fit.scale : 0
+            let rowGuess = Int(((point.y - fit.offsetY - hexSize * fit.scale - stagger) / stepY).rounded())
+            for row in (rowGuess - 1)...(rowGuess + 1) {
+                guard row >= 0, row < SaltFieldRoadPoints.rows else { continue }
+                let center = CGPoint(x: fit.offsetX + centerX(col) * fit.scale,
+                                     y: fit.offsetY + centerY(row, col: col) * fit.scale)
+                if hypot(point.x - center.x, point.y - center.y) <= radius {
+                    return "\(col)_\(row)"
+                }
+            }
+        }
+        return nil
+    }
+}
+
+/// 据点名称**坐标表**（手填）：节点 id（"列_行"，如 "27_10"）→ 该据点自己的名称。
+///
+/// 用途：地图骨架是静态的、服务端数据要进盐场才有 —— 这张表让你**提前**把每个据点的
+/// 名字填好，没数据时地图也能显示正确名称。
+///
+/// 怎么取坐标：把鼠标移到盐场窗口地图上的据点，光标旁会浮出它的坐标（如 `27_10`），
+/// 照着往下面填一行即可；悬停时该格还会描一圈黑边，方便对准。
+/// （注意：工具栏开了「穿透」时窗口不收鼠标事件，悬停不生效，先关掉穿透再取坐标。）
+///
+/// 优先级（见 `SaltFieldChartController.renderNodes`）：
+///   本表 → 服务端 `buildingData[...].name` → 类型表名 → 「30血」。
+/// 所以**只填你想要的**就行，没填的点自动走后面几级。
+public enum SaltFieldNodeNames {
+    /// 节点 id → 名称。**照着这个格式加行**（逗号分隔）：
+    /// ```
+    /// public static let byNodeID: [String: String] = [
+    ///     "27_10": "青龙坛",
+    ///     "28_15": "白虎营",
+    /// ]
+    /// ```
+    /// 现在留空 `[:]` = 全部走服务端/类型兜底。
+    public static let byNodeID: [String: String] = [:]
+
+    /// 查名称（没填返回 nil）。
+    public static func name(nodeID: String) -> String? {
+        guard let value = byNodeID[nodeID], !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+/// 据点类型目录（`buildingData.type` → **按类型固定**的属性：生命值 / 积分 / 类型级兜底名）。
+public enum SaltFieldCatalog {
+    /// 类型 → 据点属性。**名称与积分待填**：把游戏里的名称/积分写进对应行即可。
+    /// 4=大本营 / 6=核心 的血量与积分随服务端 `buildingData`（这里 hp 留 0，仅提供名称）。
+    public static let strongholds: [Int: SaltStrongholdSpec] = [
+        1: SaltStrongholdSpec(type: 1, name: "", hp: 30, score: 0),
+        2: SaltStrongholdSpec(type: 2, name: "", hp: 50, score: 0),
+        3: SaltStrongholdSpec(type: 3, name: "", hp: 80, score: 0),
+        5: SaltStrongholdSpec(type: 5, name: "", hp: 100, score: 0),
+        4: SaltStrongholdSpec(type: 4, name: "大本营", hp: 0, score: 0),
+        6: SaltStrongholdSpec(type: 6, name: "核心", hp: 0, score: 0),
+    ]
+
+    /// 类型对应的据点属性（道路 9 / 未知类型返回 nil）。
+    public static func stronghold(type: Int) -> SaltStrongholdSpec? { strongholds[type] }
 }
 
 /// 一次战场快照（图表窗口的完整数据源，4s 级轮询整体替换）。
