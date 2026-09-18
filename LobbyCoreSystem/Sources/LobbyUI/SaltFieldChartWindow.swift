@@ -783,6 +783,21 @@ struct SaltHistoryView: View {
         .onAppear {
             // 窗口切到历史模式自动拉一次我方场次（幂等：已有数据也刷新）。
             controller.fetchHistoryBattles(accountID: account.id)
+            // 默认选中「离当前时间最近的盐场日」（今天若正好是盐场日则选今天，
+            // 否则选上一个周六/月赛日，可能落在上月）并自动查询。
+            if selectedDate == nil {
+                let calendar = Calendar.current
+                let today = calendar.startOfDay(for: Date())
+                let lastMonth = calendar.date(byAdding: .month, value: -1, to: month) ?? month
+                let candidates = (SaltHistoryCatalog.saltDates(in: lastMonth)
+                    + SaltHistoryCatalog.saltDates(in: month))
+                    .map { calendar.startOfDay(for: $0) }
+                    .filter { $0 <= today }
+                if let latest = candidates.max() {
+                    selectedDate = latest
+                    controller.requestWarDetails(accountID: account.id, battleDate: latest)
+                }
+            }
         }
     }
 
