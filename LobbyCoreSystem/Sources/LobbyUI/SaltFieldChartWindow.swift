@@ -343,64 +343,193 @@ struct SaltFieldChartWindowView: View {
     }
 
     // MARK: 工具栏（模式切换 + 按模式的控件组）
-
+    //
+    // ⚠️ 窗口可以缩到 500pt 宽（minSize），而实时模式工具栏控件的固有宽度合计
+    // ≈ 1130–1200pt（随状态文案长短浮动）。
+    // 原先是一条固定 HStack：窄窗口里它不换行，只**压扁子视图**——
+    // 短标签（置顶/穿透/透明）被压到一个字宽 → 竖排成「一个字一行的柱子」；
+    // 状态文本被压成 20 多行 → 整条工具栏涨到 **310pt 高**。
+    // 实测（探针 /tmp/salt-toolbar-probe，`sh run.sh` 可重跑，编译的就是本文件）：
+    //   改前：宽 1180 → 44pt（单行正常）· 宽 1000 → 156pt · 宽 ≤900 → 310pt（用户报的「显示异常」）；
+    //   改后：宽 1180 → 40pt（单行）· 1000/900 → 65pt（两行）· ≤800 → 97pt（三行），全程无竖排。
+    //
+    // 现在按可用宽度**分档换行**（`ViewThatFits` 按各档理想宽度择一；换档语义已实测）：
+    //   档1 单行 —— 宽窗口（与原布局逐项一致）
+    //   档2 两行 —— 模式+状态+拉取控制 / 窗口偏好（置顶·穿透·透明度·Mini）
+    //   档3 三行 —— 模式+状态 / 拉取控制 / 窗口偏好（缩到 minSize 500 也不挤）
+    // 配套硬约束（缺一条就会退回「竖排」）：
+    //   · 短标签 / 图标按钮一律 `fixedSize()` —— 宁可整行换档，也不许被压成竖排；
+    //   · 状态文本 `lineLimit(1)` + `.tail` —— 宁可省略号，也不许把整条撑高。
     private var toolbar: some View {
-        HStack(spacing: 10) {
-            Picker("", selection: $mode) {
-                ForEach(WindowMode.allCases) { Text($0.label).tag($0) }
+        toolbarRows
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            // 工具栏实测高度 → 穿透豁免区（macOS 15 onGeometryChange；实测失败时
+            // 豁免高度有 44pt 保底，见 topInteractiveHeight）。换行后高度会变，
+            // 每次变化都重新上报一次。
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                guard abs(height - toolbarHeight) > 0.5 else { return }
+                toolbarHeight = height
+                applyWindowSettings()
             }
-            .pickerStyle(.segmented)
-            .frame(width: 160)
-            .onChange(of: mode) { _, newMode in
-                // 历史模式的日历/榜单需要正常交互，穿透自动关掉（回实时模式可再开）。
-                if newMode == .history, clickThrough {
-                    clickThrough = false
-                }
+    }
+
+    /// 按模式选控件组；每组再按可用宽度分档（单行 / 两行 / 三行）。
+    @ViewBuilder
+    private var toolbarRows: some View {
+        switch mode {
+        case .live:
+            ViewThatFits(in: .horizontal) {
+                liveRowSingle
+                liveRowsDouble
+                liveRowsTriple
             }
-            .help("实时战况 = 盐场连接轮询（需游戏内进战场）；历史战绩 = 主连接按日期查任意场次总榜")
-            switch mode {
-            case .live:
-                liveToolbarControls
-            case .history:
-                historyToolbarControls
+        case .history:
+            ViewThatFits(in: .horizontal) {
+                historyRowSingle
+                historyRowsDouble
             }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        // 工具栏实测高度 → 穿透豁免区（macOS 15 onGeometryChange；实测失败时
-        // 豁免高度有 44pt 保底，见 topInteractiveHeight）。
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.height
-        } action: { height in
-            guard abs(height - toolbarHeight) > 0.5 else { return }
-            toolbarHeight = height
-            applyWindowSettings()
         }
     }
 
-    /// 实时战况的工具栏控件（原口径）。
-    @ViewBuilder
-    private var liveToolbarControls: some View {
-        statusView
-        Spacer(minLength: 6)
+    // ── 实时战况的三种排布 ──
+
+    /// 档1：单行（宽窗口，逐项等于原布局）。
+    private var liveRowSingle: some View {
+        HStack(spacing: 10) {
+            modePicker
+            statusView
+            Spacer(minLength: 6)
+            pollingToggle
+            layoutPicker
+            statModePicker
+            refreshButton
+            Divider().frame(height: 16)
+            windowPreferenceControls
+        }
+    }
+
+    /// 档2：两行 —— 拉取控制一行、窗口偏好一行。
+    private var liveRowsDouble: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                modePicker
+                statusView
+                Spacer(minLength: 6)
+                pollingToggle
+                layoutPicker
+                statModePicker
+                refreshButton
+            }
+            HStack(spacing: 10) {
+                windowPreferenceControls
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// 档3：三行 —— 模式+状态 / 拉取控制 / 窗口偏好（minSize 500 也装得下）。
+    /// 首行**不放 Spacer**：状态文本是贪婪的，放 Spacer 会让「剩余空间」被它俩平分，
+    /// 状态文案白丢一半可用宽度（如 476 可用时只剩 153pt 显示）。
+    private var liveRowsTriple: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                modePicker
+                statusView
+            }
+            HStack(spacing: 10) {
+                pollingToggle
+                layoutPicker
+                statModePicker
+                refreshButton
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 10) {
+                windowPreferenceControls
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // ── 历史战绩的两种排布 ──
+
+    private var historyRowSingle: some View {
+        HStack(spacing: 10) {
+            modePicker
+            historyStatusText
+            Spacer(minLength: 6)
+            historyFetchButton
+            Divider().frame(height: 16)
+            miniButton
+        }
+    }
+
+    private var historyRowsDouble: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                modePicker
+                historyStatusText
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 10) {
+                historyFetchButton
+                Divider().frame(height: 16)
+                miniButton
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // ── 工具栏零件（各档共用，改一处各档同步）──
+
+    /// 模式切换（实时 / 历史）。
+    private var modePicker: some View {
+        Picker("", selection: $mode) {
+            ForEach(WindowMode.allCases) { Text($0.label).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 160)
+        .onChange(of: mode) { _, newMode in
+            // 历史模式的日历/榜单需要正常交互，穿透自动关掉（回实时模式可再开）。
+            if newMode == .history, clickThrough {
+                clickThrough = false
+            }
+        }
+        .help("实时战况 = 盐场连接轮询（需游戏内进战场）；历史战绩 = 主连接按日期查任意场次总榜")
+    }
+
+    private var pollingToggle: some View {
         Toggle("轮询", isOn: Binding(
             get: { isPolling },
             set: { session.setSaltFieldPolling($0, account: account) }
         ))
         .toggleStyle(.checkbox)
         .font(.system(size: 11))
+        .fixedSize()
         .help("每 4 秒向盐场连接自动拉取一次战场信息")
+    }
+
+    private var layoutPicker: some View {
         Picker("", selection: $layout) {
             ForEach(MapLayout.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.segmented)
         .frame(width: 168)
         .help("占领布局 = 俱乐部占领区连通染色；分布布局 = 只亮各大本营位置")
+    }
+
+    private var statModePicker: some View {
         Picker("", selection: $statMode) {
             ForEach(StatMode.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.segmented)
         .frame(width: 168)
+        .help("俱乐部战况 = 按俱乐部汇总；个人战况 = 全部成员按击杀排序")
+    }
+
+    private var refreshButton: some View {
         Button {
             session.refreshSaltFieldNow(account: account)
         } label: {
@@ -408,30 +537,64 @@ struct SaltFieldChartWindowView: View {
                 .font(.system(size: 11, weight: .semibold))
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .help("立即拉取一次")
-        Divider().frame(height: 16)
+    }
+
+    /// 窗口偏好组：置顶 / 穿透 / 透明度 / Mini（各档共用同一串控件）。
+    private var windowPreferenceControls: some View {
+        HStack(spacing: 10) {
+            floatingToggle
+            clickThroughToggle
+            opacityLabel
+            opacitySlider
+            opacityPercent
+            Divider().frame(height: 16)
+            miniButton
+        }
+    }
+
+    private var floatingToggle: some View {
         Toggle("置顶", isOn: $floating)
             .toggleStyle(.checkbox)
             .font(.system(size: 11))
+            .fixedSize()
             .onChange(of: floating) { _, _ in applyWindowSettings() }
             .help("窗口悬浮在所有实例窗口之上")
+    }
+
+    private var clickThroughToggle: some View {
         Toggle("穿透", isOn: $clickThrough)
             .toggleStyle(.checkbox)
             .font(.system(size: 11))
+            .fixedSize()
             .onChange(of: clickThrough) { _, _ in applyWindowSettings() }
             .help("开启后仅地图与战况表区域穿透（点击直达下层游戏窗口）；\n标题栏与本工具栏始终可正常拖动/点击；\n按住 Control 可临时点击穿透中的内容区（如滚动表格）")
+    }
+
+    private var opacityLabel: some View {
         Text("透明")
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
+            .fixedSize()
+    }
+
+    private var opacitySlider: some View {
         Slider(value: $opacity, in: 0.25...1.0)
             .frame(width: 110)
             .onChange(of: opacity) { _, _ in applyWindowSettings() }
             .help("窗口透明度：低透明度悬浮在实例上不挡操作")
+    }
+
+    private var opacityPercent: some View {
         Text("\(Int(opacity * 100))%")
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.secondary)
             .frame(width: 34)
-        Divider().frame(height: 16)
+    }
+
+    /// Mini 视图切换（实时 / 历史两套工具栏共用）。
+    private var miniButton: some View {
         Button {
             toggleMini()
         } label: {
@@ -440,18 +603,20 @@ struct SaltFieldChartWindowView: View {
                 .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .help("切换 Mini 视图：窗口缩到 320 宽单列（总览+明细+榜单+日历纵向排列），适合贴边悬浮")
     }
 
-    /// 历史战绩的工具栏控件（月份导航 + 状态 + 拉取场次）。
-    @ViewBuilder
-    private var historyToolbarControls: some View {
+    /// 历史战绩的状态文案（窄档下宁可省略号，也不许竖排撑高）。
+    private var historyStatusText: some View {
         Text(controller.historyStatus[account.id] ?? "选择右侧日历中的盐场日期查询当场总榜")
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .truncationMode(.tail)
-        Spacer(minLength: 6)
+    }
+
+    private var historyFetchButton: some View {
         Button {
             controller.fetchHistoryBattles(accountID: account.id)
         } label: {
@@ -466,21 +631,20 @@ struct SaltFieldChartWindowView: View {
             }
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .disabled(controller.historyBusy.contains(account.id))
         .help("拉取本账号的盐场历史场次（legion_getinfo），日历上会标注我方名次")
-        Divider().frame(height: 16)
-        Button {
-            toggleMini()
-        } label: {
-            Image(systemName: "rectangle.compress.vertical")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(red: 0.10, green: 0.42, blue: 0.29))
-        }
-        .buttonStyle(.plain)
-        .help("切换 Mini 视图：窗口缩到 320 宽单列（总览+明细+榜单+日历纵向排列）")
     }
 
     /// 连接/轮询状态（一眼定性「没数据」是哪一环）。
+    ///
+    /// 文本两条约束都不能少：
+    ///   · `lineLimit(1)`：状态文案有长有短（最长「未检测到盐场连接（请在游戏内进入盐场战场）」
+    ///     ≈240pt），窄档下要退化成省略号，而不是竖排成 20 多行把工具栏撑到 300pt；
+    ///   · `idealWidth: 170`：换档判据看的是**理想宽度**，不设这个的话状态文案一长
+    ///     （240pt）就把单行档的理想宽度顶到 1202pt > 默认窗口的 1156pt → 宽窗口也变两行。
+    ///     给个 170 的「理想值」后，单行档理想 = 1132pt，默认 1180 窗口稳在单行；
+    ///     实际布局里它是贪婪的（maxWidth ∞），有空间就铺开显示完整文案。
     private var statusView: some View {
         HStack(spacing: 6) {
             Circle()
@@ -489,6 +653,9 @@ struct SaltFieldChartWindowView: View {
             Text(statusText)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minWidth: 0, idealWidth: 170, maxWidth: .infinity, alignment: .leading)
         }
     }
 
