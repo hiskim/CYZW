@@ -32,10 +32,12 @@ public final class PacketCaptureController: ObservableObject {
     /// 实测口径（导出数据 103 帧验证）：`_sys/ack` 是确认帧（双向都有）、
     /// `_sys/error` 是服务端错误推送；`_ws/ping` 是 WebSocket 应用层心跳
     /// （单字节 0x80，每 5s 一条，非 px 协议帧）。
-    static let systemCommands: Set<String> = ["_sys/ack", "_sys/error", "heart_beat", wsPingCommand]
+    /// `nonisolated`：`CapturedPacket.isSystem` 是非隔离的计算属性（抓包帧在
+    /// 主线程之外也会被读），而本类整体是 `@MainActor`，不加会报 Swift 6 错误。
+    nonisolated static let systemCommands: Set<String> = ["_sys/ack", "_sys/error", "heart_beat", wsPingCommand]
 
     /// WebSocket 应用层心跳帧的归一命令名（单字节 0x80 ping）。
-    static let wsPingCommand = "_ws/ping"
+    nonisolated static let wsPingCommand = "_ws/ping"
 
     /// 账号 ID → 抓包会话。窗口与列表都从这里取。
     @Published public private(set) var sessions: [String: PacketCaptureSession] = [:]

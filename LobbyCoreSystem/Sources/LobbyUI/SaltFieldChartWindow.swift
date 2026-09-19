@@ -2396,7 +2396,7 @@ struct SaltHistoryView: View {
     @ViewBuilder
     private func overviewCards(_ result: SaltWarDetailsResult) -> some View {
         let totalScore = result.rows.reduce(0) { $0 + $1.score }
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             overviewCard(label: "总击杀", tint: Color(red: 0.10, green: 0.42, blue: 0.29),
                          icon: "scope", value: "\(result.totalKill)")
             overviewCard(label: "总死亡", tint: Color(red: 0.80, green: 0.20, blue: 0.16),

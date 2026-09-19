@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // MARK: - 盐场战场快照 · 数据模型
