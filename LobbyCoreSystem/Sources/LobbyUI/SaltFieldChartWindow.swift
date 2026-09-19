@@ -641,8 +641,10 @@ struct SaltFieldChartWindowView: View {
         HStack(spacing: 10) {
             modePicker
             statusView
+            eventWindowBadge
             Spacer(minLength: 6)
             pollingToggle
+            eventWindowOverrideToggle
             layoutPicker
             statModePicker
             refreshButton
@@ -657,8 +659,10 @@ struct SaltFieldChartWindowView: View {
             HStack(spacing: 10) {
                 modePicker
                 statusView
+                eventWindowBadge
                 Spacer(minLength: 6)
                 pollingToggle
+                eventWindowOverrideToggle
                 layoutPicker
                 statModePicker
                 refreshButton
@@ -670,14 +674,16 @@ struct SaltFieldChartWindowView: View {
         }
     }
 
-    /// 档3：三行 —— 模式+状态 / 拉取控制 / 窗口偏好（minSize 500 也装得下）。
+    /// 档3：三行 —— 模式+状态+时段 / 拉取控制 / （窗口偏好 + 时段排错开关）（minSize 500 也装得下）。
     /// 首行**不放 Spacer**：状态文本是贪婪的，放 Spacer 会让「剩余空间」被它俩平分，
-    /// 状态文案白丢一半可用宽度（如 476 可用时只剩 153pt 显示）。
+    /// 状态文案白丢一半可用宽度（如 476 可用时只剩 153pt 显示）；
+    /// 时段角标是固定宽度，跟在贪婪文本后面不会抢它的空间。
     private var liveRowsTriple: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 modePicker
                 statusView
+                eventWindowBadge
             }
             HStack(spacing: 10) {
                 pollingToggle
@@ -688,6 +694,7 @@ struct SaltFieldChartWindowView: View {
             }
             HStack(spacing: 10) {
                 windowPreferenceControls
+                eventWindowOverrideToggle
                 Spacer(minLength: 0)
             }
         }
@@ -900,14 +907,20 @@ struct SaltFieldChartWindowView: View {
     }
 
     private var statusColor: Color {
+        // 解码故障最优先标红：帧根本没解开时，「有没有数据」无从判断。
+        if controller.decodeIssues[account.id] != nil { return .red }
         if isPolling, snapshot != nil { return .green }
         if liveBattlefield != nil { return .green }
         if warActive || liveStatus != nil { return .yellow }
         return .gray
     }
 
-    /// 一行状态（优先级：战场快照 → 实时地图落位 → 链中途文案 → 连接探测）。
+    /// 一行状态（优先级：解码故障 → 战场快照 → 实时地图落位 → 链中途文案 → 连接探测）。
     private var statusText: String {
+        // 0) 解码异常：它会让「没有数据」看起来像「服务端没数据」，必须先说出来。
+        if let issue = controller.decodeIssues[account.id] {
+            return "帧解码异常：\(issue)"
+        }
         if let snapshot {
             let updated = Self.clockText(snapshot.timestampMs / 1000)
             let mode = isPolling ? "轮询中" : "手动"
@@ -919,7 +932,44 @@ struct SaltFieldChartWindowView: View {
         }
         if let text = liveStatus { return text }
         if warActive { return "已检测到盐场连接，等待战场数据…" }
+        // 没有盐场连接时，先把「为什么现在不取数」说清楚——非时段空等是**正常**状态，
+        // 不该和「该有数据却没有」共用同一句话（早先就是这么含糊过去的）。
+        if !controller.eventWindow.isOpen, !controller.ignoresEventWindow {
+            return "非盐场时段 · \(controller.eventWindow.statusText())"
+        }
         return "未检测到盐场连接（请在游戏内进入盐场战场）"
+    }
+
+    /// 盐场时段角标（窗口常开时用来「好看」+ 说明当前是不是在取数）。
+    /// `TimelineView` 每 15s 刷一次倒计时，省掉自己管 Timer。
+    private var eventWindowBadge: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            let window = SaltFieldEventWindow.state(at: context.date)
+            HStack(spacing: 4) {
+                Image(systemName: window.isOpen ? "clock.badge.checkmark" : "clock")
+                    .font(.system(size: 10))
+                Text(window.statusText(now: context.date))
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .foregroundStyle(window.isOpen ? Color.orange : Color.secondary)
+            .help("盐场开放时段：周六 19:55–21:01；当月第 4 个周六之后那个周日 19:55–21:31"
+                  + "（口径与游戏页面 __XYZW_SALT_WINDOW__ 一致）。"
+                  + "窗口可以一直开着，但只在时段内取数。")
+        }
+    }
+
+    /// 「忽略时段」排错开关：非开赛时段也想验证链路通不通时打开。
+    private var eventWindowOverrideToggle: some View {
+        Toggle("忽略时段", isOn: Binding(
+            get: { controller.ignoresEventWindow },
+            set: { controller.ignoresEventWindow = $0 }
+        ))
+        .toggleStyle(.checkbox)
+        .font(.system(size: 11))
+        .fixedSize()
+        .help("打开后非开赛时段也照发轮询帧：服务端多半回空战场，但足以验证链路是否打通")
     }
 
     /// 时间戳（秒）→ HH:mm:ss。

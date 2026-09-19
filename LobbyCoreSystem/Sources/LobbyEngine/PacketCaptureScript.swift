@@ -55,7 +55,19 @@ public enum PacketCaptureScript {
     /// （`window.ws` 等带 `sendAsync` 的对象，猫助手同款）发命令：seq 由游戏
     /// 计数器管理，与游戏自身请求天然连续（原生日发的 seq 撞号会被服务端静默
     /// 丢弃），响应经封装 Promise 直接返回，无需抓包流配对。
-    public static let agentVersion = "4"
+    ///
+    /// v5（2026-09-19）：新增 `sendViaGameOnSocket(sid, cmd, paramsJSON)`——
+    /// v4 的 `sendViaGame` 只会挑 `window.ws` 这类**主连接**别名；盐场战场是**第二条
+    /// WebSocket**（URL 含 `e=x&sid2=`，见雪碧助手 `findBattleWebSocket` 注释），
+    /// 别名列表里根本没有它，于是盐场轮询只能退回原生日发 —— 而原生日发正是
+    /// 主连接历史查询已经踩过的坑（seq 撞号被服务端静默丢弃、响应看似永远不来）。
+    /// v5 让宿主按 `sid` 点名那条 socket，调它的 `sendAsync`，请求形状照抄游戏
+    /// 内置脚本 `builtin-salt-field-apk.js` 的 `sendReadCommand`：
+    /// `{ ack: 0, cmd, params, seq: Date.now(), time: Date.now() }`。
+    /// 同时新增 `sanitize`（深转 Map / 二进制 / 循环引用），因为游戏解码出来的
+    /// 响应里有 `Map`（内置脚本自己就在判 `value instanceof Map`），直接
+    /// `JSON.stringify` 会得到 `{}`。
+    public static let agentVersion = "5"
 
     /// 单帧上报字节上限（512 KiB）。超出部分丢弃并打 `trunc` 标记。
     private static let maxFrameBytes = 512 * 1024
@@ -84,10 +96,31 @@ public enum PacketCaptureScript {
     /// 走游戏自己的发送封装发命令（seq 由游戏计数器管理，天然连续不撞号）。
     /// 返回页面回执 JSON 文本：`{"__ok":true,"data":…}` / `{"__error":"…"}`。
     public static func sendViaGame(command: String, paramsJSON: String) -> String {
-        let escapedCommand = command.replacingOccurrences(of: "'", with: "\\'")
-        let escapedParams = paramsJSON.replacingOccurrences(of: "\\", with: "\\\\")
+        "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendViaGame('\(escape(command))', '\(escape(paramsJSON))') : JSON.stringify({ __error: 'no-handler' })"
+    }
+
+    /// 走**指定 sid** 那条 socket 的游戏封装（盐场战场轮询用；v5）。
+    /// `socketID` 与 `sendRaw` 同口径（宿主侧 0 基，页面侧 1 基，内部 +1）。
+    /// 失败回执带明确原因：`no-such-socket` / `socket-not-open` /
+    /// **`socket-has-no-sendAsync`**（后者说明这条连接根本没有游戏封装，
+    /// 只能退回原生日发——这是排「盐场没数据」时最关键的一条区分）。
+    public static func sendViaGameOnSocket(_ socketID: Int, command: String,
+                                           paramsJSON: String) -> String {
+        let target = max(0, socketID) + 1
+        return "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendViaGameOnSocket(\(target), '\(escape(command))', '\(escape(paramsJSON))') : JSON.stringify({ __error: 'no-handler' })"
+    }
+
+    /// 单引号字符串字面量的转义（命令名与 JSON 参数都要过一道）。
+    private static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
-        return "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sendViaGame('\(escapedCommand)', '\(escapedParams)') : JSON.stringify({ __error: 'no-handler' })"
+            .replacingOccurrences(of: "\n", with: "\\n")
+    }
+
+    /// 已登记 socket 的一览（`sid / readyState / 有无 sendAsync / url`）。
+    /// 「盐场轮询发到哪条连接」「那条连接有没有游戏封装」这两个问题全靠它回答。
+    public static func sockets() -> String {
+        "window.__LOBBY_CAPTURE__ ? window.__LOBBY_CAPTURE__.sockets() : 'no-handler'"
     }
 
     /// 代理脚本本体（`atDocumentStart` 注入，只注入主框架）。
@@ -263,6 +296,86 @@ public enum PacketCaptureScript {
               }
           }
 
+          // 深转成能过 JSON 的结构。游戏解码出来的响应里有 Map（内置脚本自己就在判
+          // `value instanceof Map`）与二进制（BON body），直接 JSON.stringify 只会得到
+          // `{}` / `{"0":…}`；这里统一摊平，二进制转 base64 并打 `__b64` 标记。
+          // 防护：深度上限 + 跳过 Cocos 的 parent/node（循环引用的常客）+ getter 抛错即跳过。
+          function sanitize(value, depth) {
+              if (value === null || value === undefined) return null;
+              if (depth > 16) return null;
+              const type = typeof value;
+              if (type === 'number' || type === 'string' || type === 'boolean') return value;
+              if (type === 'bigint') return String(value);
+              if (type === 'function' || type === 'symbol') return null;
+              try {
+                  if (value instanceof ArrayBuffer) return { __b64: toBase64(new Uint8Array(value)) };
+                  if (ArrayBuffer.isView(value)) {
+                      return { __b64: toBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+                  }
+                  if (value instanceof Date) return value.toISOString();
+                  if (Array.isArray(value)) {
+                      const list = [];
+                      for (let i = 0; i < value.length; i++) list.push(sanitize(value[i], depth + 1));
+                      return list;
+                  }
+                  if (value instanceof Map) {
+                      const map = {};
+                      value.forEach(function (item, key) { map[String(key)] = sanitize(item, depth + 1); });
+                      return map;
+                  }
+                  if (value instanceof Set) {
+                      const set = [];
+                      value.forEach(function (item) { set.push(sanitize(item, depth + 1)); });
+                      return set;
+                  }
+              } catch (error) { return null; }
+              const plain = {};
+              try {
+                  for (const key in value) {
+                      if (key === 'parent' || key === 'node' || key === '__proto__' || key === 'constructor') continue;
+                      try { plain[key] = sanitize(value[key], depth + 1); } catch (error) {}
+                  }
+              } catch (error) {}
+              return plain;
+          }
+
+          // 走**指定 sid** 那条 socket 自己的 sendAsync（盐场战场连接）。
+          // 请求形状照抄游戏内置脚本 builtin-salt-field-apk.js 的 sendReadCommand：
+          //   { ack: 0, cmd, params, seq: Date.now(), time: Date.now() }
+          // ack 恒为 0、seq 取时间戳——这是游戏自己的口径，不自行发明计数器。
+          async function sendViaGameOnSocket(targetID, cmd, paramsJSON) {
+              const entry = Array.from(state.sockets.entries()).find(function (item) {
+                  return item[1] === targetID;
+              });
+              const socket = entry ? entry[0] : null;
+              if (!socket) return JSON.stringify({ __error: 'no-such-socket', sid: targetID });
+              if (socket.readyState !== 1) return JSON.stringify({ __error: 'socket-not-open', sid: targetID });
+              if (typeof socket.sendAsync !== 'function') {
+                  return JSON.stringify({ __error: 'socket-has-no-sendAsync', sid: targetID,
+                                          url: String(socket.url || '').slice(0, 80) });
+              }
+              let params = {};
+              try { params = JSON.parse(paramsJSON); } catch (error) { params = {}; }
+              const request = { ack: 0, cmd: cmd, params: params, seq: Date.now(), time: Date.now() };
+              if (window.g_utils && window.g_utils.bon && window.g_utils.bon.encode) {
+                  request.body = window.g_utils.bon.encode(params);
+                  delete request.params;
+              }
+              try {
+                  const response = await socket.sendAsync(request);
+                  let raw = response;
+                  if (response && typeof response === 'object') {
+                      const keys = ['rawData', '_rawData', 'decodedBody', 'body', 'data'];
+                      for (let i = 0; i < keys.length; i++) {
+                          if (response[keys[i]] !== undefined) { raw = response[keys[i]]; break; }
+                      }
+                  }
+                  return JSON.stringify({ __ok: true, data: sanitize(raw, 0) });
+              } catch (error) {
+                  return JSON.stringify({ __error: 'sendAsync-threw: ' + String(error && error.message ? error.message : error) });
+              }
+          }
+
           window.__LOBBY_CAPTURE__ = {
             version: VERSION,
             setEnabled(enabled) {
@@ -279,7 +392,17 @@ public enum PacketCaptureScript {
                      ' sent=' + state.sent + ' dropped=' + state.dropped;
             },
             sendRaw: sendRaw,
-            sendViaGame: sendViaGame
+            sendViaGame: sendViaGame,
+            sendViaGameOnSocket: sendViaGameOnSocket,
+            // 诊断：当前登记的 socket 一览（哪条是盐场、有没有 sendAsync），
+            // 「盐场轮询到底发到哪条连接」这个问题不用猜。
+            sockets() {
+              return Array.from(state.sockets.entries()).map(function (entry) {
+                return 'sid=' + entry[1] + ' state=' + entry[0].readyState +
+                       ' sendAsync=' + (typeof entry[0].sendAsync === 'function' ? 1 : 0) +
+                       ' url=' + String(entry[0].url || '').slice(0, 70);
+              }).join(' | ');
+            }
           };
         })();
         """

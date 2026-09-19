@@ -64,6 +64,7 @@
 		C10000000000000000000038 /* GameCommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000038 /* GameCommandCatalog.swift */; };
 		C1000000000000000000003B /* SaltFieldModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003B /* SaltFieldModels.swift */; };
 		C1000000000000000000003A /* SaltFieldChartController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003A /* SaltFieldChartController.swift */; };
+		C1000000000000000000003D /* SaltFieldEventWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003D /* SaltFieldEventWindow.swift */; };
 		C1000000000000000000003C /* SaltFieldChartWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000003C /* SaltFieldChartWindow.swift */; };
 /* End PBXBuildFile section */
 
@@ -214,6 +215,7 @@
 		C20000000000000000000038 /* GameCommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameCommandCatalog.swift; sourceTree = "<group>"; };
 		C2000000000000000000003B /* SaltFieldModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldModels.swift; sourceTree = "<group>"; };
 		C2000000000000000000003A /* SaltFieldChartController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldChartController.swift; sourceTree = "<group>"; };
+		C2000000000000000000003D /* SaltFieldEventWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldEventWindow.swift; sourceTree = "<group>"; };
 		C2000000000000000000003C /* SaltFieldChartWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaltFieldChartWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -337,6 +339,7 @@
 				C20000000000000000000038 /* GameCommandCatalog.swift */,
 				C2000000000000000000003B /* SaltFieldModels.swift */,
 				C2000000000000000000003A /* SaltFieldChartController.swift */,
+				C2000000000000000000003D /* SaltFieldEventWindow.swift */,
 			);
 			path = LobbyEngine;
 			sourceTree = "<group>";
@@ -654,6 +657,7 @@
 				C10000000000000000000038 /* GameCommandCatalog.swift in Sources */,
 				C1000000000000000000003B /* SaltFieldModels.swift in Sources */,
 				C1000000000000000000003A /* SaltFieldChartController.swift in Sources */,
+				C1000000000000000000003D /* SaltFieldEventWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

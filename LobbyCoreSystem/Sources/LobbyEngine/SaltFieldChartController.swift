@@ -90,6 +90,11 @@ public final class SaltFieldChartController: ObservableObject {
     }
     private var liveDrafts: [String: LiveMapDraft] = [:]
     /// 俱乐部详情缓存（legionID → 详情）：刷新时只补没缓存的，省掉每轮 20 次往返。
+    ///
+    /// ⚠️ 带 **TTL 与场次归属**（2026-09-19 加）：早先这个缓存是永不过期的纯 `[Int64:]`，
+    /// 而 legionID 会跨场次复用、名称/战力/红淬每场都在变 —— 第二周打开窗口会看到
+    /// 上一周的俱乐部资料，且因为「缓存命中」永远不会去查新的（最难查的那种错）。
+    /// 现在按 `battlefieldId` 分区，并给每条加时间戳，超过 `clubDetailTTL` 视为过期。
     struct ClubDetail {
         let name: String
         let serverID: Int64
@@ -97,7 +102,32 @@ public final class SaltFieldChartController: ObservableObject {
         let quench: Int
         let announcement: String
     }
-    private var clubDetails: [Int64: ClubDetail] = [:]
+    private struct CachedClubDetail {
+        let detail: ClubDetail
+        let battlefieldID: Int64
+        let storedAt: Date
+    }
+    private var clubDetails: [Int64: CachedClubDetail] = [:]
+    /// 详情缓存有效期（一场盐场 1 小时出头；10 分钟足够省往返又能跟上战况变化）。
+    private static let clubDetailTTL: TimeInterval = 600
+
+    /// 取缓存详情（过期 / 跨场次都当没有）。
+    /// `battlefieldID == nil` = 不看场次分区（给自己家那条用：它是本账号自己的军团）。
+    private func cachedClubDetail(_ legionID: Int64, battlefieldID: Int64?) -> ClubDetail? {
+        guard let cached = clubDetails[legionID] else { return nil }
+        guard Date().timeIntervalSince(cached.storedAt) < Self.clubDetailTTL else { return nil }
+        // 缓存里记的战场 id 为 0 = 当时还不知道（先放过），否则必须同场次。
+        if let battlefieldID, cached.battlefieldID != 0, cached.battlefieldID != battlefieldID {
+            return nil
+        }
+        return cached.detail
+    }
+
+    private func storeClubDetail(_ detail: ClubDetail, legionID: Int64, battlefieldID: Int64) {
+        clubDetails[legionID] = CachedClubDetail(detail: detail,
+                                                 battlefieldID: battlefieldID,
+                                                 storedAt: Date())
+    }
     /// 每轮实时地图最多查多少家详情（对手名单可能很长，但盐场就是 20 个大本营）。
     private static let maxClubDetailsPerRound = 24
 
@@ -108,11 +138,28 @@ public final class SaltFieldChartController: ObservableObject {
     private struct WarLinkState {
         var socketID: Int = -1          // 盐场 socket 的页面侧 id（定向发送用）
         var battlefieldID: Int64 = 0    // 心跳 / 进场帧的 body.battlefieldId
-        var serverSeq: Int64 = 0        // 盐场响应 seq 游标（构帧 ack）
-        var clientSeq: Int64 = 0        // 盐场请求 seq 游标（构帧 seq = +1）
+        var serverSeq: Int64 = 0        // 盐场响应 seq 游标（原生日发回退通道的 ack）
+        var clientSeq: Int64 = 0        // 盐场**发送**帧的 seq 水位（包时间戳型，见 poll）
+        /// 游戏自己发的 `war_enterbattlefield` 的 params（原样复用，见 poll 注释）。
+        var gameEnterParams: BonObject?
+        /// 游戏自己发的进场帧的 ack（原生日发回退通道的 ack 来源之一）。
+        var gameEnterAck: Int64?
+        /// 已经用游戏封装成功发过一次（决定日志里的通道标记）。
+        var usedGameChannel = false
+        /// 游戏封装不可用的原因（`socket-has-no-sendAsync` 等），只记一次。
+        var gameChannelFailure: String?
     }
     private var states: [String: WarLinkState] = [:]
     private var pollTask: Task<Void, Never>?
+    /// 正在等游戏封装回执的账号（防每 4s 叠一个在途请求，见 poll）。
+    private var gameChannelInFlight: Set<String> = []
+
+    // MARK: 盐场时段（窗口常开、只在开赛时段取数）
+    /// 当前时段状态（窗口状态条 + 轮询门控共用）。轮询每拍重算一次。
+    @Published public private(set) var eventWindow = SaltFieldEventWindow.state()
+    /// 手动忽略时段门控（排错开关）：非开赛时段也想验证链路通不通时打开。
+    /// 打开后轮询照发，服务端多半回空战场 —— 能拿到「响应结构」本身就是证据。
+    @Published public var ignoresEventWindow = false
 
     // MARK: 每账号主连接状态（历史查询构帧用；与盐场连接的游标相互独立）
     private struct MainLinkState {
@@ -183,12 +230,34 @@ public final class SaltFieldChartController: ObservableObject {
     /// 未匹配业务帧的诊断日志计数（每账号限 3 条，防刷屏）。
     private var unmatchedLogCounts: [String: Int] = [:]
 
+    // MARK: 解码诊断（2026-09-19 起：解不开不再静默）
+    /// 账号 → 最近一次解码失败说明（窗口状态条显示）。**成功解出一帧即清空** ——
+    /// 它的语义是「这条线上现在有没有解不开的东西」，不是历史累计。
+    @Published public private(set) var decodeIssues: [String: String] = [:]
+    /// 账号 → 累计解码失败帧数（不清零：用来判断「一直解不开」还是「偶发一帧」）。
+    @Published public private(set) var decodeFailureCounts: [String: Int] = [:]
+    /// 解码失败日志：每账号上限（同一个原因只打一次，见下）。
+    private static let decodeFailureLogLimit = 6
+    private var decodeFailureLogCounts: [String: Int] = [:]
+    private var decodeFailureLoggedReasons: Set<String> = []
+
     public init() {}
 
     // MARK: - 帧摄入（GameViewportInstance 路由，与抓包 ingest 并列）
 
     public func ingest(frame: PacketFrame, accountID: String) {
-        guard let decoded = Self.decode(frame) else { return }
+        let decoded: DecodedFrame
+        switch Self.decode(frame) {
+        case .decoded(let value):
+            decoded = value
+            noteDecodeSuccess(accountID: accountID)
+        case .notApplicable:
+            return
+        case .failure(let reason, let scheme, let preview):
+            noteDecodeFailure(accountID: accountID, reason: reason, scheme: scheme,
+                              preview: preview, frame: frame)
+            return
+        }
         let lowered = decoded.command.lowercased()
         let isWarFamily = lowered.contains("war_enterbattlefield")
                 || lowered.contains("war_getbattlefieldinfo")
@@ -226,22 +295,35 @@ public final class SaltFieldChartController: ObservableObject {
             state.battlefieldID = id
             changedLink = true
         }
-        // 游戏自己发的进场帧：把它的 body 结构打一条日志（每账号一次）——
-        // 我们轮询的 params 就是照它抄的，出问题时这是唯一可对照的现场。
+        // 游戏自己发的进场帧：params **原样存下来**，轮询时照抄（见 poll 注释）——
+        // 这是唯一能确认「要不要带 useGzip」「参数叫什么」的权威来源，不靠猜。
         if frame.direction == "send", lowered.contains("war_enterbattlefield") {
-            let key = "\(accountID)#enterSend"
-            if unmatchedLogCounts[key, default: 0] == 0 {
-                unmatchedLogCounts[key] = 1
-                LobbyLog.info("[saltfield] %@ 游戏进场帧结构：%@",
-                              accountID, Self.describeBodyKeys(inner: decoded.inner))
+            let gameAck = decoded.outerObject?["ack"]?.intValue
+            if let body = decoded.inner?.objectValue {
+                state.gameEnterParams = body
+                state.gameEnterAck = gameAck
+                let key = "\(accountID)#enterSend"
+                if unmatchedLogCounts[key, default: 0] == 0 {
+                    unmatchedLogCounts[key] = 1
+                    LobbyLog.info("[saltfield] %@ 游戏进场帧：ack=%lld seq=%lld 参数=%@",
+                                  accountID, gameAck ?? -1, decoded.seq ?? -1,
+                                  Self.describeBodyKeys(inner: decoded.inner))
+                }
             }
         }
 
         // 盐场 seq 游标（与主连接完全独立的两套计数）。
+        //
+        // ⚠️ 早先发送侧带 `seq < 1_000_000` 过滤（原意「排除时间戳型 seq」），后果是：
+        // 游戏自己的盐场请求**清一色**用 `seq: Date.now()`（内置脚本
+        // `builtin-salt-field-apk.js` 的 `sendReadCommand`、雪碧助手 `sendBattleCommand`
+        // 都是 `{ ack: 0, seq: Date.now(), time: Date.now() }`），过滤后游标恒为 0，
+        // 我们发出的永远是 `seq: 1` —— 一个明显不属于本连接的序号。
+        // 现在照单全收：`clientSeq + 1` 直接续在游戏自己的序列上。
         if let seq = decoded.seq, seq > 0 {
             if frame.direction == "recv" {
                 state.serverSeq = max(state.serverSeq, seq)
-            } else if seq < 1_000_000 { // 只认小整数（排除时间戳 seq，口径同抓包）
+            } else {
                 state.clientSeq = max(state.clientSeq, seq)
             }
         }
@@ -250,51 +332,18 @@ public final class SaltFieldChartController: ObservableObject {
         //
         // ⚠️ 命令是 `war_enterbattlefield`（不是早先猜的 war_getbattlefieldinfo）：
         //    · 游戏自己在玩家进盐场时会发它 —— 白捡一份快照，不用等我们的轮询；
-        //    · 我们的 4s 轮询也发它（见 poll），响应走同一条路。
+        //    · 我们的轮询也发它（见 poll），响应走同一条路（或直接走游戏封装回执）。
         // 旧名保留在判断里只是为了兼容可能存在的服务端别名，无副作用。
         if frame.direction == "recv",
            lowered.contains("war_enterbattlefield") || lowered.contains("war_getbattlefieldinfo"),
-           let body = decoded.inner, let battlefield = body.path("battlefield")?.objectValue {
-            // 响应里的 battlefieldId 优先（进战场那一刻我们可能还没学到 id）。
-            let responseID = body.path("battlefieldId")?.intValue ?? 0
-            if responseID > 0, state.battlefieldID != responseID {
-                state.battlefieldID = responseID
-                changedLink = true
-            }
-            let snapshot = Self.buildSnapshot(battlefield: battlefield,
-                                              battlefieldID: state.battlefieldID,
-                                              timestampMs: frame.timestampMs)
-            snapshots[accountID] = snapshot
-            if snapshots[accountID] != nil, !warActiveAccountIDs.contains(accountID) {
-                warActiveAccountIDs.insert(accountID)
-            }
-            LobbyLog.info("[saltfield] %@ 战场快照更新：据点 %ld 俱乐部 %ld 成员 %ld（%ld 字节）",
-                          accountID, snapshot.nodes.count,
-                          snapshot.legions.count, snapshot.members.count, frame.byteCount)
-            // 一次性诊断：据点条目里到底有哪些字段——「每个据点自己的名称」在不在服务端，
-            // 看这一条日志就知道（不在的话得另找来源，见 SaltBuilding.name 注释）。
-            let probeKey = "\(accountID)#buildingFields"
-            if unmatchedLogCounts[probeKey, default: 0] == 0 {
-                var logged = false
-                Self.forEachEntry(battlefield["buildingData"]) { _, value in
-                    guard !logged, let object = value.objectValue else { return }
-                    logged = true
-                    let keys = object.fields.map { $0.key }.joined(separator: ",")
-                    LobbyLog.info("[saltfield] %@ 据点条目字段：[%@] name=「%@」",
-                                  accountID, keys, object["name"]?.stringValue ?? "")
-                }
-                if logged { unmatchedLogCounts[probeKey] = 1 }
-            }
-        } else if frame.direction == "recv", lowered.contains("war_enterbattlefield") {
-            // 收到进场响应却解不出 battlefield：结构诊断（服务端换字段 / 压了 body /
-            // 我们发的 params 不对，都会落到这里）。限 3 条防刷屏。
-            let key = "\(accountID)#enter"
-            let count = unmatchedLogCounts[key, default: 0]
-            unmatchedLogCounts[key] = count + 1
-            if count < 3 {
-                LobbyLog.warn("[saltfield] %@ war_enterbattlefield 响应无 battlefield 字段（结构：%@）",
-                              accountID, Self.describeBodyKeys(inner: decoded.inner))
-            }
+           let applied = applyBattlefieldResponse(accountID: accountID, body: decoded.inner,
+                                                  fallbackBattlefieldID: state.battlefieldID,
+                                                  byteCount: frame.byteCount,
+                                                  timestampMs: frame.timestampMs,
+                                                  source: "抓包流", note: decoded.bodyNote),
+           applied != state.battlefieldID {
+            state.battlefieldID = applied
+            changedLink = true
         }
 
         if !warActiveAccountIDs.contains(accountID) {
@@ -306,6 +355,91 @@ public final class SaltFieldChartController: ObservableObject {
             LobbyLog.info("[saltfield] %@ 盐场连接就绪：socket=%lld battlefieldId=%lld",
                           accountID, state.socketID, state.battlefieldID)
         }
+    }
+
+    /// 从响应里取出 `battlefield` 对象。
+    ///
+    /// 层级**不确定**，必须逐层试（每层都是真实存在的可能）：
+    ///   · `body.battlefield` —— 页面 `sendAsync` 回执直接给解码后的 body（雪碧助手
+    ///     就是 `result.battlefield`，对应抓包流的 `decoded.inner`）；
+    ///   · `body.body.battlefield` / `body.data.battlefield` —— 回执给的其实是整条
+    ///     消息（外层还带着 cmd/ack/seq）；
+    ///   · **未解码的二进制** —— 页面的 `sanitize` 会把 `ArrayBuffer` 转成
+    ///     `{"__b64":…}`；BON 解码在宿主是现成的，自己解一次就行，不必让页面懂协议。
+    private static func battlefieldObject(in body: BonValue?) -> BonObject? {
+        var candidates: [BonValue?] = [
+            body,
+            body?.path("body"),
+            body?.path("data"),
+            body?.path("result"),
+            body?.path("payload"),
+        ]
+        if let base64 = body?.path("__b64")?.stringValue,
+           let bytes = Data(base64Encoded: base64),
+           let decoded = try? Bon.decode(bytes) {
+            candidates.insert(decoded, at: 1)
+            candidates.append(decoded.path("body"))
+        }
+        for candidate in candidates {
+            if let object = candidate?.path("battlefield")?.objectValue { return object }
+        }
+        return nil
+    }
+
+    /// 已解码的 `war_enterbattlefield` 响应内层 → 快照，返回实际采用的 battlefieldId
+    /// （`nil` = 没解出 battlefield）。
+    ///
+    /// 两条数据来源共用这一份：**抓包流**（游戏自己的请求 / 我们的原生日发）与
+    /// **游戏封装回执**（页面 `sendAsync` 直接给解码好的对象，见 poll）。分成两处写
+    /// 的话，字段一改就会只改一处。`source` 只进日志。
+    @discardableResult
+    private func applyBattlefieldResponse(accountID: String, body: BonValue?,
+                                          fallbackBattlefieldID: Int64,
+                                          byteCount: Int, timestampMs: Double,
+                                          source: String, note: String? = nil) -> Int64? {
+        guard let battlefield = Self.battlefieldObject(in: body) else {
+            // 解不出 battlefield：结构诊断（服务端换字段 / 压了 body / params 不对都落这里）。
+            var structure = Self.describeBodyKeys(inner: body)
+            if body?.path("__b64") != nil {
+                structure += "（回执是纯二进制，宿主 BON 解码失败）"
+            }
+            if let note { structure += " ⚠️\(note)" }
+            let key = "\(accountID)#enter"
+            let count = unmatchedLogCounts[key, default: 0]
+            unmatchedLogCounts[key] = count + 1
+            if count < 3 {
+                LobbyLog.warn("[saltfield] %@ war_enterbattlefield 响应无 battlefield 字段（来源=%@，结构：%@）",
+                              accountID, source, structure)
+            }
+            decodeIssues[accountID] = "响应无 battlefield 字段 · \(structure)"
+            return nil
+        }
+        // 响应里的 battlefieldId 优先（进战场那一刻我们可能还没学到 id）。
+        let responseID = body?.path("battlefieldId")?.intValue ?? 0
+        let battlefieldID = responseID > 0 ? responseID : fallbackBattlefieldID
+        let snapshot = Self.buildSnapshot(battlefield: battlefield, battlefieldID: battlefieldID,
+                                          timestampMs: timestampMs)
+        snapshots[accountID] = snapshot
+        warActiveAccountIDs.insert(accountID)
+        LobbyLog.info("[saltfield] %@ 战场快照更新（%@）：据点 %ld 俱乐部 %ld 成员 %ld%@",
+                      accountID, source, snapshot.nodes.count, snapshot.legions.count,
+                      snapshot.members.count,
+                      byteCount > 0 ? "（\(byteCount) 字节）" : "")
+        // 一次性诊断：据点条目里到底有哪些字段——「每个据点自己的名称」在不在服务端，
+        // 看这一条日志就知道（不在的话得另找来源，见 SaltBuilding.name 注释）。
+        let probeKey = "\(accountID)#buildingFields"
+        if unmatchedLogCounts[probeKey, default: 0] == 0 {
+            var logged = false
+            Self.forEachEntry(battlefield["buildingData"]) { _, value in
+                guard !logged, let object = value.objectValue else { return }
+                logged = true
+                let keys = object.fields.map { $0.key }.joined(separator: ",")
+                LobbyLog.info("[saltfield] %@ 据点条目字段：[%@] name=「%@」",
+                              accountID, keys, object["name"]?.stringValue ?? "")
+            }
+            if logged { unmatchedLogCounts[probeKey] = 1 }
+        }
+        return battlefieldID
     }
 
     /// 主连接游标跟踪：非 war 族的 send/recv 帧都算主连接流量。
@@ -343,6 +477,14 @@ public final class SaltFieldChartController: ObservableObject {
         liveStatus.removeValue(forKey: accountID)
         liveBusy.remove(accountID)
         liveDrafts.removeValue(forKey: accountID)
+        // 解码诊断（新周期重新计数；不清会一直顶着上一局的失败原因）
+        decodeIssues.removeValue(forKey: accountID)
+        decodeFailureCounts.removeValue(forKey: accountID)
+        decodeFailureLogCounts.removeValue(forKey: accountID)
+        decodeFailureLoggedReasons = decodeFailureLoggedReasons.filter {
+            !$0.hasPrefix("\(accountID)#")
+        }
+        gameChannelInFlight.remove(accountID)
     }
 
     // MARK: - 轮询
@@ -353,17 +495,31 @@ public final class SaltFieldChartController: ObservableObject {
     public func setPolling(_ enabled: Bool, accountID: String) {
         if enabled {
             pollingAccountIDs.insert(accountID)
+            refreshEventWindow()
             refreshLiveMap(accountID: accountID)
         } else {
             pollingAccountIDs.remove(accountID)
+            // 关窗即清「解码失败」提示：它的语义是「这条线现在有没有解不开的东西」，
+            // 窗口关了就不该留着吓人（累计计数保留，见 decodeFailureCounts）。
+            decodeIssues[accountID] = nil
         }
         startPollLoopIfNeeded()
     }
 
     /// 立即对指定账号拉一轮（图表窗口的「立即拉取」按钮）：战场快照 + 地图归属。
+    /// 属于**显式用户动作**，绕开时段门控（非开赛时段想验证链路时全靠它）。
     public func pollNow(accountID: String) {
-        poll(accountID: accountID)
+        eventWindow = SaltFieldEventWindow.state()
+        poll(accountID: accountID, forced: true)
         refreshLiveMap(accountID: accountID)
+    }
+
+    /// 重算时段状态并返回（窗口状态条倒计时要刷新时调）。
+    @discardableResult
+    public func refreshEventWindow() -> SaltFieldEventWindow {
+        let state = SaltFieldEventWindow.state()
+        if state != eventWindow { eventWindow = state }
+        return state
     }
 
     // MARK: - 历史战绩查询（主连接；协议口径见 SaltFieldModels 注释）
@@ -625,6 +781,19 @@ public final class SaltFieldChartController: ObservableObject {
 
     private func handleHistoryResponse(pending: PendingHistoryQuery,
                                        inner: BonValue?, accountID: String) {
+        // ── 服务端错误码先行 ──
+        // 早先完全不看 `code`，于是「命令被服务端拒绝」和「数据本来为空」在日志里长得
+        // 一模一样（都是「无 legions / 无 battlefield」），排查时指不到方向。
+        // 参考脚本都是先判码的（雪碧：`if (bfData.code !== 0)`）。
+        if let code = inner?.path("code")?.intValue, code != 0 {
+            let hint = Self.errorCodeHint(code)
+            setBusy(pending.channel, accountID: accountID, busy: false)
+            setStatus(pending.channel, accountID: accountID,
+                      text: "服务端错误码 \(code)\(hint)")
+            LobbyLog.warn("[saltfield-live] %@ %@ 被服务端拒绝：code=%ld%@",
+                          accountID, pending.command, code, hint)
+            return
+        }
         switch pending.kind {
         case .legionInfo:
             setBusy(pending.channel, accountID: accountID, busy: false)
@@ -634,6 +803,14 @@ public final class SaltFieldChartController: ObservableObject {
                     ownLegionIDs[accountID] = ownID
                     LobbyLog.info("[saltfield-live] %@ 我方军团 ID = %lld", accountID, ownID)
                 }
+            }
+            // 顺手把「我方俱乐部详情」也缓存下来：实时地图链到自己家时直接用它，
+            // **不再发 legion_getinfobyid**（参考脚本 isMyClub 分支同款；也避开
+            // 自家 id 查询偶发的 2300400）。战场 id 未知时先记 0，后续查到时会被
+            // `cachedClubDetail` 的宽容匹配接上。
+            if let ownID = ownLegionIDs[accountID], let own = Self.parseClubDetail(inner: inner) {
+                storeClubDetail(own, legionID: ownID,
+                                battlefieldID: liveBattlefields[accountID]?.battlefieldID ?? 0)
             }
             let battles = Self.parseHistoryBattles(inner: inner)
             if battles.isEmpty {
@@ -744,9 +921,18 @@ public final class SaltFieldChartController: ObservableObject {
             draft.clubs = []
             draft.requested = 0
             draft.received = 0
+            let ownID = ownLegionIDs[accountID]
             var missing: [Int64] = []
             for entry in entries {
-                if let detail = clubDetails[entry.legionID] {
+                // 自己家：只看 TTL、不看场次分区（它就是本账号自己的军团详情）。
+                let isOwn = entry.legionID == ownID
+                if let detail = cachedClubDetail(entry.legionID,
+                                                 battlefieldID: isOwn ? nil : draft.battlefieldID) {
+                    if isOwn {
+                        // 顺手把它也归到本场次分区下，下轮就不用再走宽容匹配。
+                        storeClubDetail(detail, legionID: entry.legionID,
+                                        battlefieldID: draft.battlefieldID)
+                    }
                     draft.clubs.append(Self.club(legionID: entry.legionID, position: entry.position,
                                                  detail: detail))
                 } else if missing.count < Self.maxClubDetailsPerRound {
@@ -755,10 +941,10 @@ public final class SaltFieldChartController: ObservableObject {
             }
             draft.requested = missing.count
             liveDrafts[accountID] = draft
-            // 顺手查一次我方军团信息（拿 info.id → 自动认领我方大本营）。
+            // 顺手查一次我方军团信息（拿 info.id → 自动认领我方大本营 + 自家详情缓存）。
             // 复用 .legionInfo 这条 kind（同一个命令），但走 live 通道：状态文案写 liveStatus，
             // 不会污染历史战绩页；顺带把历史场次也刷新一遍（同一份数据，无害）。
-            if ownLegionIDs[accountID] == nil {
+            if ownID == nil || cachedClubDetail(ownID ?? 0, battlefieldID: nil) == nil {
                 enqueueHistorySend(accountID: accountID,
                                    command: "legion_getinfo",
                                    paramsJSON: "{}",
@@ -786,7 +972,7 @@ public final class SaltFieldChartController: ObservableObject {
             // 第三步：逐家详情回填，全回来（或到上限）后发布。
             guard var draft = liveDrafts[accountID] else { return }
             if let detail = Self.parseClubDetail(inner: inner) {
-                clubDetails[legionID] = detail
+                storeClubDetail(detail, legionID: legionID, battlefieldID: draft.battlefieldID)
                 if let position = draft.positions.first(where: { $0.legionID == legionID })?.position {
                     draft.clubs.removeAll { $0.legionID == legionID }
                     draft.clubs.append(Self.club(legionID: legionID, position: position,
@@ -874,6 +1060,8 @@ public final class SaltFieldChartController: ObservableObject {
         pollTask = Task { @MainActor [weak self] in
             var tick = 0
             while let self, !self.pollingAccountIDs.isEmpty {
+                // 时段状态每拍重算（很便宜）。窗口可以常开当装饰，取数只看这个开关。
+                self.eventWindow = SaltFieldEventWindow.state()
                 self.pollOnce()
                 // 实时地图归属（主连接链）不必每 4s 重查：落位在开场几分钟内就定了，
                 // 每 8 拍（≈32s）刷一次足够，且不会跟战场轮询抢游戏封装的发送队列。
@@ -890,13 +1078,37 @@ public final class SaltFieldChartController: ObservableObject {
     }
 
     /// 对所有开启轮询的账号发一轮 `war_enterbattlefield`。
+    /// ⚠️ 时段门控在 `poll(accountID:forced:)` 里，不放这里 —— 这样「立即拉取」
+    /// 这类**显式用户动作**（`pollNow`）可以带 `forced` 绕开，而自动轮询照旧受控。
     private func pollOnce() {
         for accountID in pollingAccountIDs {
             poll(accountID: accountID)
         }
     }
 
-    private func poll(accountID: String) {
+    /// 盐场轮询一拍：一条 `war_enterbattlefield`。
+    ///
+    /// ⚠️ **时段门控**：非开赛时段直接不发（`forced` 或「忽略时段门控」开关可绕开）。
+    /// 窗口允许常开当装饰，但取数只认开赛时段 —— 非时段服务端只会回空战场，
+    /// 白耗帧还会污染状态（表现是「窗口开着一直显示 0 据点」，比关着更难判断）。
+    ///
+    /// 两条通道，优先级明确：
+    ///
+    ///   ① **游戏封装**（主路径，2026-09-19 起）：对盐场 socket 调它自己的
+    ///      `sendAsync`（页面代理 v5 的 `sendViaGameOnSocket`）。seq / ack / body
+    ///      编码全交给游戏，响应直接是解码好的对象。这和主连接历史查询早就改用的
+    ///      做法一致 —— 那条路当初就是因为「原生日发 seq 撞号，被服务端静默丢弃」
+    ///      才改的；盐场这条一直没改，是「实时战况没有数据」的高概率成因。
+    ///      请求形状照抄游戏内置脚本：`{ ack: 0, cmd, params, seq: Date.now(), time: Date.now() }`。
+    ///   ② **原生日发**（回退）：自构帧 + 定向 socket。只在 ① 明确不可用时走，
+    ///      并打一条 warn 说明原因（`socket-has-no-sendAsync` 是最可能的那个）。
+    ///
+    /// 参数口径：**优先照抄游戏自己那条进场帧的 params**（`gameEnterParams`），
+    /// 只把 `battlefieldId` 换成我们学到的最新值。这样「要不要带 useGzip」之类
+    /// 的问题不需要猜——游戏怎么发我们就怎么发；还没看到游戏进场帧时退化为
+    /// 只带 battlefieldId。
+    private func poll(accountID: String, forced: Bool = false) {
+        guard forced || ignoresEventWindow || eventWindow.isOpen else { return }
         guard let instance = pool?.existingSurface(forAccountID: accountID) else { return }
         // battlefieldId：优先游戏心跳/进场帧学到的，其次主连接查到的（legion_getbattlefield）。
         let battlefieldID = states[accountID].flatMap { $0.battlefieldID > 0 ? $0.battlefieldID : nil }
@@ -905,27 +1117,156 @@ public final class SaltFieldChartController: ObservableObject {
         // 盐场 socket 必须先出现过（sid 从 war_* 流量学到）。没出现 = 玩家还没进盐场，
         // 此时发也没用，而且会误发到主连接上（主/盐场 URL 都含 "agent"，无法按 URL 区分）。
         guard let state = states[accountID], state.socketID >= 0 else { return }
-        // ack = 盐场最近响应 seq；seq = 盐场 client 游标 + 1（发送后即推进游标，
-        // 与游戏自己的盐场请求交错使用同一连续序列——服务端按连续性校验）。
-        //
-        // ⚠️ 刻意**不带** `useGzip`（参考脚本传的是 useGzip:true）：我们这条是原生帧通道，
-        // body 由宿主自己解 BON；一旦服务端压了 body，`XorFrameCipher.open` + `Bon.decode`
-        // 就解不开（诊断日志会打「响应无 battlefield 字段」）。不带这个参数时服务端回明文。
-        let seq = state.clientSeq + 1
-        guard let frame = try? PacketCaptureController.buildFrame(
-            command: "war_enterbattlefield",
-            paramsJSON: "{\"battlefieldId\":\(battlefieldID)}",
-            ack: state.serverSeq,
-            seq: seq) else { return }
-        states[accountID]?.clientSeq = seq
+        let paramsJSON = Self.enterParamsJSON(game: state.gameEnterParams,
+                                              battlefieldID: battlefieldID)
         let socketID = state.socketID
+
+        if state.gameChannelFailure == nil {
+            // 游戏封装的回执是异步的、可能很慢（雪碧助手给自己留了 30s 超时）。
+            // 不设这个闸的话，每 4s 就会叠一个在途请求，越堆越多还会互相插队。
+            guard !gameChannelInFlight.contains(accountID) else { return }
+            gameChannelInFlight.insert(accountID)
+            Task { @MainActor [weak self] in
+                await self?.pollViaGameChannel(accountID: accountID, instance: instance,
+                                               socketID: socketID, paramsJSON: paramsJSON)
+                self?.gameChannelInFlight.remove(accountID)
+            }
+            return
+        }
+        sendNativePollFrame(accountID: accountID, instance: instance,
+                            socketID: socketID, paramsJSON: paramsJSON)
+    }
+
+    /// 通道 ①：让页面在**指定的盐场 socket** 上调游戏自己的 `sendAsync`。
+    /// 成功 → 回执里已是解码好的对象，直接套快照；失败 → 记原因、永久降级到通道 ②。
+    private func pollViaGameChannel(accountID: String, instance: GameViewportInstance,
+                                    socketID: Int, paramsJSON: String) async {
+        let script = PacketCaptureScript.sendViaGameOnSocket(
+            socketID, command: "war_enterbattlefield", paramsJSON: paramsJSON)
+        let receipt = await instance.evaluatePageJS(script)
+        if let inner = Self.parseViaGameResponse(receipt) {
+            states[accountID]?.usedGameChannel = true
+            if let applied = applyBattlefieldResponse(
+                accountID: accountID, body: inner,
+                fallbackBattlefieldID: states[accountID]?.battlefieldID ?? 0,
+                byteCount: 0, timestampMs: Date().timeIntervalSince1970 * 1000,
+                source: "游戏封装") {
+                states[accountID]?.battlefieldID = applied
+            }
+            return
+        }
+        let reason = Self.viaGameError(receipt)
+        if states[accountID]?.gameChannelFailure != reason {
+            states[accountID]?.gameChannelFailure = reason
+            LobbyLog.warn("[saltfield] %@ 盐场轮询降级为原生日发：游戏封装不可用（%@）",
+                          accountID, reason)
+        }
+        // 这一拍不浪费：立刻用原生日发补一次。
+        sendNativePollFrame(accountID: accountID, instance: instance,
+                            socketID: socketID, paramsJSON: paramsJSON)
+    }
+
+    /// 通道 ②：原生日发（自构帧 + socket 定向）。
+    ///
+    /// ack 取游戏自己那条进场帧的 ack（拿不到再退回盐场最近响应 seq）；
+    /// seq 续在**盐场发送帧的 seq 水位**之后（游戏自己用的是 `Date.now()` 时间戳，
+    /// 所以这个值也是时间戳量级——不再是我们早先恒定的 `1`）。
+    private func sendNativePollFrame(accountID: String, instance: GameViewportInstance,
+                                     socketID: Int, paramsJSON: String) {
+        guard let state = states[accountID] else { return }
+        let seq = state.clientSeq > 0
+            ? state.clientSeq + 1
+            : Int64(Date().timeIntervalSince1970 * 1000)
+        let ack = state.gameEnterAck ?? state.serverSeq
+        guard let frame = try? PacketCaptureController.buildFrame(
+            command: "war_enterbattlefield", paramsJSON: paramsJSON,
+            ack: ack, seq: seq) else { return }
+        states[accountID]?.clientSeq = seq
         Task { @MainActor in
             let diagnostic = await instance.sendRawFrame(base64: frame.base64EncodedString(),
                                                          socketID: socketID)
             if !diagnostic.hasPrefix("sent") {
-                LobbyLog.warn("[saltfield] %@ 轮询帧未送达：%@", accountID, diagnostic)
+                LobbyLog.warn("[saltfield] %@ 轮询帧未送达（ack=%lld seq=%lld）：%@",
+                              accountID, ack, seq, diagnostic)
             }
         }
+    }
+
+    /// 轮询 params：照抄游戏自己的进场参数，只把 battlefieldId 覆盖成最新值。
+    private static func enterParamsJSON(game: BonObject?, battlefieldID: Int64) -> String {
+        var fields: [BonObject.Field] = [.init("battlefieldId", .long(battlefieldID))]
+        for field in game?.fields ?? [] where field.key != "battlefieldId" {
+            fields.append(field)
+        }
+        return jsonText(.object(BonObject(fields))) ?? "{\"battlefieldId\":\(battlefieldID)}"
+    }
+
+    /// BonValue → JSON 文本（发给页面前要过 `JSON.parse`；二进制按 base64 走）。
+    private static func jsonText(_ value: BonValue) -> String? {
+        func quote(_ text: String) -> String {
+            let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+                .replacingOccurrences(of: "\t", with: "\\t")
+            return "\"\(escaped)\""
+        }
+        switch value {
+        case .null: return "null"
+        case .bool(let flag): return flag ? "true" : "false"
+        case .int(let number): return String(number)
+        case .long(let number): return String(number)
+        case .float(let number): return String(number)
+        case .double(let number): return String(number)
+        case .date(let number): return String(number)
+        case .string(let text): return quote(text)
+        case .binary(let data): return quote(data.base64EncodedString())
+        case .array(let items):
+            return "[" + items.compactMap { jsonText($0) }.joined(separator: ",") + "]"
+        case .object(let object):
+            let pairs = object.fields.compactMap { field -> String? in
+                guard let text = jsonText(field.value) else { return nil }
+                return quote(field.key) + ":" + text
+            }
+            return "{" + pairs.joined(separator: ",") + "}"
+        }
+    }
+
+    /// 页面回执里的失败原因（`{"__error":"socket-has-no-sendAsync"}` → 该串）。
+    private static func viaGameError(_ receipt: String) -> String {
+        guard let data = receipt.data(using: .utf8),
+              let wrapper = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = wrapper["__error"] as? String else {
+            return receipt.isEmpty ? "页面无回执" : String(receipt.prefix(120))
+        }
+        return error
+    }
+
+    // MARK: - 解码诊断
+
+    /// 解出一帧：清掉「这条线现在有解不开的东西」的标记。
+    private func noteDecodeSuccess(accountID: String) {
+        if decodeIssues[accountID] != nil { decodeIssues[accountID] = nil }
+    }
+
+    /// 解不开一帧：计数 + 更新状态说明 + 限次落日志（含信封种类与帧头 hex）。
+    ///
+    /// 帧头 hex 是关键证据：`70 78` = 旧的 px、`70 6c` = lx（LZ4）、`70 74` = xtm（XXTEA）。
+    /// 三种都能从这 8 个字节里一眼看出来，不用再去抓包。
+    private func noteDecodeFailure(accountID: String, reason: String, scheme: String,
+                                   preview: String, frame: PacketFrame) {
+        let total = (decodeFailureCounts[accountID] ?? 0) + 1
+        decodeFailureCounts[accountID] = total
+        let issue = "\(scheme) · \(reason)"
+        if decodeIssues[accountID] != issue { decodeIssues[accountID] = issue }
+
+        let reasonKey = "\(accountID)#\(issue)"
+        guard (decodeFailureLogCounts[accountID] ?? 0) < Self.decodeFailureLogLimit else { return }
+        guard decodeFailureLoggedReasons.insert(reasonKey).inserted else { return }
+        decodeFailureLogCounts[accountID] = (decodeFailureLogCounts[accountID] ?? 0) + 1
+        LobbyLog.warn("[saltfield] %@ 帧解码失败 累计#%ld：%@ | 信封=%@ 头=[%@] | %ld 字节 %@向 sid=%ld",
+                      accountID, total, reason, scheme, preview,
+                      frame.byteCount, frame.direction, frame.socketID)
     }
 
     // MARK: - 解码（与 PacketCaptureController.decode 同源，取沙场所需的子集）
@@ -935,21 +1276,64 @@ public final class SaltFieldChartController: ObservableObject {
         let seq: Int64?
         let outerObject: BonObject?
         let inner: BonValue?
+        /// 内层 body 没能解成 BON 时的证据串（`nil` = 正常 / 没有 body）。
+        /// 关键价值：能一眼区分「服务端换了字段」和「body 被压缩了」（`1f 8b` = gzip）。
+        let bodyNote: String?
     }
 
-    /// 任何一步失败返回 nil（非 px 帧 / 非 BON——盐场线上只可能是别的流量形态，交给抓包线）。
-    private static func decode(_ frame: PacketFrame) -> DecodedFrame? {
-        guard let data = Data(base64Encoded: frame.payloadBase64),
-              data.count > 1, frame.kind == "binary" else { return nil }
-        guard let plain = try? XorFrameCipher.open(data),
-              let outer = try? Bon.decode(plain), let object = outer.objectValue else { return nil }
-        guard let command = object["cmd"]?.stringValue else { return nil }
-        var inner: BonValue?
-        if case .binary(let body)? = object["body"], !body.isEmpty {
-            inner = try? Bon.decode(body)
+    /// 解码结果三态。
+    ///
+    /// ⚠️ 早先这里是 `-> DecodedFrame?`，任何一步失败都 `return nil` —— 表现是
+    /// **「实时战况没有数据、日志里也什么都没有」**，无法区分下面三种完全不同的原因：
+    ///   ① 这段流量本来就不是盐场的（文本帧 / 主连接的其它命令）；
+    ///   ② 服务端换了信封（`lx` / `xtm`），我们解不开；
+    ///   ③ 信封解开了但 BON 结构变了（命令名 / 字段改名）。
+    /// 三态之后，②③ 会落一条带**信封种类 + 帧头 hex**的诊断日志，① 保持安静。
+    private enum DecodeOutcome {
+        case decoded(DecodedFrame)
+        /// 本线不关心的帧形态（非 binary / base64 坏 / 解出来没有 cmd）——正常，不记日志。
+        case notApplicable
+        /// 看起来是游戏帧信封，但解不开 / 结构对不上——要留证据。
+        case failure(reason: String, scheme: String, preview: String)
+    }
+
+    /// 解码一帧；失败原因不丢弃，交由 `ingest` 落限次诊断日志。
+    private static func decode(_ frame: PacketFrame) -> DecodeOutcome {
+        guard frame.kind == "binary",
+              let data = Data(base64Encoded: frame.payloadBase64),
+              data.count > 1 else { return .notApplicable }
+        // 只对信封帧做诊断：非 0x70 开头的多半是盐场连接上的其它流量（协议层噪声）。
+        guard data[data.startIndex] == 0x70 else { return .notApplicable }
+        let scheme = XorFrameCipher.schemeName(data)
+        let preview = XorFrameCipher.hexPreview(data)
+        let plain: Data
+        do {
+            plain = try XorFrameCipher.open(data)
+        } catch {
+            return .failure(reason: "\(error)", scheme: scheme, preview: preview)
         }
-        return DecodedFrame(command: command, seq: object["seq"]?.intValue,
-                            outerObject: object, inner: inner)
+        guard let outer = try? Bon.decode(plain), let object = outer.objectValue else {
+            return .failure(reason: "信封已解开（\(plain.count) 字节）但 BON 外层解析失败",
+                            scheme: scheme, preview: preview)
+        }
+        guard let command = object["cmd"]?.stringValue else {
+            return .failure(reason: "BON 外层没有 cmd 字段（键：\(object.keys.sorted().joined(separator: ","))）",
+                            scheme: scheme, preview: preview)
+        }
+        var inner: BonValue?
+        var bodyNote: String?
+        if case .binary(let body)? = object["body"], !body.isEmpty {
+            if let decodedBody = try? Bon.decode(body) {
+                inner = decodedBody
+            } else {
+                // 内层解不开不算致命（战场对象也可能摊在外层），但**必须留证据**：
+                // 早先这里是 `try?` + 静默 nil，于是「服务端把 body 压了」和
+                // 「服务端换了字段名」在日志里完全一样，都是「响应无 battlefield」。
+                bodyNote = "body \(body.count) 字节解不成 BON，头=\(XorFrameCipher.hexPreview(body, limit: 4))"
+            }
+        }
+        return .decoded(DecodedFrame(command: command, seq: object["seq"]?.intValue,
+                                     outerObject: object, inner: inner, bodyNote: bodyNote))
     }
 
     // MARK: - 战场快照构建
@@ -1140,17 +1524,60 @@ public final class SaltFieldChartController: ObservableObject {
     }
 
     /// `legion_getopponent` → [(legionID, position)]（position = 大本营序号）。
+    ///
+    /// ⚠️ 容器名有两种、形态也有两种（2026-09-19 对齐参考脚本）：
+    ///    · 名字：`legions`（老口径）或 **`opponentList`**（雪碧助手两种都读：
+    ///      `oppData.opponentList || oppData.legions`）；也可能嵌在 `info` 下；
+    ///    · 形态：**数组**（`opponentList` 通常是数组）或**映射**（`legions` 是
+    ///      legionKey → 条目）。早先只认 `legions`/`info.legions` 的映射形态，
+    ///      服务端一换名字或改成数组就会得到「没有对手名单」——而实际数据在那儿。
     static func parseOpponentLegions(inner: BonValue?) -> [(legionID: Int64, position: Int)] {
         var result: [(legionID: Int64, position: Int)] = []
-        let container = inner?.path("legions") ?? inner?.path("info")?.path("legions")
+        let candidates: [BonValue?] = [
+            inner?.path("legions"),
+            inner?.path("opponentList"),
+            inner?.path("info")?.path("legions"),
+            inner?.path("info")?.path("opponentList"),
+            inner?.path("list"),
+            // 兜底：响应本身就是数组（雪碧的 `Array.isArray(rawLegions)` 分支）。
+            // ⚠️ 但**不能**把 `inner` 当映射兜底：响应常见形态是 `{code, info:{id,…}}`，
+            // 那样会把 info 的 `id` 当成一个「对手 legionID」收进来（假数据比没数据更坏）。
+            (inner?.arrayValue?.isEmpty == false) ? inner : nil,
+        ]
+        var container: BonValue?
+        for candidate in candidates {
+            guard let candidate else { continue }
+            if let items = candidate.arrayValue, !items.isEmpty {
+                container = candidate
+                break
+            }
+            if let object = candidate.objectValue, object.count > 0 {
+                container = candidate
+                break
+            }
+        }
         forEachEntry(container) { _, value in
             guard let object = value.objectValue else { return }
             let id = object["legionId"]?.intValue ?? object["id"]?.intValue ?? 0
             guard id > 0 else { return }
-            let position = object["position"]?.intValue ?? 0
+            // position = 大本营序号；服务端可能叫 position / pos / strongholdPos。
+            let position = object["position"]?.intValue
+                ?? object["pos"]?.intValue
+                ?? object["strongholdPos"]?.intValue
+                ?? 0
             result.append((id, Int(position)))
         }
         return result.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
+    }
+
+    /// 服务端错误码 → 人话（只收已经确认过的，未知码原样展示）。
+    private static func errorCodeHint(_ code: Int64) -> String {
+        switch code {
+        case 2300400:
+            return "（该俱乐部不在本战场 / 无权查看——参考脚本遇此码时退回自家 getinfo 数据）"
+        default:
+            return ""
+        }
     }
 
     /// `legion_getinfobyid` / `legion_getinfo` → 俱乐部详情（名字是必需项，缺了当解析失败）。

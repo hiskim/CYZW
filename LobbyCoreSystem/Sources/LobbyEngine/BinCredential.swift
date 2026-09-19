@@ -103,9 +103,11 @@ public struct BinCredential: Sendable {
         let second = data[data.startIndex + 1]
         if first == 0x70, second == 0x6C {
             do {
-                return (try openLX(data), .lx)
+                return (try XorFrameCipher.openLX(data), .lx)
             } catch let error as Lz4Frame.Error {
                 throw Error.compression(error)
+            } catch let error as XorFrameCipher.Error {
+                throw Error.unsupportedEnvelope(error.description)
             }
         }
         if first == 0x70, second == 0x78 {
@@ -113,33 +115,6 @@ public struct BinCredential: Sendable {
             return (try XorFrameCipher.open(data), .x)
         }
         return (data, .plain)
-    }
-
-    /// `lx` 去掩码：密钥的 8 个 bit 藏在 `[2][3]` 的 bit6/4/2/0（低位在前），
-    /// 只对前 `min(100, len)` 字节生效（**从尾部往头部**，与参考实现同序），
-    /// 之后把前 4 字节还原成 LZ4 帧 magic 再解压。
-    private static func openLX(_ frame: Data) throws -> Data {
-        var bytes = [UInt8](frame)
-        guard bytes.count > 4 else {
-            throw Error.unsupportedEnvelope("lx 只有 \(bytes.count) 字节")
-        }
-        let key = (((bytes[2] >> 6) & 1) << 7)
-            | (((bytes[2] >> 4) & 1) << 6)
-            | (((bytes[2] >> 2) & 1) << 5)
-            | ((bytes[2] & 1) << 4)
-            | (((bytes[3] >> 6) & 1) << 3)
-            | (((bytes[3] >> 4) & 1) << 2)
-            | (((bytes[3] >> 2) & 1) << 1)
-            | (bytes[3] & 1)
-        let limit = min(100, bytes.count)
-        if limit > 2 {
-            for index in stride(from: limit - 1, through: 2, by: -1) { bytes[index] ^= key }
-        }
-        bytes[0] = 0x04
-        bytes[1] = 0x22
-        bytes[2] = 0x4D
-        bytes[3] = 0x18
-        return try Lz4Frame.decompress(Data(bytes))
     }
 
     // MARK: - 读字段
