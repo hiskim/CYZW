@@ -2445,18 +2445,18 @@ struct SaltHistoryView: View {
         // 极窄：三张榜单竖排堆叠（放日历上方）。
         if isUltraNarrow {
             VStack(alignment: .leading, spacing: 6) {
-                podiumCard(title: "⚔️ 击杀榜", rows: Array(killTop3)) { "\($0.win)" }
-                podiumCard(title: "🏰 攻城榜", rows: Array(siegeTop3)) { "\($0.building)" }
-                podiumCard(title: "📈 K/D 榜", rows: Array(kdTop3)) { $0.kdText }
+                podiumCard(title: "击杀榜", rows: Array(killTop3)) { "\($0.win)" }
+                podiumCard(title: "攻城榜", rows: Array(siegeTop3)) { "\($0.building)" }
+                podiumCard(title: "K/D 榜", rows: Array(kdTop3)) { $0.kdText }
             }
         } else {
             HStack(alignment: .top, spacing: isCompact ? 5 : 8) {
-                podiumCard(title: "⚔️ 击杀榜", rows: Array(killTop3)) { "\($0.win)" }
-                podiumCard(title: "🏰 攻城榜", rows: Array(siegeTop3)) { "\($0.building)" }
-                podiumCard(title: "📈 K/D 榜", rows: Array(kdTop3)) { $0.kdText }
+                podiumCard(title: "击杀榜", rows: Array(killTop3)) { "\($0.win)" }
+                podiumCard(title: "攻城榜", rows: Array(siegeTop3)) { "\($0.building)" }
+                podiumCard(title: "K/D 榜", rows: Array(kdTop3)) { $0.kdText }
                 // 窄窗口挤不下四个榜：隐藏积分榜（宽度足够才显示）。
                 if !isCompact {
-                    podiumCard(title: "⭐️ 积分榜", rows: Array(scoreTop3)) { "\($0.score)" }
+                    podiumCard(title: "积分榜", rows: Array(scoreTop3)) { "\($0.score)" }
                 }
             }
         }
