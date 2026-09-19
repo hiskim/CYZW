@@ -393,6 +393,23 @@ EXPECT_VERSION=5 AGENT_JS=/tmp/recon/agent.js $NODE scripts/packet-agent-harness
 #     回执里的 Map 被 `sanitize` 摊平、以及三个失败串（`no-such-socket` /
 #     `socket-has-no-sendAsync` / `sendAsync-threw`）——宿主正是靠这三个串决定要不要降级。
 
+# B'''''. 改**键鼠同步代理**（InputSyncScript）用 scripts/sync-agent-harness.mjs：
+AGENT_JS=/tmp/recon/agent.js $NODE scripts/sync-agent-harness.mjs
+#     假 DOM（window 捕获 / canvas / window 冒泡的**真实派发顺序** + elementFromPoint 可控）
+#     + 假「游戏」canvas 监听。断言：关态不外发、开态外发且坐标归一化、回放落到 canvas 且
+#     **不再外发**（ECHO 闸门）、miss 时回执落点为 BODY、以及最要命的那条——
+#     **失焦补发不外发 + 坐标用最后按压点 + 只在真按着时补**。
+#     ⚠️ 目标就是 window 的事件（blur/focus）在假环境里必须按 AT_TARGET 跑一遍 window 监听，
+#     否则「失焦补发」整条路径测不到（第一版 harness 就栽在这，28 项里漏了 3 项）。
+
+> ⚠️ **页面代理里任何「补发事件」都不能走 `post()`**：那是**外发通道**，宿主会把它路由给
+> 同组其它实例。v1 同步代理在 `blur` 时用 `post()` 补 `mouseup(0,0)`，结果每次失焦都往别人
+> 窗口扔一条释放——引擎 `handleTouchesEnd` 按 touch id（鼠标恒为 0）命中活动 touch 后会把
+> 它的坐标改写成释放点并删掉该 id，随后那条真实 mouseup 被整段丢弃 → **一次点击凭空消失**，
+> 且是竞态（合成包早到/晚到都无害）→ 表现为「部分窗口有概率不响应」。
+> 判据：写 `post()` 前先问一句「这条包落到别的窗口会怎么被消费」。要本地补，就调 `replay()`
+> （它自带 ECHO 标记，闸门会拦住外发）。
+
 > ⚠️ **别用 `strings -a <dylib> | grep` 从二进制里捞 agent 再 `node --check`**：agent 里
 > 大量中文注释是非 ASCII，`strings` 会把它切成碎片且顺序错乱，捞出来必然报「语法错误」
 > ——那不是代码坏了，是取证工具不对。老老实实走 A 步的隔离编译导出。
