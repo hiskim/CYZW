@@ -136,6 +136,13 @@ public enum PageEvent: Sendable {
     case frameRateWrite(fps: String, stack: String)
     /// 键鼠同步：捕获器上报的中性输入事件（仅参与同步的实例会上报）。
     case input(InputSyncEvent)
+    /// 键鼠同步：回放回执（页面 `__LOBBY_SYNC__.replay()` 真正派发之后回一条）。
+    ///
+    /// 为什么要有：同步**成功时宿主侧原本一行日志都不打**，「回放到底进没进目标窗口、
+    /// 落在了哪个元素上」只能靠通读注入脚本倒推。这条回执把页面内部的事实带回来：
+    /// `tagName` 不是 CANVAS 就说明事件没落到游戏画布上（游戏根本收不到）。
+    case syncAck(type: String, replayed: Int, misses: Int, releases: Int,
+                 downs: Int, ups: Int, capturing: Bool, tag: String, agent: Int)
     /// 脚本请求用系统浏览器打开外链（GM_openInTab 垫片的兜底路径）。
     case openURL(url: String)
     /// 脚本导出文件：页面侧的下载垫片把 `<a download>` + Blob 的内容交回原生落盘。
@@ -219,6 +226,16 @@ public enum PageEvent: Sendable {
         case "input":
             guard let event = InputSyncEvent.decode(from: body) else { return .unknown(type: type) }
             return .input(event)
+        case "syncAck":
+            return .syncAck(type: body["t"] as? String ?? "?",
+                            replayed: integer(body["n"]),
+                            misses: integer(body["miss"]),
+                            releases: integer(body["rel"]),
+                            downs: integer(body["dn"]),
+                            ups: integer(body["up"]),
+                            capturing: (body["cap"] as? Bool) == true,
+                            tag: String((body["tag"] as? String ?? "").prefix(24)),
+                            agent: integer(body["agent"]))
         case "openurl":
             guard let url = body["url"] as? String else { return .unknown(type: type) }
             return .openURL(url: url)

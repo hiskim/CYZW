@@ -29,6 +29,9 @@ public final class GameInstanceRegistry {
     private var boxes: [String: WeakBox] = [:]
     /// 已经报过错的账号（每个实例只报一次，避免刷屏）。
     private var warned: Set<String> = []
+    /// 已经报过「不在注册表」的账号（同上；原先这种情况是**静默 return false**，
+    /// 排查时表现为「点了完全没反应，日志里也什么都没有」）。
+    private var missingWarned: Set<String> = []
 
     public init() {}
 
@@ -37,6 +40,7 @@ public final class GameInstanceRegistry {
     public func register(_ instance: GameViewportInstance, accountID: String) {
         boxes[accountID] = WeakBox(instance)
         warned.remove(accountID)
+        missingWarned.remove(accountID)
     }
 
     public func unregister(_ instance: GameViewportInstance, accountID: String) {
@@ -58,10 +62,16 @@ public final class GameInstanceRegistry {
         return live
     }
 
-    /// 向指定实例注入 JS。实例不存在（已关闭）时静默忽略。
+    /// 向指定实例注入 JS。实例不存在（已关闭）时忽略并落一条 warn —— 这条以前是静默的，
+    /// 正好是「点了没反应、日志里也查无此事」最难查的形态。
     @discardableResult
     public func evaluate(_ script: String, accountID: String) -> Bool {
-        guard let instance = boxes[accountID]?.instance else { return false }
+        guard let instance = boxes[accountID]?.instance else {
+            if missingWarned.insert(accountID).inserted {
+                LobbyLog.warn("[sync] 目标实例不在注册表，回放已丢弃：%@", accountID)
+            }
+            return false
+        }
         instance.evaluateBridgeScript(script) { [weak self] error in
             guard let error else { return }
             guard let self, !self.warned.contains(accountID) else { return }
@@ -77,6 +87,16 @@ public final class GameInstanceRegistry {
 /// 注入到每个 WKWebView 的 JS：既能在主窗口当「捕获器」，也能在子窗口当「回放器」。
 /// 一份脚本两种角色，靠 `setCapture(on)` 切换——切换主窗口时无需重新注入。
 public enum InputSyncScript {
+    /// 代理脚本版本（v2：失焦补发改为**本地**派发 + 回放回执）。**改代理行为必 bump** ——
+    /// 回执里带着它，日志里能一眼确认跑的是哪一版，不用去二进制里 strings 捞。
+    ///
+    /// v1 的坑：`blur` 时用 `post()` 补发一条 `mouseup(0,0)`，而 `post` 是**外发通道** ——
+    /// 它经宿主广播给同组其它实例，把别人刚开始的一次正常按下在 (0,0) 处结束掉。
+    /// 引擎 `handleTouchesEnd` 命中同一个 touch id（鼠标恒为 0）后会把活动 touch 的坐标
+    /// 改写成释放点并删掉该 id，于是随后那条真实 mouseup 被整段丢弃 → 这一次点击彻底消失。
+    /// 而且是竞态（合成包早于 mousedown 或晚于 mouseup 到达就无害）→ 表现为「部分窗口有概率不响应」。
+    public static let agentVersion = 2
+
     /// 打开 / 关闭捕获（只有主控为 true，互相同步时参与者都为 true）。
     public static func setCapture(_ enabled: Bool) -> String {
         "if(window.__LOBBY_SYNC__){window.__LOBBY_SYNC__.setCapture(\(enabled ? "true" : "false"));}void 0;"
@@ -92,6 +112,11 @@ public enum InputSyncScript {
         "if(window.__LOBBY_SYNC__){window.__LOBBY_SYNC__.setRipple(\(enabled ? "true" : "false"));}void 0;"
     }
 
+    /// 取一次页面侧状态回执（诊断用）。返回 JSON 串，代理没装上时返回 `no-agent`。
+    public static func status() -> String {
+        "if(window.__LOBBY_SYNC__){JSON.stringify(window.__LOBBY_SYNC__.stats());}else{'no-agent';}"
+    }
+
     /// 代理脚本（atDocumentStart 注入，只注入主框架）。三段能力：
     /// 1. **捕获**：window 上 capture 阶段挂鼠标/键盘/滚轮/右键监听，坐标归一化后
     ///    经页面桥回传原生；mousemove 用 rAF 合并成每帧一次，避免把 IPC 打满。
@@ -105,15 +130,32 @@ public enum InputSyncScript {
         (() => {
           if (window.__LOBBY_SYNC__) return;
           const HANDLER = '\(channel)';
+          const AGENT_VERSION = \(agentVersion);
           const RIPPLE_MS = 220;
           const RIPPLE_SIZE = 26;
           let capturing = false;
           let rippleOn = true;
           let pendingMove = null;
           let rafId = 0;
+          // ── 诊断计数：stats() 与 syncAck 都从这里取，宿主侧靠它看见「回放到底进没进页面」──
+          let counts = { replayed: 0, misses: 0, releases: 0, downs: 0, ups: 0 };
+          // 最近一次真实指针位置 + 本窗口是否真的按着：失焦补发要用（v1 写死 (0,0) 是错的）。
+          let lastX = 0.5;
+          let lastY = 0.5;
+          let lastMods = 0;
+          let downActive = false;
 
           const post = (input) => {
             try { window.webkit.messageHandlers[HANDLER].postMessage({ type: 'input', input: input }); } catch (e) {}
+          };
+          // 回放回执：只有**非 mousemove** 才回（mousemove 每秒 60 条会把桥打满）。
+          const postAck = (t, tag, missed) => {
+            try {
+              window.webkit.messageHandlers[HANDLER].postMessage({
+                type: 'syncAck', t: t, n: counts.replayed, miss: counts.misses, rel: counts.releases,
+                dn: counts.downs, up: counts.ups, cap: capturing, tag: tag || '', agent: AGENT_VERSION
+              });
+            } catch (e) {}
           };
           const mods = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
           const clamp01 = (v) => { v = +v; if (!isFinite(v)) return 0; return v < 0 ? 0 : (v > 1 ? 1 : v); };
@@ -141,8 +183,22 @@ public enum InputSyncScript {
           const ECHO = '__lobbySyncEcho';
           const isEcho = (e) => { try { return !!e[ECHO]; } catch (err) { return false; } };
           const mark = (e) => { try { e[ECHO] = 1; } catch (err) {} return e; };
-          // 捕获开关 + 回灌标记双闸门。
-          const guard = (fn) => (e) => { if (!capturing || isEcho(e)) return; fn(e); };
+          // 捕获开关 + 回灌标记双闸门。回灌（本窗口自己回放出来的）事件一律早退，
+          // 但**回灌事件不更新「最近真实坐标 / 是否按着」**——那是给失焦补发用的，
+          // 必须只反映用户在本窗口的真实操作。
+          const guard = (fn) => (e) => {
+            if (isEcho(e)) return;
+            if (e && typeof e.clientX === 'number') {
+              const p = norm(e);
+              lastX = p[0];
+              lastY = p[1];
+              lastMods = mods(e);
+            }
+            if (e && e.type === 'mousedown') { downActive = true; counts.downs++; }
+            else if (e && (e.type === 'mouseup' || e.type === 'contextmenu')) { downActive = false; counts.ups++; }
+            if (!capturing) return;
+            fn(e);
+          };
 
           const onMove = (e) => {
             pendingMove = mouseInput('mousemove', e);
@@ -156,6 +212,18 @@ public enum InputSyncScript {
           const sendMouse = (t) => (e) => { post(mouseInput(t, e)); };
           const sendKey = (t) => (e) => { post(keyInput(t, e)); };
 
+          // 本窗口内部补发一条 mouseup，释放「按着却收不到抬起」的卡键状态。
+          // ⚠️ 三处关键：① 只在本窗口**真的按着**时才补（v1 无条件补，等于每次失焦都往同组
+          // 其它窗口扔一条释放）；② 用最近的真实坐标（v1 写死 (0,0)，等于在左上角放开）；
+          // ③ **只在本地派发**（v1 走 post() 外发 → 经宿主广播出去，会把别人刚开始的一次
+          // 按下在 (0,0) 处结束掉，那次点击就没了）。
+          const releaseLocal = () => {
+            if (!downActive) return;
+            downActive = false;
+            counts.releases++;
+            replay({ t: 'mouseup', x: lastX, y: lastY, button: 0, buttons: 0, mods: lastMods });
+          };
+
           window.addEventListener('mousedown', guard(sendMouse('mousedown')), true);
           window.addEventListener('mouseup', guard(sendMouse('mouseup')), true);
           window.addEventListener('contextmenu', guard(sendMouse('contextmenu')), true);
@@ -163,8 +231,8 @@ public enum InputSyncScript {
           window.addEventListener('wheel', guard(onWheel), { capture: true, passive: true });
           window.addEventListener('keydown', guard(sendKey('keydown')), true);
           window.addEventListener('keyup', guard(sendKey('keyup')), true);
-          // 指针移出窗口时补一个 mouseup，避免子窗口卡在「按下」状态。
-          window.addEventListener('blur', () => { if (capturing) post({ t: 'mouseup', x: 0, y: 0, button: 0, buttons: 0, mods: 0 }); });
+          // 指针移出窗口 / 窗口失焦：把自己卡住的按下态就地释放（不外发）。
+          window.addEventListener('blur', () => { if (capturing) releaseLocal(); });
 
           // ── 波纹特效层 ──
           let rippleLayer = null;
@@ -194,9 +262,14 @@ public enum InputSyncScript {
           };
 
           // ── 回放 ──
+          // 落点诊断：`elementFromPoint` 没拿到元素时**不会丢弃**回放（退回 body），
+          // 但落到 body 的事件游戏根本收不到 —— 这正是「回放了却没反应」的一种形态，
+          // 所以 miss 计数和落点 tagName 都随回执回给宿主（正常应恒为 CANVAS）。
+          let lastMiss = false;
           const targetAt = (x, y) => {
             let el = null;
             try { el = document.elementFromPoint(x, y); } catch (e) {}
+            lastMiss = !el;
             return el || document.body || document.documentElement;
           };
           const flags = (m) => ({ shiftKey: !!(m & 1), ctrlKey: !!(m & 2), altKey: !!(m & 4), metaKey: !!(m & 8) });
@@ -220,6 +293,9 @@ public enum InputSyncScript {
                 }, flags(m));
                 const ev = new MouseEvent(t, init);
                 el.dispatchEvent(mark(ev));
+                counts.replayed++;
+                if (lastMiss) counts.misses++;
+                if (t !== 'mousemove') postAck(t, el.tagName, lastMiss);
                 if (t === 'mousedown') ripple(x, y);
               } else if (t === 'wheel') {
                 const el = targetAt(x, y);
@@ -230,6 +306,9 @@ public enum InputSyncScript {
                   deltaX: input.dx || 0, deltaY: input.dy || 0, deltaZ: 0, deltaMode: 0
                 }, flags(m));
                 el.dispatchEvent(mark(new WheelEvent('wheel', init)));
+                counts.replayed++;
+                if (lastMiss) counts.misses++;
+                postAck('wheel', el.tagName, lastMiss);
               } else if (t === 'keydown' || t === 'keyup') {
                 const el = document.activeElement || document.body || document.documentElement;
                 if (!el) return;
@@ -240,16 +319,24 @@ public enum InputSyncScript {
                   repeat: t === 'keydown' ? !!input.repeat : false
                 }, flags(m));
                 el.dispatchEvent(mark(new KeyboardEvent(t, init)));
+                counts.replayed++;
+                postAck(t, el.tagName, false);
               }
             } catch (e) {}
           };
 
           window.__LOBBY_SYNC__ = {
-            setCapture: (on) => { capturing = !!on; if (!capturing) { pendingMove = null; } },
+            // 关掉捕获时也要把自己卡住的按下态释放掉（否则关同步那一刻就卡住）。
+            setCapture: (on) => { capturing = !!on; if (!capturing) { pendingMove = null; releaseLocal(); } },
             isCapturing: () => capturing,
             setRipple: (on) => { rippleOn = !!on; },
             replay: replay,
-            ripple: ripple
+            ripple: ripple,
+            stats: () => ({
+              agent: AGENT_VERSION, capturing: capturing, ripple: rippleOn, down: downActive,
+              replayed: counts.replayed, misses: counts.misses, releases: counts.releases,
+              downs: counts.downs, ups: counts.ups
+            })
           };
         })();
         """
@@ -282,7 +369,74 @@ public final class InputSyncController: ObservableObject {
     /// 按账号分别节流：互相同步模式下多个窗口可能交替发言，不能共用一把尺子。
     private var lastMoveSentAt: [String: TimeInterval] = [:]
 
+    /// 回放回执日志的条数上限（诊断用；点得久了不至于把日志刷爆，超了只留一行提示）。
+    private static let ackLogLimit = 400
+    private var ackLogCount = 0
+    private var ackLogLimitNoted = false
+    /// 已见过的代理版本（每个账号第一次回执时打一行，确认跑的是新版代理）。
+    private var seenAgentVersions: [String: Int] = [:]
+
     public init() {}
+
+    // MARK: 诊断（回执 → 日志）
+    //
+    // 这一组是**同步链路的可见性**补丁：改造前后，同步成功时宿主侧一行日志都不打，
+    // 「点了没反应」只能靠通读注入脚本倒推。现在三个环节各自留下签名：
+    //   ① publish    —— 源窗口确实发出了、发给了谁、为什么被丢；
+    //   ② evaluate   —— 目标实例不在注册表（原先静默丢弃）；
+    //   ③ syncAck    —— 页面确实派发了，落在哪个元素上（应恒为 CANVAS）、miss / 本地释放计数。
+
+    /// 账号昵称（日志里用；取不到实例就退回账号 ID）。
+    private func nickname(of accountID: String) -> String {
+        registry.instance(for: accountID)?.account.nickname ?? accountID
+    }
+
+    private func names(_ accountIDs: Set<String>) -> String {
+        accountIDs.sorted().map(nickname(of:)).joined(separator: ", ")
+    }
+
+    /// 页面回放回执（`PageEvent.syncAck`）→ 落日志。
+    public func handleAck(type: String, replayed: Int, misses: Int, releases: Int,
+                          downs: Int, ups: Int, capturing: Bool, tag: String,
+                          agent: Int, accountID: String) {
+        let name = nickname(of: accountID)
+        if seenAgentVersions[accountID] != agent {
+            seenAgentVersions[accountID] = agent
+            LobbyLog.info("[sync] agent %@ → v%ld（宿主期望 v%ld）", name, agent, InputSyncScript.agentVersion)
+        }
+        guard ackLogCount < Self.ackLogLimit else {
+            if !ackLogLimitNoted {
+                ackLogLimitNoted = true
+                LobbyLog.warn("[sync] 回执日志已达上限(%ld 条)，后续只保留汇总行", Self.ackLogLimit)
+            }
+            return
+        }
+        ackLogCount += 1
+        // 一行一条：`miss` 非 0 或 `tag` 不是 CANVAS 就说明这次回放落空了（游戏收不到）。
+        LobbyLog.info("[sync] ack %@ %@ → 回放=%ld miss=%ld 本地释放=%ld 按下=%ld/%ld cap=%@ 落点=%@",
+                      name, type, replayed, misses, releases, downs, ups,
+                      capturing ? "on" : "off", tag.isEmpty ? "?" : tag)
+    }
+
+    /// 取一次页面侧状态回执并落日志（`stats()` 的 JSON）。
+    ///
+    /// 时机：文档就绪 / 实例重建后，以及用户切换「参与同步 / 主控」时。它回答的是
+    /// 「代理装上了没有、捕获开关到底是不是我下发的那个值」这两个最基础的问题。
+    public func logPageStatus(forAccountID accountID: String) {
+        guard let instance = registry.instance(for: accountID) else {
+            LobbyLog.warn("[sync] page status: 实例不在注册表 %@", accountID)
+            return
+        }
+        let name = nickname(of: accountID)
+        let expectedCapture = shouldCapture(accountID)
+        let expectedSend = canSend(from: accountID)
+        instance.evaluateBridgeScriptResult(InputSyncScript.status()) { text in
+            LobbyLog.info("[sync] page %@ → %@（宿主期望 cap=%@ canSend=%@）",
+                          name, text,
+                          expectedCapture ? "on" : "off",
+                          expectedSend ? "on" : "off")
+        }
+    }
 
     // MARK: 聚合查询（UI 用）
 
@@ -428,6 +582,10 @@ public final class InputSyncController: ObservableObject {
         guard let accountID else { return }
         pushRipple(showsRipple, to: accountID)
         registry.instance(for: accountID)?.focusWebView()
+        logPageStatus(forAccountID: accountID)
+        LobbyLog.info("[sync] 主控 → %@（分组=%@ 参与者=%ld）",
+                      nickname(of: accountID), groupName(for: accountID),
+                      state.receiverAccountIDs.count)
     }
 
     // MARK: 参与开关
@@ -446,7 +604,13 @@ public final class InputSyncController: ObservableObject {
             state.receiverAccountIDs.remove(accountID)
         }
         groupStates[groupID] = state
+        // 参与状态变化是「点了没反应」最常怀疑的地方：下发后立刻取一次页面回执比对。
         pushCaptureState(to: accountID)
+        logPageStatus(forAccountID: accountID)
+        LobbyLog.info("[sync] 参与同步 %@ %@（分组=%@ 参与者=%ld 主控=%@）",
+                      enabled ? "开启" : "关闭", nickname(of: accountID),
+                      groupName(for: accountID), state.receiverAccountIDs.count,
+                      state.masterAccountID.map { nickname(of: $0) } ?? "无")
     }
 
     /// 一键开启指定分组中当前已打开的实例。
@@ -511,24 +675,46 @@ public final class InputSyncController: ObservableObject {
     public func refreshCapture(forAccountID accountID: String) {
         pushCaptureState(to: accountID)
         pushRipple(showsRipple, to: accountID)
+        logPageStatus(forAccountID: accountID)
     }
 
     // MARK: 事件分发
 
     /// 收到一个实例的事件 → 按其所属分组决定谁能发、发给谁 → 逐个回放。
+    ///
+    /// 每个**非 mousemove** 事件都会留下一行 `[sync] publish …`（或被丢弃的原因）——
+    /// mousemove 每秒 60 条不落日志。配合页面回执 `[sync] ack …`，一次点击的
+    /// 「源窗口发出 → 宿主路由 → 目标页面派发」三段就都能在日志里对上。
     public func publish(_ event: InputSyncEvent, from accountID: String) {
-        guard canSend(from: accountID) else { return }
+        let state = groupStates[groupID(for: accountID)]
+        let receivers = state?.receiverAccountIDs ?? []
+        let master = state?.masterAccountID
+
+        guard canSend(from: accountID) else {
+            guard !event.isMove else { return }
+            LobbyLog.info("[sync] drop %@ %@ → 无发言权（本组主控=%@，参与者=%ld）",
+                          nickname(of: accountID), event.t,
+                          master.map { nickname(of: $0) } ?? "无", receivers.count)
+            return
+        }
         if event.isMove {
             guard syncMouseMove else { return }
             let now = ProcessInfo.processInfo.systemUptime
             if let last = lastMoveSentAt[accountID], now - last < moveInterval { return }
             lastMoveSentAt[accountID] = now
         }
-        let state = groupStates[groupID(for: accountID)]
-        let targets = InputSyncRouting.routingTargets(master: state?.masterAccountID,
-                                                      receivers: state?.receiverAccountIDs ?? [],
-                                                      sender: accountID)
-        guard !targets.isEmpty, let literal = event.javaScriptLiteral else { return }
+        let targets = InputSyncRouting.routingTargets(master: master, receivers: receivers, sender: accountID)
+        guard !targets.isEmpty, let literal = event.javaScriptLiteral else {
+            guard !event.isMove else { return }
+            LobbyLog.info("[sync] drop %@ %@ → 无回放目标（参与者=%ld 主控=%@）",
+                          nickname(of: accountID), event.t, receivers.count,
+                          master.map { nickname(of: $0) } ?? "无")
+            return
+        }
+        if !event.isMove {
+            LobbyLog.info("[sync] publish %@ %@ → %ld 目标 [%@]",
+                          nickname(of: accountID), event.t, targets.count, names(targets))
+        }
         let script = InputSyncScript.replay(literal: literal)
         for target in targets {
             registry.evaluate(script, accountID: target)

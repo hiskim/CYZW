@@ -321,6 +321,19 @@ public final class GameViewportInstance: NSView {
         webView.evaluateJavaScript(script) { _, error in completion?(error) }
     }
 
+    /// 同 `evaluateBridgeScript`，但把页面返回值一并带回来。
+    /// 用途：键鼠同步的状态回执（`__LOBBY_SYNC__.stats()` 的 JSON）——
+    /// 只靠错误码看不见「代理装没装上、捕获开关是不是下发那个值」。
+    public func evaluateBridgeScriptResult(_ script: String, completion: @escaping (String) -> Void) {
+        webView.evaluateJavaScript(script) { result, error in
+            if let error {
+                completion("error: \(error.localizedDescription)")
+                return
+            }
+            completion((result as? String) ?? String(describing: result ?? "nil"))
+        }
+    }
+
     /// 下发游戏加强设置（十殿加速开关 + 倍率 / 聊天窗口显隐）。
     ///
     /// 幂等，可重复调用。三条触发路径：① 文档就绪（`didFinish`）；② 页面的启动沉降
@@ -825,6 +838,11 @@ public final class GameViewportInstance: NSView {
         case .input(let event):
             // 键鼠同步：本实例只有被允许发言时中控才会路由（中控会再校验一次）。
             sync?.publish(event, from: account.id)
+        case .syncAck(let type, let replayed, let misses, let releases, let downs, let ups, let capturing, let tag, let agent):
+            // 回放回执：只落日志，不参与路由（同步链路的可见性补丁）。
+            sync?.handleAck(type: type, replayed: replayed, misses: misses, releases: releases,
+                            downs: downs, ups: ups, capturing: capturing, tag: tag,
+                            agent: agent, accountID: account.id)
         case .openURL(let url):
             openExternally(url)
         case .downloadFile(let name, let mimeType, let base64):
