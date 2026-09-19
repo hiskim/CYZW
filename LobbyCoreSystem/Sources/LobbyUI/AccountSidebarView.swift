@@ -194,43 +194,45 @@ struct AccountSidebarView: View {
         .contextMenu { groupActions(group) }
     }
 
+    /// 菜单分两档：常用（启动 / 关闭 / 同步）在上，管理类（刷新 / 编辑 / 排序 / 删除）在下。
     @ViewBuilder
     private func groupActions(_ group: AccountGroup) -> some View {
+        let members = session.accounts(inGroupID: group.id)
+        let liveCount = members.filter { session.isRunning($0) }.count
+        // ── 常用 ──
+        Button("启动组内全部账号（\(members.count)）") {
+            for account in members { session.launch(account) }
+        }
+        if liveCount > 0 {
+            Button("关闭组内全部实例（\(liveCount)）") {
+                for account in members where session.isRunning(account) {
+                    session.close(account)
+                }
+            }
+            if session.sync.isGroupSyncEnabled(group.id) {
+                Button("关闭组内同步（\(liveCount)）") { session.sync.disableGroup(group.id) }
+            } else {
+                Button("开启组内同步（\(liveCount)）") { session.sync.enableGroup(group.id) }
+            }
+        }
+        // ── 管理 ──
+        Divider()
+        // 不启动游戏，直接从服务端把组内账号资料拉回来（头像 / 昵称 / 等级 / 战力）。
+        // 运行中的账号会被跳过——那会顶掉正在跑的实例，且运行中本来就有页面上报。
+        Button("刷新本组资料（跳过运行中）") {
+            session.refreshProfiles(members, reason: "分组")
+        }
         if !group.isSynthetic {
             Button("编辑分组…") {
                 draft = GroupDraft(group: group,
                                    name: group.groupName,
                                    colorName: group.colorName,
-                                   memberIDs: Set(session.accounts(inGroupID: group.id).map(\.id)))
+                                   memberIDs: Set(members.map(\.id)))
             }
             if session.groupDefinitions.count > 1 {
                 Button("上移") { session.moveGroup(id: group.id, offset: -1) }
                 Button("下移") { session.moveGroup(id: group.id, offset: 1) }
             }
-            Divider()
-        }
-        let liveCount = session.accounts(inGroupID: group.id).filter { session.isRunning($0) }.count
-        Button("刷新本组资料（跳过运行中）") {
-            session.refreshProfiles(session.accounts(inGroupID: group.id), reason: "分组")
-        }
-        Button("启动组内全部账号（\(session.accounts(inGroupID: group.id).count)）") {
-            for account in session.accounts(inGroupID: group.id) {
-                session.launch(account)
-            }
-        }
-        if liveCount > 0 {
-            Button("关闭组内全部实例（\(liveCount)）") {
-                for account in session.accounts(inGroupID: group.id) where session.isRunning(account) {
-                    session.close(account)
-                }
-            }
-            if session.sync.isGroupSyncEnabled(group.id) {
-                Button("关闭组内同步") { session.sync.disableGroup(group.id) }
-            } else {
-                Button("开启组内同步") { session.sync.enableGroup(group.id) }
-            }
-        }
-        if !group.isSynthetic {
             Divider()
             Button("删除分组…", role: .destructive) {
                 session.groupDeletionCandidate = group
