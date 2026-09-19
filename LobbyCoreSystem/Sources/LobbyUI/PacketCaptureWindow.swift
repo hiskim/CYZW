@@ -359,6 +359,7 @@ struct PacketCaptureWindowView: View {
                 (isCapturing ? Color(red: 1.0, green: 0.45, blue: 0.42) : Color.cyan).opacity(0.16)))
             .overlay(Capsule(style: .continuous).strokeBorder(
                 (isCapturing ? Color(red: 1.0, green: 0.45, blue: 0.42) : Color.cyan).opacity(0.5), lineWidth: 1))
+            .contentShape(Rectangle())
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -460,6 +461,7 @@ struct PacketCaptureWindowView: View {
                 .padding(.vertical, 3)
                 .background(Capsule().fill(color.opacity(0.16)))
                 .overlay(Capsule().strokeBorder(color.opacity(0.45), lineWidth: 1))
+                .contentShape(Rectangle())
             }
             Menu {
                 ForEach(session.commandCatalog.entries) { entry in
@@ -543,6 +545,7 @@ struct PacketCaptureWindowView: View {
         .padding(.vertical, 5)
         .background(Capsule(style: .continuous).fill(Color.white.opacity(0.07)))
         .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+        .contentShape(Rectangle())
     }
 
     /// 页面回执行：只在窗口开着时展示（跟随 capture.pageDiagnostics）。
@@ -1034,6 +1037,7 @@ private struct PairRowView: View {
             .padding(.vertical, 4)
             .background(Capsule().fill(expanded ? Color.cyan.opacity(0.30) : Color.cyan.opacity(0.14)))
             .overlay(Capsule().strokeBorder(Color.cyan.opacity(expanded ? 0.75 : 0.45), lineWidth: 1))
+            .contentShape(Rectangle())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -1411,6 +1415,7 @@ private struct SendCommandPane: View {
             .padding(.vertical, 3)
             .background(Capsule().fill(isSelected ? Color.cyan.opacity(0.30) : tint.opacity(0.13)))
             .overlay(Capsule().strokeBorder(isSelected ? Color.cyan.opacity(0.85) : tint.opacity(0.4), lineWidth: 1))
+            .contentShape(Rectangle())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -1530,6 +1535,7 @@ private struct SendCommandPane: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 5)
                 .background(Capsule().fill(sendButtonColor))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selectedEntry == nil || !canSend)
@@ -1838,6 +1844,7 @@ private struct CommandCatalogPane: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(Capsule().fill(Color(lobbyRGB: 0x2563EB)))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

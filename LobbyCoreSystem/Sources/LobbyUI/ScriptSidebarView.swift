@@ -98,6 +98,7 @@ struct ScriptSidebarView: View {
             .padding(.vertical, 4)
             .background(Capsule(style: .continuous).fill(Color.cyan.opacity(0.28)))
             .overlay(Capsule(style: .continuous).strokeBorder(Color.cyan.opacity(0.7), lineWidth: 1))
+            .contentShape(Rectangle())
             .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
             .help("导入 .js 脚本文件（可多选）")
         }
@@ -331,6 +332,7 @@ struct ScriptCard: View {
                 .padding(.vertical, 4)
                 .background(Capsule(style: .continuous).fill(stateColor.opacity(record.isEnabled ? 0.18 : 0.10)))
                 .overlay(Capsule(style: .continuous).strokeBorder(stateColor.opacity(record.isEnabled ? 0.85 : 0.35), lineWidth: 1))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.10)

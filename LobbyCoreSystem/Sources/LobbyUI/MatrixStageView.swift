@@ -194,6 +194,7 @@ struct MatrixStageView: View {
                     .fill(sidebarVisible ? Color.white.opacity(0.08) : Color.cyan.opacity(0.16)))
                 .overlay(Capsule(style: .continuous)
                     .strokeBorder(sidebarVisible ? Color.white.opacity(0.16) : Color.cyan.opacity(0.55), lineWidth: 1))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
@@ -221,6 +222,7 @@ struct MatrixStageView: View {
                     .fill(Color(red: 1.0, green: 0.45, blue: 0.42).opacity(0.14)))
                 .overlay(Capsule(style: .continuous)
                     .strokeBorder(Color(red: 1.0, green: 0.45, blue: 0.42).opacity(0.5), lineWidth: 1))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
@@ -265,6 +267,7 @@ struct MatrixStageView: View {
                     .foregroundStyle(.white.opacity(0.85))
                     .frame(width: 18, height: 18)
                     .background(Circle().fill(Color.white.opacity(0.10)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 9, intensity: 0.14)
@@ -277,6 +280,7 @@ struct MatrixStageView: View {
                     .foregroundStyle(.white.opacity(0.85))
                     .frame(width: 18, height: 18)
                     .background(Circle().fill(Color.white.opacity(0.10)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 9, intensity: 0.14)
@@ -296,6 +300,7 @@ struct MatrixStageView: View {
                         .fill(isAutoSizing ? Color.cyan.opacity(0.72) : Color.cyan.opacity(0.12)))
                     .overlay(Capsule(style: .continuous)
                         .strokeBorder(Color.cyan.opacity(0.55), lineWidth: 1))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
@@ -340,6 +345,7 @@ struct MatrixStageView: View {
             .padding(.vertical, 4)
             .background(Capsule(style: .continuous).fill(Color.white.opacity(0.08)))
             .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.visible)
@@ -374,6 +380,7 @@ struct MatrixStageView: View {
                     .fill(allLiveInstancesAreSyncing ? Color.cyan.opacity(0.72) : Color.cyan.opacity(0.14)))
                 .overlay(Capsule(style: .continuous)
                     .strokeBorder(Color.cyan.opacity(0.55), lineWidth: 1))
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 50, intensity: 0.12)
@@ -430,6 +437,7 @@ struct MatrixStageView: View {
         .padding(.vertical, 4)
         .background(Capsule(style: .continuous).fill(tint.opacity(0.14)))
         .overlay(Capsule(style: .continuous).strokeBorder(tint.opacity(0.5), lineWidth: 1))
+        .contentShape(Rectangle())
     }
 
     // MARK: - 画布
@@ -663,6 +671,7 @@ struct ViewportCardView: View {
                     .foregroundStyle(.white.opacity(0.8))
                     .frame(width: 16, height: 16)
                     .background(Circle().fill(Color.white.opacity(0.10)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 8, intensity: 0.14)
@@ -675,6 +684,7 @@ struct ViewportCardView: View {
                     .foregroundStyle(.white.opacity(0.8))
                     .frame(width: 16, height: 16)
                     .background(Circle().fill(Color.white.opacity(0.10)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 8, intensity: 0.14)

@@ -105,6 +105,7 @@ struct AccountSidebarView: View {
                     .frame(width: 22, height: 22)
                     .background(Circle().fill(Color.white.opacity(0.12)))
                     .overlay(Circle().strokeBorder(Color.white.opacity(0.18)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 11, intensity: 0.15)
@@ -120,6 +121,7 @@ struct AccountSidebarView: View {
                     .frame(width: 22, height: 22)
                     .background(Circle().fill(Color.white.opacity(0.12)))
                     .overlay(Circle().strokeBorder(Color.white.opacity(0.18)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 11, intensity: 0.15)
@@ -134,6 +136,7 @@ struct AccountSidebarView: View {
                     .frame(width: 22, height: 22)
                     .background(Circle().fill(Color.white.opacity(0.12)))
                     .overlay(Circle().strokeBorder(Color.white.opacity(0.18)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 11, intensity: 0.15)
@@ -573,6 +576,7 @@ struct AccountSidebarCard: View {
                     .foregroundStyle(isRunning ? Color(red: 1.0, green: 0.45, blue: 0.42) : Color.green)
                     .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.white.opacity(0.07)))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .lobbyHoverHighlight(cornerRadius: 12, intensity: 0.12)

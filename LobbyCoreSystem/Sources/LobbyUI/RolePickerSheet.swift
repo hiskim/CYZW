@@ -155,6 +155,7 @@ struct RolePickerSheet: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .background(Capsule().fill(tint.opacity(0.16)))
+            .contentShape(Rectangle())
     }
 
     private var footer: some View {
