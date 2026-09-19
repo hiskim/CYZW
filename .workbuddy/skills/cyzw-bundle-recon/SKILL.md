@@ -56,6 +56,16 @@ agent_created: true
     → `NSPasteboard`（长度封顶 256），页面再用 `TipsManager.SHOW_TIP` 飘字；兜底才是
     参考实现那套 `execCommand('copy')`。**这条通道以后复制别的东西也能复用**；
   · 弹窗类同样只在第一次打开时加载 → 降频轮询兜底（前 90s 每 1s、之后每 10s）。
+- **游戏自己的 WebSocket 发帧形状（要发命令先抄这个，别自己发明 seq/ack）**：
+  `socket.sendAsync({ ack: 0, cmd, params, seq: Date.now(), time: Date.now() })`
+  ——出处 `builtin-salt-field-apk.js:533` 的 `sendReadCommand`，雪碧助手 `sendBattleCommand`
+  同形（它的抓包版 `sendGameCommand` 也一样）。**ack 恒 0、seq 取时间戳**；若页面上有
+  `g_utils.bon.encode`，就把 `params` 换成 `body = bon.encode(params)`。
+  ① **别名只覆盖主连接**：`window.ws` / `h5websocket.ws` 指的是主连接；盐场战场是**第二条
+  WebSocket**（URL 含 `e=x&sid2=`，见雪碧 `findBattleWebSocket` 注释），别名列表里根本没有它；
+  ② 所以要发到战场连接，必须**按 sid 点名**（本项目的 `sendViaGameOnSocket`），
+  ③ 也别自己算 seq 发原生帧：主连接历史查询当初就是因为「原生日发 seq 撞号被服务端静默丢弃」
+  才改成走游戏封装的。
 - **本机引擎的加速口径**（`ios-cocos/cocos-project/src/cocos2d-jsb.07adf.js`，如需「加速」类需求先读这一段）：
   `cc.Scheduler.update(t)` 开头 `1 !== this._timeScale && (t *= this._timeScale)`；
   `director.mainLoop` = `_compScheduler.updatePhase(dt)` → `_scheduler.update(dt)`；
@@ -376,7 +386,18 @@ AGENT_JS=/tmp/recon/agent.js $NODE scripts/player-id-harness.mjs
 #     假弹窗给全 onShow/onShown/onFixShow + ui.m_playerid/m_btnCopyID（**初始隐藏**，
 #     官方客户端就是这样）+ 假 `webkit.messageHandlers.<channel>`，断言「复制真的落到了宿主」。
 
-> ⚠️ 三个 harness 都要喂 **A 步导出的那份 `agent.js`**（不是「Python 抽 `"""…"""` 得到的
+# B''''. 改**页面代理 / 抓包**（PacketCaptureScript）用 scripts/packet-agent-harness.mjs：
+EXPECT_VERSION=5 AGENT_JS=/tmp/recon/agent.js $NODE scripts/packet-agent-harness.mjs
+#     假 WebSocket（主连接 + 含 `e=x&sid2=` 的战场连接）+ 假 `g_utils.bon.encode`，
+#     断言：sid 登记、`sendViaGameOnSocket` **定向到战场那条**、请求形状 `{ack:0, seq:时间戳}`、
+#     回执里的 Map 被 `sanitize` 摊平、以及三个失败串（`no-such-socket` /
+#     `socket-has-no-sendAsync` / `sendAsync-threw`）——宿主正是靠这三个串决定要不要降级。
+
+> ⚠️ **别用 `strings -a <dylib> | grep` 从二进制里捞 agent 再 `node --check`**：agent 里
+> 大量中文注释是非 ASCII，`strings` 会把它切成碎片且顺序错乱，捞出来必然报「语法错误」
+> ——那不是代码坏了，是取证工具不对。老老实实走 A 步的隔离编译导出。
+
+> ⚠️ 各 harness 都要喂 **A 步导出的那份 `agent.js`**（不是「Python 抽 `"""…"""` 得到的
 > 源码副本」）：后者插值还是 `\(channel)` 这种占位符、行首缩进也不同，测出来的是另一份东西。
 > A 步顺带验证了插值，成本一条 `grep`——**别省**（插值名字写错时只有这一步抓得到）。
 
