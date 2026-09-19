@@ -334,6 +334,21 @@ public final class GameViewportInstance: NSView {
         sendEnhancementApply()
     }
 
+    /// 只取一次页面状态回执：**不改配置、不排重试、不写日志**。
+    ///
+    /// 用途：设置页「目标帧率」卡要显示**活的**实测帧率，而回执里的 `fps=实测/目标`
+    /// 段原本只在下发那一刻刷新（下发很快就 settle，之后不再重发）——不主动取一次，
+    /// 卡上的数字会永远停在「刚改档那一下」的旧读数。2s 一次的节奏由调用方控制。
+    public func refreshEnhancementReport() {
+        guard let enhancements, !isStopped else { return }
+        let accountName = account.nickname
+        webView.evaluateJavaScript(GameEnhancementScript.status()) { [weak enhancements] result, error in
+            guard error == nil else { return }
+            enhancements?.notePageReport((result as? String) ?? String(describing: result),
+                                         account: accountName)
+        }
+    }
+
     /// 一次下发 + 校验回执；未落实则排下一次。
     private func sendEnhancementApply() {
         guard let enhancements, !isStopped,
@@ -343,7 +358,8 @@ public final class GameViewportInstance: NSView {
                                                 nightmareSpeed: settings.nightmareSpeedMultiplier,
                                                 hideChat: settings.chatPanelHidden,
                                                 uiSpeedEnabled: settings.uiSpeedEnabled,
-                                                uiSpeed: settings.uiSpeedMultiplier)
+                                                uiSpeed: settings.uiSpeedMultiplier,
+                                                fpsDisplay: settings.fpsDisplayEnabled)
         // 闭包会逃逸（evaluateJavaScript 的 completion 是 @escaping），
         // 所以只捕获值 + weak self，不把实例吊住。
         let accountName = account.nickname
@@ -531,7 +547,15 @@ public final class GameViewportInstance: NSView {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                _ = try await self.webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .page)
+                // 回执必须落日志：用户问「帧率设置到底生效没有」时，这一行就是答案。
+                //   ok-restart:N = 走「暂停 → 等旧循环退出 → 重启」成功，当前帧率 N；
+                //   deferred:N   = 引擎还没起来（值已写进注入对象，boot 时会读）；
+                //   noop:N       = 已经是这个值（重复下发）；
+                //   ok-legacy:N  = 引擎没有 `_setAnimFrame`，退回公开 setFrameRate；
+                //   unavailable:N= 引擎结构不合，改不动（要查引擎版本）。
+                let result = try await self.webView.callAsyncJavaScript(body, arguments: [:],
+                                                                       in: nil, contentWorld: .page)
+                LobbyLog.info("[instance] frame rate apply: %@", String(describing: result ?? "nil"))
             } catch {
                 LobbyLog.warn("[instance] frame rate apply failed: %@", error.localizedDescription)
             }

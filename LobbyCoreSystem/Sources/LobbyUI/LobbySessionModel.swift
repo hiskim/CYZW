@@ -753,16 +753,50 @@ public final class LobbySessionModel: ObservableObject {
         broadcastEnhancements()
     }
 
+    /// 帧率角标开关变更：落盘 + 下发全部存活实例。
+    public func setFPSDisplayEnabled(_ enabled: Bool) {
+        guard enhancements.fpsDisplayEnabled != enabled else { return }
+        enhancements.fpsDisplayEnabled = enabled
+        broadcastEnhancements()
+    }
+
+    /// 帧率档位改档后重放能耗仲裁。
+    ///
+    /// 为什么要专门一条：页面侧的帧率只在**两处**下发——实例启动（先按非焦点 15 FPS）
+    /// 与焦点变化。设置页的档位是 `@AppStorage` 直写 UserDefaults，没有广播的话，
+    /// 正在跑的实例要等到「切换账号 / 重启实例」才会读到新档，用户看到的就是
+    /// 「改了没反应」。这里按当前焦点重放一遍：焦点实例用新档，非焦点仍 15 FPS。
+    public func broadcastFrameRateChange() {
+        LobbyLog.info("[session] frame rate change → %ld FPS (focused only)",
+                      TargetFrameRate.current().rawValue)
+        reapplyEnergyPolicy()
+    }
+
+    /// 向所有存活实例取一次状态回执（只为刷新帧率读数）。
+    /// 由设置页在「帧率角标开着 + 页面可见」时按 2s 节拍调用——没有空闲轮询。
+    public func refreshEnhancementReports() {
+        for instance in pool.allSurfaces {
+            instance.refreshEnhancementReport()
+        }
+    }
+
+    /// 焦点账号的昵称（设置页显示「这路跑多少」时用来挑读数）。
+    public var focusedAccountNickname: String? {
+        guard let id = focusedAccountID else { return nil }
+        return accounts.first { $0.id == id }?.nickname
+    }
+
     /// 把当前游戏加强设置推给所有存活实例。
     /// 新启动的实例不在这里管：它在文档就绪时自行下发一次。
     public func broadcastEnhancements() {
         let surfaces = pool.allSurfaces
         let settings = enhancements.settings
-        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld uiSpeed=%@ %@ chat=%@): %ld instance(s)",
+        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld uiSpeed=%@ %@ fps=%@ chat=%@): %ld instance(s)",
                       settings.nightmareSpeedEnabled ? "on" : "off",
                       settings.nightmareSpeedMultiplier,
                       settings.uiSpeedEnabled ? "on" : "off",
                       GameEnhancementSettings.describe(speed: settings.uiSpeedMultiplier),
+                      settings.fpsDisplayEnabled ? "on" : "off",
                       settings.chatPanelHidden ? "hidden" : "shown",
                       surfaces.count)
         for instance in surfaces {

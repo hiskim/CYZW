@@ -170,6 +170,8 @@ public enum LobbyConfiguration {
         public static let enhanceUISpeedEnabled = "lobby.enhance.uiSpeed.enabled"
         /// UI 加速倍率（Double，1...10、0.5 步进；默认 3，与官方 APK 运行时的默认档一致）。
         public static let enhanceUISpeedMultiplier = "lobby.enhance.uiSpeed.multiplier"
+        /// 实例画面左上角显示实测帧率角标（默认 false）。
+        public static let enhanceFPSDisplay = "lobby.enhance.fpsDisplay.enabled"
         /// 隐藏游戏内聊天窗口（默认 false = 保持游戏原样的显示）。
         public static let enhanceChatHidden = "lobby.enhance.chat.hidden"
     }

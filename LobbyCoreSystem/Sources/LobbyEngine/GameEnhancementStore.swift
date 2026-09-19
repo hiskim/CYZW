@@ -16,6 +16,9 @@ public struct GameEnhancementSettings: Equatable, Sendable {
     /// UI 加速倍率（始终落在 `uiSpeedRange` 内、且为 0.5 的整数倍）。
     public var uiSpeedMultiplier: Double
 
+    /// 实例画面左上角显示实测帧率角标。
+    public var fpsDisplayEnabled: Bool
+
     /// 隐藏游戏内聊天窗口（消息列表 + 输入区整块）。默认 false = 原样显示。
     public var chatPanelHidden: Bool
 
@@ -41,11 +44,13 @@ public struct GameEnhancementSettings: Equatable, Sendable {
                 nightmareSpeedMultiplier: Int,
                 uiSpeedEnabled: Bool = false,
                 uiSpeedMultiplier: Double = GameEnhancementSettings.defaultUISpeedMultiplier,
+                fpsDisplayEnabled: Bool = false,
                 chatPanelHidden: Bool = false) {
         self.nightmareSpeedEnabled = nightmareSpeedEnabled
         self.nightmareSpeedMultiplier = Self.clamp(multiplier: nightmareSpeedMultiplier)
         self.uiSpeedEnabled = uiSpeedEnabled
         self.uiSpeedMultiplier = Self.clamp(speed: uiSpeedMultiplier)
+        self.fpsDisplayEnabled = fpsDisplayEnabled
         self.chatPanelHidden = chatPanelHidden
     }
 
@@ -117,12 +122,21 @@ public final class GameEnhancementStore: ObservableObject {
         }
     }
 
+    /// 帧率角标开关。
+    @Published public var fpsDisplayEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(fpsDisplayEnabled,
+                                      forKey: LobbyConfiguration.PreferenceKey.enhanceFPSDisplay)
+        }
+    }
+
     /// 下发用的快照（倍率在这里兜底钳制，页面永远拿不到越界值）。
     public var settings: GameEnhancementSettings {
         GameEnhancementSettings(nightmareSpeedEnabled: nightmareSpeedEnabled,
                                 nightmareSpeedMultiplier: nightmareSpeedMultiplier,
                                 uiSpeedEnabled: uiSpeedEnabled,
                                 uiSpeedMultiplier: uiSpeedMultiplier,
+                                fpsDisplayEnabled: fpsDisplayEnabled,
                                 chatPanelHidden: chatPanelHidden)
     }
 
@@ -137,11 +151,61 @@ public final class GameEnhancementStore: ObservableObject {
     @Published public private(set) var lastPageReport: String?
 
     /// 记录一次页面回执。只认非空串；`no-handler` 也是有效信息（代理没进页面）。
+    ///
+    /// 顺带把回执里的帧率段登记进 `fpsReadings`（键 = 账号昵称）——设置页「目标帧率」
+    /// 卡就是靠它显示实测值的，所以一处解析、一处消费。
     public func notePageReport(_ diagnostic: String, account: String) {
         let trimmed = diagnostic.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        if let reading = Self.parseFPSReading(from: trimmed) {
+            let key = account.isEmpty ? "-" : account
+            // 读数没变就不写：这个方法每 2s 被调一次，无脑写会一直触发 @Published 重绘。
+            if let existing = fpsReadings[key],
+               existing.measured == reading.measured, existing.target == reading.target {
+                // 与上次相同，跳过。
+            } else {
+                fpsReadings[key] = reading
+            }
+        }
         let line = account.isEmpty ? trimmed : "\(account)：\(trimmed)"
         if lastPageReport != line { lastPageReport = line }
+    }
+
+    // MARK: - 帧率读数（供设置页「目标帧率」卡显示）
+
+    /// 从页面回执里取帧率段 `fps=<开关>:<实测>/<目标>`，例如
+    /// `fps=1:58/60`（正在采样）、`fps=1:-/60`（还没采到样）、`fps=0:0/60`（角标关着）。
+    ///
+    /// 格式知识留在本文件，视图只负责显示——解析规则跟 `GameEnhancementScript.status()`
+    /// 是同一份契约，放在一起改不容易漏。
+    public static func parseFPSReading(from report: String?) -> (measured: Int?, target: Int)? {
+        guard let report, let marker = report.range(of: "fps=") else { return nil }
+        var tail = report[marker.upperBound...]
+        // 跳过开关位（`1:` / `0:`）。
+        guard let colon = tail.firstIndex(of: ":") else { return nil }
+        tail = tail[tail.index(after: colon)...]
+        // 取值段：`58/60`；未采样时是 `-/60`。
+        let token = tail.prefix { $0.isNumber || $0 == "/" || $0 == "-" }
+        let parts = token.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, let target = Int(parts[1]) else { return nil }
+        return (Int(parts[0]), target)
+    }
+
+    /// 最近一次回执里的帧率读数（nil = 回执里没有 fps 段，例如代理没进页面）。
+    public var lastFPSReading: (measured: Int?, target: Int)? {
+        Self.parseFPSReading(from: lastPageReport)
+    }
+
+    /// 各账号最近一次的帧率读数（键 = 账号昵称）。
+    ///
+    /// 为什么按账号留着而不是只留最后一个：多开时每路的读数本来就不同——焦点实例跑
+    /// 用户档、其余按 `idleFallback` 钉在 15 FPS。只留最后一个的话，设置页上那个数字
+    /// 会在几路之间跳，看不出「我这路到底跑多少」。
+    @Published public private(set) var fpsReadings: [String: (measured: Int?, target: Int)] = [:]
+
+    /// 取某账号的帧率读数（设置页按**焦点账号**取，语义 = 「我正在看的这路跑多少」）。
+    public func fpsReading(forAccount nickname: String) -> (measured: Int?, target: Int)? {
+        fpsReadings[nickname]
     }
 
     public init() {
@@ -163,5 +227,7 @@ public final class GameEnhancementStore: ObservableObject {
             forKey: LobbyConfiguration.PreferenceKey.enhanceUISpeedMultiplier) as? Double
         uiSpeedMultiplier = GameEnhancementSettings.clamp(
             speed: storedSpeed ?? GameEnhancementSettings.defaultUISpeedMultiplier)
+        fpsDisplayEnabled = defaults.bool(
+            forKey: LobbyConfiguration.PreferenceKey.enhanceFPSDisplay)
     }
 }

@@ -18,6 +18,10 @@ agent_created: true
 - CDN 本地缓存 `~/Library/Application Support/GameLobby/CDN/`，
   `index.json` 是 `URL -> {path, byteCount}` 索引，`files/<2位>/<sha256>` 是内容。
 - 命令行 `grep` 用 **`-E`**（BSD BRE 不支持 `\|`，会恒无匹配、误判成「没改动」）。
+- 查**产物里有没有某段代码**：`strings -a <二进制> | grep` 只对 ASCII 可靠，
+  **中文字面量要用 `grep -c -a -- "中文" <二进制>`**（`strings` 把非 ASCII 当不可打印，
+  会让「明明编进去了」显示成 0 条，白查半天）。Debug 的代码在
+  `Contents/MacOS/潮音之王.debug.dylib`，不是 40KB 的主二进制。
 - **要找「某功能是怎么实现的」时，先在官方 APK 运行时里找，别从零猜**：
   `~/Library/Application Support/RemoteRuntime/*/assets/game/` 下有整套内置脚本
   （`native-game-host.js` = 宿主侧：引擎加速 / 帧率 / 断线重连 / 盐场视野；`builtin-*-apk.js`
@@ -30,6 +34,20 @@ agent_created: true
   ⇒ `director.getScheduler().setTimeScale(n)` = **补间 / 动作 / 转场加速，组件 `update(dt)` 不加速**
   （官方 APK 的 `engineGlobalSpeed` 就是这个机制，默认档 3）。要「某个面板内部」的节奏才用
   `DEFAULT_TIMESCALE` 那种面板级钩子（十殿加速）。
+- **帧率口径**（`src/ios2-web-cocos2d.js` + `src/ios2-web-boot.js`，问「帧率设置生效没有」时必读）：
+  · 启动走注入对象：`__IOS2_GAME_INSTANCE__.frameRate` → `preferredFrameRate()` 白名单
+    `[15,24,30,45,60,90,120]` → `cc.game.init({frameRate})`；
+    `TargetFrameRate` 的档位必须与该白名单严格一致，白名单外会被静默回退 60。
+  · 运行时改档走宿主 `applyFrameRate()`（pause → 等 `max(120ms, 3×帧长)` → 改
+    `config.frameRate` + `_setAnimFrame()` + resume）；**别直接调 `cc.game.setFrameRate`**：
+    它会 `_paused=true` 后立刻 `_runMainLoop()`，旧循环里排队的 setTimeout→rAF 回调还会跑完，
+    `_paused` 被新循环置回 false → 旧循环复活 → 两条主循环并存（实测帧率冲到 2 倍）。
+  · `_setAnimFrame()` 有两条分支，直接影响「帧率读数」与「rAF 语义」：
+    非 30/60 档把**全局** `window.requestAnimationFrame` 换成 `_stTimeWithRAF`
+    （setTimeout 计时后仍 rAF）→ 90/120 档受 vsync 封顶（60Hz 屏只有 60）；
+    30 档是 `_runMainLoop` 里 `30 === a && (s = !s)` 的**隔帧跳过**（rAF 照跑，刷新率不变）。
+    ⇒ **测帧率要数 `cc.director.mainLoop`，别数 rAF**（数 rAF 会把 30 读成 60）。
+  · `PageEvent.frameRateWrite`（页面报「谁写了帧率」）目前**没有生产者**，是预留通道。
 
 ## 1. 解出明文 bundle
 
@@ -161,6 +179,14 @@ open('/tmp/recon/mod.js','w').write(s[idx:end+12])
 + `GameEnhancementScript.agentVersion`（诊断串里的 `v=`，否则分不清页面里跑的是哪一代代理）。
 
 UI 细节（踩过）：
+- **入口按语义归属，别一律塞增强页**：纯「自检 / 读数」类开关（帧率角标）放在它**验证的对象**
+  旁边（设置页「目标帧率」卡）；增强页只留改游戏行为的项。这是用户明确提过的偏好。
+- 想要**实时读数**就得自己拉：页面回执只在 `apply` 那一刻刷新，下发 settle 之后不再变
+  → 视图里读 `lastPageReport` 会永远停在旧值。做法：加一个只取状态、不改配置的诊断入口
+  （`GameViewportInstance.refreshEnhancementReport()` → `LobbySessionModel.refreshEnhancementReports()`），
+  由视图 `.task(id:)` 在「功能开着 + 页面可见」时按 2s 驱动——离开即取消，不留空闲轮询。
+- 多实例的读数按**账号**分桶存（只留最后一个会在几路之间跳）；值没变就别写 `@Published`，
+  否则每拍触发一次重绘。
 - 倍率行别逐项复制，抽成共用 helper（现为 `speedRow(…)` / `quickSpeedButton(…)`）——两个功能
   各自的输入框样式必须同源，否则改圆角 / 宽度必漏一个。
 - **小数倍率输入框：结尾是小数点时不许写档**。中间态 `1.` 会被 `Double("1.")=1` 解析并回写，
@@ -296,8 +322,10 @@ xcrun swiftc -o agent_dump /Users/gg/915/CYZW/LobbyCoreSystem/Sources/LobbyEngin
 # B. 假游戏环境跑行为（fake fgui.GRoot + fake __require，见 scripts/agent-harness.mjs 模板）
 $NODE harness.mjs
 
-# B'. 改**引擎全局状态**的功能（时间倍率 / 帧率 / director 包装）改用：
+# B'. 改**引擎全局状态 / 读引擎节奏**的功能（时间倍率、帧率角标、director 包装）改用：
 AGENT_JS=/tmp/recon/agent.js $NODE scripts/engine-speed-harness.mjs
+#     该模板自带可控时钟（`Date.now` 可推）+ 假 `cc.game/director`（含 mainLoop 计数），
+#     帧率类断言就是「敲 N 次 mainLoop + 推 1s → 读角标文案」。
 
 # C. 真编译
 cd /Users/gg/915/CYZW/LobbyCoreSystem && \
@@ -393,6 +421,13 @@ xcrun swiftc -O -o t/run Stubs.swift Store.swift TestMain.swift -framework AppKi
   原始 `/132` 落到 4KB / 132×132，而不是 1080px 原图）。
 - ⚠️ 被剥离的 import 只影响符号可见性，**业务逻辑一字未改**——别顺手改逻辑，
   否则测的就不是产品代码了。
+- 最划算的用处是**字符串 / 回执解析这类纯函数**：整包编译要几十秒，隔离编译 1 秒。
+  本轮就在这一步抓到 `fpsReadings[key] != reading`（字典下标是 Optional，元组不可比较，
+  整包也会报，但先在这里报便宜得多）。
+- 桩文件里被真实代码引用的键/常量在**真实文件**改过名的话，这里不会跟着变——
+  所以只补「键名」这类稳定契约，别在桩里写业务。
+- 沙箱里若报宏插件失败（`SwiftUIMacros… produced malformed response`），加
+  `-Xfrontend -disable-sandbox`；纯 store / 解析函数不涉及宏，一般不用加。
 
 > 同类检查：SwiftUI 的 `body` 里**绝不允许**有会写 `@Published` 的调用
 > （「懒加载 + 顺手清死引用」就是典型）。IO/状态变更一律挪到 init 或定时节拍里。

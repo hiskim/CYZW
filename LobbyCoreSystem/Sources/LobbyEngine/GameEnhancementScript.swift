@@ -94,6 +94,23 @@ import Foundation
 // ⚠️ 只提速**动画时间轴**，不改服务端结算节奏；但走 `schedule / scheduleOnce`
 // 的延时（心跳、冷却）也会跟着提前，倍率别拉太猛。
 //
+// ── ④ 帧率显示 ────────────────────────────────────────────────────────────
+// 与官方 APK 的 `builtin-fps-display-apk.js` 同用途（实例画面角落一个 FPS 角标），
+// 但**计数锚点不同**，这里刻意的：
+//
+//   · 本机引擎（`src/ios2-web-cocos2d.js`）里 `cc.game._setAnimFrame()` 会把
+//     `window.requestAnimationFrame` 换成 `_stTimeWithRAF`（setTimeout 计时后再对齐 rAF）
+//     的档位是**非 30/60**；而 30 档是 `_runMainLoop()` 里 `30 === a && (s = !s)`
+//     ——rAF 照跑，隔帧才调 `mainLoop`。
+//     ⇒ 用 rAF 数出来的是**刷新率**（60Hz 屏上恒 60），不是游戏帧率。
+//   · 所以改成包一层 `cc.director.mainLoop`（每次真正出帧调一次）——
+//     APK 脚本数 rAF 的写法在这里会把 30 档读成 60。
+//
+// 角标文案是 `FPS 实测/目标`：目标取 `cc.game.config.frameRate`（宿主运行时改档
+// 写的正是这个字段），所以它就是「帧率设置到底生效没有」的现场证据。
+// ⚠️ `mainLoop` 在 `_paused` 时不跑（页面隐藏 / `cc.game.pause()`），角标此时停在
+// 上一个读数而不是掉到 0——采样口在 `document.hidden` 时直接跳过。
+//
 // ⚠️ `window.__require` 是**游戏自己的**跨 bundle 模块注册表（不是宿主符号，
 // 见 `ios2-script-runtime.js` 的注释），文档起点注入时它还不存在，且
 // `NightmareBattlePanel` / `ChatPanel` 都要等对应玩法才会被加载。所以这里用
@@ -108,7 +125,7 @@ public enum GameEnhancementScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**。
     /// 诊断串里带 `v=`，一眼就能确认页面里跑的到底是哪一版——
     /// 省掉「你确定重建了吗 / 跑的是不是这一版」这类来回（已经吃过三次亏）。
-    public static let agentVersion = "11"
+    public static let agentVersion = "12"
 
     /// 聊天面板的模块名（与游戏侧一致，勿改）。
     public static let chatPanelModuleName = "ChatPanel"
@@ -121,11 +138,13 @@ public enum GameEnhancementScript {
     /// `nightmareSpeed` = 十殿加速倍率（Int），`uiSpeed` = UI 加速倍率（Double，
     /// 1...10、0.5 步进）——两个「speed」语义不同，参数名分开写免得看串。
     public static func apply(enabled: Bool, nightmareSpeed: Int, hideChat: Bool,
-                             uiSpeedEnabled: Bool, uiSpeed: Double) -> String {
+                             uiSpeedEnabled: Bool, uiSpeed: Double,
+                             fpsDisplay: Bool) -> String {
         "window.__LOBBY_ENHANCE__ ? window.__LOBBY_ENHANCE__.apply(" +
             "{enabled:\(enabled ? "true" : "false"),speed:\(nightmareSpeed)," +
             "hideChat:\(hideChat ? "true" : "false")," +
-            "uiSpeedEnabled:\(uiSpeedEnabled ? "true" : "false"),uiSpeed:\(uiSpeed)}) : 'no-handler'"
+            "uiSpeedEnabled:\(uiSpeedEnabled ? "true" : "false"),uiSpeed:\(uiSpeed)," +
+            "fpsDisplay:\(fpsDisplay ? "true" : "false")}) : 'no-handler'"
     }
 
     /// 只读诊断：当前页面侧加强状态。
@@ -168,6 +187,9 @@ public enum GameEnhancementScript {
           const UI_BOOT_MAX = 1500;
           // 保活节拍：游戏自己或别的脚本随时可能把 timescale 改回去。
           const UI_KEEPER_MS = 100;
+
+          // 帧率角标：采样窗口 500ms（与官方 APK 的 fps 脚本同量级）。
+          const FPS_TICK_MS = 500;
 
           const state = {
             running: false,
@@ -222,6 +244,20 @@ public enum GameEnhancementScript {
             bootTimer: 0,
             bootTries: 0,
             keeper: 0,
+            note: 'idle'
+          };
+
+          // ── 帧率显示：状态 ──
+          //   frames = 本采样窗口内 cc.director.mainLoop 被调用的次数
+          //   hook   = 已包上 mainLoop 的那个 director（卸载时只认它）
+          const fps = {
+            enabled: false,
+            frames: 0,
+            lastAt: 0,
+            value: null,
+            badge: null,
+            timer: 0,
+            hookInstalled: false,
             note: 'idle'
           };
 
@@ -1206,6 +1242,152 @@ public enum GameEnhancementScript {
             return status();
           };
 
+          // ── 帧率显示：实现 ──
+          //
+          // 计数锚点必须是 `cc.director.mainLoop`（每次真正出帧一次），不是 rAF——
+          // 原因见文件头 ④：30 档是「rAF 照跑、隔帧才 mainLoop」，非 30/60 档还会把
+          // 全局 rAF 换成 setTimeout 版本，数 rAF 得到的是刷新率。
+          const fpsHook = () => {
+            if (fps.hookInstalled) return true;
+            try {
+              const director = window.cc && window.cc.director;
+              if (!director || typeof director.mainLoop !== 'function') return false;
+              if (director.mainLoop.__lobbyFpsWrapped) { fps.hookInstalled = true; return true; }
+              const original = director.mainLoop;
+              const wrapped = function () {
+                fps.frames += 1;
+                return original.apply(this, arguments);
+              };
+              wrapped.__lobbyFpsWrapped = true;
+              wrapped.__lobbyFpsOriginal = original;
+              director.mainLoop = wrapped;
+              fps.hookInstalled = true;
+              return true;
+            } catch (error) {
+              return false;
+            }
+          };
+
+          const fpsUnhook = () => {
+            fps.hookInstalled = false;
+            try {
+              const director = window.cc && window.cc.director;
+              const current = director && director.mainLoop;
+              if (current && current.__lobbyFpsWrapped &&
+                  typeof current.__lobbyFpsOriginal === 'function') {
+                director.mainLoop = current.__lobbyFpsOriginal;
+              }
+            } catch (error) {}
+          };
+
+          // 目标帧率 = 引擎当前配置值（宿主改档写的就是它）。
+          const fpsTarget = () => {
+            try {
+              const game = window.cc && window.cc.game;
+              const rate = Number(game && game.config && game.config.frameRate);
+              return isFinite(rate) && rate > 0 ? Math.round(rate) : 0;
+            } catch (error) {
+              return 0;
+            }
+          };
+
+          const fpsEnsureBadge = () => {
+            if (fps.badge && fps.badge.parentNode) return fps.badge;
+            if (!document.body) return null;
+            const badge = document.createElement('div');
+            badge.id = 'lobby-fps-badge';
+            badge.textContent = 'FPS --';
+            badge.setAttribute('aria-hidden', 'true');
+            const style = badge.style;
+            style.position = 'fixed';
+            style.left = '6px';
+            style.top = '6px';
+            style.zIndex = '2147483645';
+            style.padding = '2px 6px';
+            style.borderRadius = '5px';
+            style.color = '#A7F3D0';
+            style.background = 'rgba(7, 16, 30, 0.72)';
+            style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+            style.fontSize = '12px';
+            style.fontWeight = '700';
+            style.lineHeight = '15px';
+            style.letterSpacing = '0';
+            style.pointerEvents = 'none';
+            style.userSelect = 'none';
+            style.contain = 'layout style paint';
+            document.body.appendChild(badge);
+            fps.badge = badge;
+            return badge;
+          };
+
+          const fpsRender = () => {
+            const badge = fpsEnsureBadge();
+            if (!badge) return;
+            const target = fpsTarget();
+            if (fps.value === null) {
+              badge.textContent = 'FPS --' + (target ? '/' + target : '');
+              badge.style.color = '#A7F3D0';
+              return;
+            }
+            const value = Math.max(0, Math.round(fps.value));
+            // 显示「实测/目标」：两个数摆在一起，设置到底是没生效还是没跑满一眼可辨。
+            badge.textContent = 'FPS ' + value + (target ? '/' + target : '');
+            const good = target ? target * 0.85 : 55;
+            const warn = target ? target * 0.55 : 30;
+            badge.style.color = value >= good ? '#A7F3D0' : value >= warn ? '#FDE68A' : '#FCA5A5';
+          };
+
+          const fpsTick = () => {
+            if (!fps.enabled) return;
+            if (!fps.hookInstalled) fpsHook();
+            // 页面隐藏时引擎的 rAF 停了，`mainLoop` 不再被调用——这时采样只会得到 0，
+            // 让角标停在最后一个读数比掉到 0 更有信息量（回到前台自动恢复）。
+            let hidden = false;
+            try { hidden = !!document.hidden; } catch (error) {}
+            const now = Date.now();
+            if (hidden || !fps.lastAt) {
+              fps.lastAt = hidden ? 0 : now;
+              fps.frames = 0;
+              if (!hidden) fpsRender();
+              return;
+            }
+            const elapsed = now - fps.lastAt;
+            if (elapsed < FPS_TICK_MS) return;
+            const sample = fps.frames * 1000 / elapsed;
+            fps.value = fps.value === null ? sample : fps.value * 0.4 + sample * 0.6;
+            fps.frames = 0;
+            fps.lastAt = now;
+            fps.note = fps.hookInstalled ? 'running' : 'fps-waiting-engine';
+            fpsRender();
+          };
+
+          // 开关（幂等）。关掉时拆包装、摘角标，不留定时器。
+          const setFpsDisplay = (enabled) => {
+            const next = enabled === true;
+            if (next === fps.enabled) return status();
+            fps.enabled = next;
+            if (next) {
+              fps.frames = 0;
+              // 采样窗口从「开启这一刻」开始算：否则第一拍只用来初始化，读数要等
+              // 1.5 个窗口才出现（窗口内已数到的帧还会被丢掉）。
+              fps.lastAt = Date.now();
+              fps.value = null;
+              // 引擎可能还没起来：钩子挂不上就先出角标，采样拍里再补挂。
+              fpsHook();
+              fpsRender();
+              fps.note = fps.hookInstalled ? 'running' : 'fps-waiting-engine';
+              if (!fps.timer) fps.timer = setInterval(fpsTick, FPS_TICK_MS);
+            } else {
+              if (fps.timer) { clearInterval(fps.timer); fps.timer = 0; }
+              fpsUnhook();
+              if (fps.badge && fps.badge.parentNode) fps.badge.parentNode.removeChild(fps.badge);
+              fps.badge = null;
+              fps.value = null;
+              fps.note = 'fps-stopped';
+            }
+            return status();
+          };
+
           // 「开着隐藏但一个面板都没命中」时自动附上结构探针——一次截图就能定位。
           const status = () => {
             let text = 'v=' + AGENT_VERSION +
@@ -1225,6 +1407,10 @@ public enum GameEnhancementScript {
               ' sched=' + (ui.scheduler ? 1 : 0) +
               ' wrap=' + (ui.wrapped ? 1 : 0) +
               ' uiNote=' + ui.note +
+              // 帧率：fps=开关:实测值/目标值，hk=是否已包上 mainLoop。
+              ' fps=' + (fps.enabled ? 1 : 0) + ':' +
+              (fps.value === null ? '-' : Math.round(fps.value)) + '/' + fpsTarget() +
+              ' hk=' + (fps.hookInstalled ? 1 : 0) +
               ' note=' + state.note + ' chatNote=' + chat.note;
             if (chat.hidden && !chat.shells.length) {
               text += ' ' + probeChat();
@@ -1241,6 +1427,8 @@ public enum GameEnhancementScript {
             setChatHidden(!!next.hideChat);
             // UI 加速同样独立（改的是引擎全局倍率，与具体面板无关）。
             setUISpeed(next.uiSpeedEnabled, next.uiSpeed);
+            // 帧率角标（纯显示，不碰引擎状态）。
+            setFpsDisplay(!!next.fpsDisplay);
 
             if (enabled === state.running) {
               // 只改倍率：钩子已经在了，现场重扫一次面板即可（没面板时
@@ -1274,6 +1462,7 @@ public enum GameEnhancementScript {
             stop: () => { state.running = false; stop(); state.note = 'stopped'; return status(); },
             chat: setChatHidden,
             ui: setUISpeed,
+            fps: setFpsDisplay,
             probe: probeChat,
             status: status
           };
