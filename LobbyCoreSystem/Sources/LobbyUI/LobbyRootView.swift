@@ -150,6 +150,18 @@ public struct LobbyRootView: View {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             session.autoRefreshMissingProfiles()
         }
+        // 实例全关掉之后自动把侧栏放回来。
+        //
+        // 动机：隐藏侧栏是为了给多开画面腾地方；一个实例都不剩时画面就是块空舞台，
+        // 藏起来只剩「唯一的入口」（账号列表 / 启动按钮都在侧栏里）——用户还得先想起来
+        // 右上角那个按钮才能继续操作。
+        //
+        // 触发条件刻意用**从有到无**这一次跳变：不动「本来就空着 + 用户主动隐藏」的情况，
+        // 否则用户刚把侧栏收起来、手还没离开鼠标就被弹回来。动画与开关按钮同参数。
+        .onChange(of: session.runningAccountIDs) { oldValue, newValue in
+            guard !oldValue.isEmpty, newValue.isEmpty, !sidebarVisible else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible = true }
+        }
     }
 
     // MARK: - 侧栏
