@@ -17,6 +17,14 @@ struct AccountSidebarView: View {
     /// 正在编辑备注的账号（nil = 无弹窗）。
     @State private var remarkDraft: GameAccount?
 
+    /// 导入面板配置（面板实例按 purpose 复用，见 LobbyTheme.swift 的 LobbyFilePanel）。
+    private static let importSpec = LobbyFilePanelSpec(
+        purpose: "accounts",
+        title: "选择要导入的账号文件",
+        message: "可多选 .bin 账号文件",
+        extensions: ["bin"],
+        allowsMultipleSelection: true)
+
     init(session: LobbySessionModel) {
         _session = ObservedObject(wrappedValue: session)
         _sync = ObservedObject(wrappedValue: session.sync)
@@ -32,6 +40,8 @@ struct AccountSidebarView: View {
                 accountList
             }
         }
+        // 分节一出现就预热面板实例（空闲期；把首次创建的几百毫秒挪出点击路径）。
+        .onAppear { LobbyFilePanel.prepare(Self.importSpec) }
         .sheet(item: $draft) { draft in
             GroupEditorSheet(session: session, draft: draft) {
                 self.draft = nil
@@ -281,15 +291,10 @@ struct AccountSidebarView: View {
     }
 
     private func showImportPanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
-        panel.message = "选择要导入的 .bin 账号文件"
-        panel.begin { response in
-            guard response == .OK else { return }
-            session.importFiles(from: panel.urls, targetGroupID: selectedGroupID)
+        // 走 LobbyFilePanel：面板实例按用途复用（每次新建要 100~400ms，
+        // 正是「点了没反应」的来源），且已在显示时不会再开第二个。
+        LobbyFilePanel.open(Self.importSpec) { urls in
+            session.importFiles(from: urls, targetGroupID: selectedGroupID)
         }
     }
 }

@@ -20,6 +20,14 @@ struct ScriptSidebarView: View {
         _scripts = ObservedObject(wrappedValue: session.scripts)
     }
 
+    /// 导入面板配置（面板实例按 purpose 复用，见 LobbyTheme.swift 的 LobbyFilePanel）。
+    private static let importSpec = LobbyFilePanelSpec(
+        purpose: "scripts",
+        title: "选择要导入的 JS 脚本",
+        message: "可多选 .js 文件；导入后默认「单开生效」",
+        extensions: ["js"],
+        allowsMultipleSelection: true)
+
     /// 已启用脚本数（与旧版「已启用 x/y」标题一致）。
     private var enabledCount: Int {
         scripts.scripts.filter { $0.isEnabled }.count
@@ -62,6 +70,8 @@ struct ScriptSidebarView: View {
                     .opacity(0.55)
             }
         }
+        // 分节一出现就预热面板实例（空闲期；把首次创建的几百毫秒挪出点击路径）。
+        .onAppear { LobbyFilePanel.prepare(Self.importSpec) }
         .sheet(item: $popupScript) { record in
             ScriptActionSheet(scripts: scripts, record: record) {
                 popupScript = nil
@@ -169,17 +179,10 @@ struct ScriptSidebarView: View {
     }
 
     private func showImportPanel() {
-        // NSOpenPanel 而非 .fileImporter：无边框玻璃窗深层子视图里
-        // .fileImporter 会静默不弹（旧版实测），NSOpenPanel 任意层级可靠。
-        let panel = NSOpenPanel()
-        panel.title = "选择要导入的 JS 脚本"
-        panel.message = "可多选 .js 文件；导入后默认「单开生效」"
-        panel.allowedContentTypes = [UTType(filenameExtension: "js") ?? .data]
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.begin { response in
-            guard response == .OK else { return }
-            scripts.importFiles(from: panel.urls)
+        // 走 LobbyFilePanel：面板实例按用途复用（每次新建要 100~400ms，
+        // 正是「点了没反应」的来源），且已在显示时不会再开第二个。
+        LobbyFilePanel.open(Self.importSpec) { urls in
+            scripts.importFiles(from: urls)
         }
     }
 }

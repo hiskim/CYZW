@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+import LobbyDomain
 
 // MARK: - 大厅视觉配方
 //
@@ -427,5 +429,124 @@ struct LobbyStatusCapsule: View {
             .background(fillShape)
             .overlay(strokeShape)
             .shadow(color: shadowColor, radius: 6, y: 1)
+    }
+}
+
+// MARK: - 文件选择面板（复用实例）
+
+/// 一次「打开文件选择面板」的配置。
+struct LobbyFilePanelSpec {
+    /// 用途名 = 缓存键。不同用途各持一个实例，「上次打开的目录」互不干扰。
+    var purpose: String
+    var title: String
+    var message: String
+    /// 允许的扩展名（不含点）；空数组 = 不限制类型。
+    var extensions: [String]
+    var allowsMultipleSelection: Bool
+}
+
+/// 文件选择面板（NSOpenPanel）的复用封装。
+///
+/// ⚠️ **为什么必须复用实例**：实测 `NSOpenPanel()` 每新建一次要 **100~400ms**（首次
+/// ≈380ms，之后仍在 100~200ms 徘徊），而且全部发生在主线程——点击「导入」后界面
+/// 就死死卡住这么久，表现为「点了没反应，要多点几次才弹出来」。更糟的是旧写法
+/// 每次点击都新建，连点会把卡顿叠加、面板叠成一摞。
+/// 复用同一个实例后：改配置 ≈0ms、`begin` 到面板可见 5~35ms，点击即时响应
+/// （数据来自 `/tmp/panel-cost`、`/tmp/panel-show` 两个探针）。
+@MainActor
+enum LobbyFilePanel {
+    /// 按用途缓存的面板实例（常驻，避免点击路径上的创建开销）。
+    private static var cached: [String: NSOpenPanel] = [:]
+    /// 正在显示的面板：连点只把它提到最前，不再新建 / 再 begin（避免叠面板）。
+    private static var presenting: NSOpenPanel?
+
+    /// 预热：把「首次创建」的几百毫秒挪出点击路径（视图出现后的空闲期调用）。
+    static func prepare(_ spec: LobbyFilePanelSpec) {
+        Task { @MainActor in _ = panel(for: spec) }
+    }
+
+    /// 打开选择面板。`pick` 只在用户点了「打开」时回调（取消 / Esc 不给回调）。
+    static func open(_ spec: LobbyFilePanelSpec, pick: @escaping @MainActor ([URL]) -> Void) {
+        // ⚠️ 判定必须带 `isVisible`：`presenting` 只是「正在显示」的软标记，一旦某条
+        // 路径没走到 completion 它就会永久非空，之后每次点击都拐进这里、什么都不做
+        // ——正是「点了永远没反应」的样子。以窗口真实可见性为准才不会把自己锁死。
+        if let showing = presenting, showing.isVisible {
+            // 同一个用途的面板：只提到最前，不再开第二个。
+            if showing === cached[spec.purpose] {
+                LobbyLog.info("[panel] %@ 面板已在显示，只提到最前", spec.purpose)
+                NSApp.activate(ignoringOtherApps: true)
+                showing.makeKeyAndOrderFront(nil)
+                return
+            }
+            // 另一用途的面板还开着：用户已经换了目标，关掉它让位（否则点了像没反应）。
+            LobbyLog.info("[panel] %@ 关掉仍在显示的另一用途面板，改开本用途", spec.purpose)
+            showing.cancel(nil)
+            presenting = nil
+            // cancel 的 completion 在下一个 runloop 才到，让位之后再重开一次。
+            DispatchQueue.main.async { open(spec, pick: pick) }
+            return
+        }
+        presenting = nil // 上一轮状态脏了就丢掉，别带着往下走。
+        let started = CFAbsoluteTimeGetCurrent()
+        let isReused = cached[spec.purpose] != nil
+        let panel = panel(for: spec)
+        presenting = panel
+        // 刻意**不用 sheet**：sheet 是模态的，开着的时候整个大厅点不动（选文件时
+        // 还想看着大厅 / 顺手切分组）。改成独立窗口 + floating 层级：既保证在最前
+        // 看得见，又不锁住大厅。
+        NSApp.activate(ignoringOtherApps: true)
+        LobbyLog.info("[panel] %@ 打开面板（实例%@，独立窗口）",
+                      spec.purpose, isReused ? "复用" : "新建")
+        let finish = { (response: NSApplication.ModalResponse) in
+            MainActor.assumeIsolated {
+                let urls = response == .OK ? panel.urls : []
+                let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                presenting = nil
+                LobbyLog.info("[panel] %@ 面板关闭：选中 %d 个，共用 %.0fms",
+                              spec.purpose, urls.count, elapsed)
+                // 取消 / Esc 不回调：导入侧会在空数组时打出「未选择文件」提示。
+                guard response == .OK else { return }
+                pick(urls)
+            }
+        }
+        panel.begin { finish($0) }
+        // 双保险：begin 之后再顶一次前台（独立窗口偶发停在别的窗口后面）。
+        panel.makeKeyAndOrderFront(nil)
+        // 兜底诊断：正常路径下 400ms 后面板必然可见；打出来就说明 AppKit 没把面板显示出来。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            MainActor.assumeIsolated {
+                guard presenting === panel, !panel.isVisible else { return }
+                LobbyLog.warn("[panel] %@ 面板打开后 400ms 仍不可见", spec.purpose)
+            }
+        }
+    }
+
+    @discardableResult
+    private static func panel(for spec: LobbyFilePanelSpec) -> NSOpenPanel {
+        let panel = cached[spec.purpose] ?? makePanel()
+        cached[spec.purpose] = panel
+        panel.title = spec.title
+        panel.message = spec.message
+        panel.allowsMultipleSelection = spec.allowsMultipleSelection
+        // 刻意**不**重置 directoryURL：复用时接着用户上次打开的目录，少一次导航。
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        if spec.extensions.isEmpty {
+            panel.allowedContentTypes = []
+        } else {
+            let types = spec.extensions.compactMap { UTType(filenameExtension: $0) }
+            // 扩展名没登记 UTI 时退回 public.data，与旧写法一致（不让面板变成「全灰不可选」）。
+            panel.allowedContentTypes = types.isEmpty ? [.data] : types
+        }
+        return panel
+    }
+
+    private static func makePanel() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        // 浮在普通窗口之上：独立窗口形态下保证一眼可见（不模态，大厅仍可操作）。
+        panel.level = .floating
+        return panel
     }
 }
