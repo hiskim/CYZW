@@ -26,6 +26,22 @@ agent_created: true
   `~/Library/Application Support/RemoteRuntime/*/assets/game/` 下有整套内置脚本
   （`native-game-host.js` = 宿主侧：引擎加速 / 帧率 / 断线重连 / 盐场视野；`builtin-*-apk.js`
   = 各功能脚本）。`builtin-ten-temple-speed-apk.js` 之类往往是小号版的答案。
+  ⚠️ 注意 `assets/game/assets/` 只是 Cocos 资源仓（`internal/index.js` + 散装资源），
+  **JS 脚本都在上一层 `assets/game/` 根目录**，别在资源仓里翻。
+- **战斗数据浮层（攻/盾/血/怒）的挂点与口径**（参考 `builtin-battle-stats-overlay-apk.js`，1201 行）：
+  · 挂钩 `SystemHeadBoard.prototype._updateLifeAndRage(entity)`——游戏自己刷血条/怒气条的地方；
+  · **借游戏的手拿组件**：包装 `entity.getComponent` **一个调用周期**，收集游戏自己要的组件
+    （不猜类名、不遍历组件树）。这条模式在很多「我要知道属性/位置」的需求里都能复用；
+  · 标签画在 `headBoard.boardDisplay.ui` 上，样式克隆 `headBoard.nameDisplay.ui.m_name`
+    然后**把官方名字藏起来**（关掉时文本 + 可见性原样还回去）；
+  · 数值口径：血 = life 组件 `current`（挑 `isInfinite()` 或 `max > 1000` 的那个）、
+    怒 = 另一个 `current/max` 组件、盾 = 有 `getAllArmor()` 的组件、
+    攻 = `comp-attributes` 候选键（`Configs.BattleAttributeKey` 的 ATTACK_FIGHTING /
+    ATTACK_FINAL / BATTLE_ATTACK → 实体快照 `attack/atk` → `ATTACK_ABS`）；
+  · ⚠️ 战斗模块**只在进战斗时加载**：装钩子必须降频轮询兜底（前 60s 每 500ms、之后每 5s），
+    不能像十殿那样限时放弃，否则「先进战斗再开开关」就永远装不上；
+  · 参考实现里另有 comp-attributes 写入观察者/影子层（回放态攻击值）、竞技场对手攻击预取
+    （PVP 敌方攻击不在本地属性里）——不抄这两个，就要在 UI 上说明 `攻` 会显示 `--`。
 - **本机引擎的加速口径**（`ios-cocos/cocos-project/src/cocos2d-jsb.07adf.js`，如需「加速」类需求先读这一段）：
   `cc.Scheduler.update(t)` 开头 `1 !== this._timeScale && (t *= this._timeScale)`；
   `director.mainLoop` = `_compScheduler.updatePhase(dt)` → `_scheduler.update(dt)`；
@@ -327,6 +343,11 @@ AGENT_JS=/tmp/recon/agent.js $NODE scripts/engine-speed-harness.mjs
 #     该模板自带可控时钟（`Date.now` 可推）+ 假 `cc.game/director`（含 mainLoop 计数），
 #     帧率类断言就是「敲 N 次 mainLoop + 推 1s → 读角标文案」。
 
+# B''. 战斗内功能（战斗数据浮层）用 scripts/battle-stats-harness.mjs：
+AGENT_JS=/tmp/recon/agent.js $NODE scripts/battle-stats-harness.mjs
+#     ⚠️ 假 `_updateLifeAndRage` 必须**真的去调 `entity.getComponent`**——代理是借游戏
+#     自己的组件查询来收集组件的，假 update 不查就整条捕获路径都测不到（测了个寂寞）。
+
 # C. 真编译
 cd /Users/gg/915/CYZW/LobbyCoreSystem && \
   xcodebuild -project GameLobby.xcodeproj -scheme GameLobby -configuration Debug \
@@ -380,6 +401,11 @@ open('agent.js','w').write(js)
 - **所有**插值都要在 `values` 里，漏一个就会在 JS 里留下 `\(x)` —— 那是**语法错误**，
   但 `node --check` 的报错位置会指到你没想到的行。
 - 抽完先 `assert '\\(' not in js`，这一步比看报错快。
+- ⚠️ **反过来的坑：JS 里也不能出现「反斜杠 + 任意字符」**。Swift 多行字面量会把
+  `\.` 当转义序列，编译直接报 `Invalid escape sequence in literal`——而
+  `node --check` 完全查不出（它看到的是合法 JS 正则）。写正则时能不用就不用
+  （例：`'1.0' → '1'` 用 `text.slice(-2) === '.0'` 而不是 `replace(/\.0$/, '')`）；
+  实在要写就用 `String.raw` 或者把该段拼成普通字符串。
 
 ### 5.2 测「等时间」的逻辑：用虚拟时钟，别真 sleep
 

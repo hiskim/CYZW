@@ -760,6 +760,15 @@ public final class LobbySessionModel: ObservableObject {
         broadcastEnhancements()
     }
 
+    /// 战斗数据浮层开关变更：落盘 + 下发全部存活实例。
+    /// 页面侧要等「战斗模块加载 / 进战斗」才装得上钩子（自带降频轮询），
+    /// 所以开着的时候战斗里晚一两秒生效是正常的。
+    public func setBattleStatsEnabled(_ enabled: Bool) {
+        guard enhancements.battleStatsEnabled != enabled else { return }
+        enhancements.battleStatsEnabled = enabled
+        broadcastEnhancements()
+    }
+
     /// 帧率档位改档后重放能耗仲裁。
     ///
     /// 为什么要专门一条：页面侧的帧率只在**两处**下发——实例启动（先按非焦点 15 FPS）
@@ -791,12 +800,13 @@ public final class LobbySessionModel: ObservableObject {
     public func broadcastEnhancements() {
         let surfaces = pool.allSurfaces
         let settings = enhancements.settings
-        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld uiSpeed=%@ %@ fps=%@ chat=%@): %ld instance(s)",
+        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld uiSpeed=%@ %@ fps=%@ battle=%@ chat=%@): %ld instance(s)",
                       settings.nightmareSpeedEnabled ? "on" : "off",
                       settings.nightmareSpeedMultiplier,
                       settings.uiSpeedEnabled ? "on" : "off",
                       GameEnhancementSettings.describe(speed: settings.uiSpeedMultiplier),
                       settings.fpsDisplayEnabled ? "on" : "off",
+                      settings.battleStatsEnabled ? "on" : "off",
                       settings.chatPanelHidden ? "hidden" : "shown",
                       surfaces.count)
         for instance in surfaces {

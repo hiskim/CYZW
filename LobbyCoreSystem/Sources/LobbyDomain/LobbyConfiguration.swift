@@ -172,6 +172,8 @@ public enum LobbyConfiguration {
         public static let enhanceUISpeedMultiplier = "lobby.enhance.uiSpeed.multiplier"
         /// 实例画面左上角显示实测帧率角标（默认 false）。
         public static let enhanceFPSDisplay = "lobby.enhance.fpsDisplay.enabled"
+        /// 战斗数据浮层：血条上方显示 攻/盾/血，怒气条下方显示 怒（默认 false）。
+        public static let enhanceBattleStats = "lobby.enhance.battleStats.enabled"
         /// 隐藏游戏内聊天窗口（默认 false = 保持游戏原样的显示）。
         public static let enhanceChatHidden = "lobby.enhance.chat.hidden"
     }

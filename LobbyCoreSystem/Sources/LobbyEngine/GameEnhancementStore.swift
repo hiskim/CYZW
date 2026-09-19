@@ -19,6 +19,9 @@ public struct GameEnhancementSettings: Equatable, Sendable {
     /// 实例画面左上角显示实测帧率角标。
     public var fpsDisplayEnabled: Bool
 
+    /// 战斗数据浮层（血条上方 攻/盾/血，怒气条下方 怒）。
+    public var battleStatsEnabled: Bool
+
     /// 隐藏游戏内聊天窗口（消息列表 + 输入区整块）。默认 false = 原样显示。
     public var chatPanelHidden: Bool
 
@@ -45,12 +48,14 @@ public struct GameEnhancementSettings: Equatable, Sendable {
                 uiSpeedEnabled: Bool = false,
                 uiSpeedMultiplier: Double = GameEnhancementSettings.defaultUISpeedMultiplier,
                 fpsDisplayEnabled: Bool = false,
+                battleStatsEnabled: Bool = false,
                 chatPanelHidden: Bool = false) {
         self.nightmareSpeedEnabled = nightmareSpeedEnabled
         self.nightmareSpeedMultiplier = Self.clamp(multiplier: nightmareSpeedMultiplier)
         self.uiSpeedEnabled = uiSpeedEnabled
         self.uiSpeedMultiplier = Self.clamp(speed: uiSpeedMultiplier)
         self.fpsDisplayEnabled = fpsDisplayEnabled
+        self.battleStatsEnabled = battleStatsEnabled
         self.chatPanelHidden = chatPanelHidden
     }
 
@@ -130,6 +135,14 @@ public final class GameEnhancementStore: ObservableObject {
         }
     }
 
+    /// 战斗数据浮层开关。
+    @Published public var battleStatsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(battleStatsEnabled,
+                                      forKey: LobbyConfiguration.PreferenceKey.enhanceBattleStats)
+        }
+    }
+
     /// 下发用的快照（倍率在这里兜底钳制，页面永远拿不到越界值）。
     public var settings: GameEnhancementSettings {
         GameEnhancementSettings(nightmareSpeedEnabled: nightmareSpeedEnabled,
@@ -137,6 +150,7 @@ public final class GameEnhancementStore: ObservableObject {
                                 uiSpeedEnabled: uiSpeedEnabled,
                                 uiSpeedMultiplier: uiSpeedMultiplier,
                                 fpsDisplayEnabled: fpsDisplayEnabled,
+                                battleStatsEnabled: battleStatsEnabled,
                                 chatPanelHidden: chatPanelHidden)
     }
 
@@ -229,5 +243,7 @@ public final class GameEnhancementStore: ObservableObject {
             speed: storedSpeed ?? GameEnhancementSettings.defaultUISpeedMultiplier)
         fpsDisplayEnabled = defaults.bool(
             forKey: LobbyConfiguration.PreferenceKey.enhanceFPSDisplay)
+        battleStatsEnabled = defaults.bool(
+            forKey: LobbyConfiguration.PreferenceKey.enhanceBattleStats)
     }
 }

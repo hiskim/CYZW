@@ -7,12 +7,15 @@ import LobbyEngine
 /// 与设置页的「全局配置」语义（画质/帧率/存储/CDN）不同类，独立成 tab
 /// 后每项功能一张顶层卡，有独立的扩展空间。
 ///
-/// 现有三项：
+/// 现有四项：
 /// - **十殿加速**：改写 `NightmareBattlePanel.DEFAULT_TIMESCALE`，让十殿试炼的战斗
 ///   动画整体加速（只改画面节奏，不改战斗结算）。
 /// - **UI 加速**：改引擎全局时间倍率（`cc.director.getScheduler()` 的 `_timeScale`），
 ///   面板过渡 / FairyGUI 补间 / cc 动作整体加快；机制与官方 APK 运行时的
 ///   `engineGlobalSpeed` 一致，细节见 `GameEnhancementScript` 文件头 ③。
+/// - **战斗数据**：血条上方画「攻 / 盾 / 血」三行、怒气条下方画「怒」，数值直接读
+///   战斗实体组件；参考官方 APK 的 `builtin-battle-stats-overlay-apk.js`，
+///   细节与被省略的部分见文件头 ⑤。
 /// - **聊天窗口**：把游戏内的聊天面板（消息列表 + 输入区）整块压成不可见；
 ///   切回「显示」即原地还原，不需要重载实例。
 ///
@@ -40,6 +43,8 @@ struct EnhancementsSidebarView: View {
     private static let chatAccent = Color(lobbyRGB: 0x22D3EE)
     /// UI 加速主题色（紫相位：与十殿的橙、聊天的青互不撞色）。
     private static let uiSpeedAccent = Color(lobbyRGB: 0xA78BFA)
+    /// 战斗数据主题色（蓝相位；卡里那 4 个色点用的是**数值语义色**，与卡色无关）。
+    private static let battleAccent = Color(lobbyRGB: 0x60A5FA)
 
     init(session: LobbySessionModel) {
         self.session = session
@@ -56,6 +61,7 @@ struct EnhancementsSidebarView: View {
 
                 nightmareCard
                 uiSpeedCard
+                battleStatsCard
                 chatCard
 
                 // 页面侧回执：结果别只留在日志里——实测「没生效」时看一眼就能定性
@@ -336,6 +342,88 @@ struct EnhancementsSidebarView: View {
         return live > 0
             ? "已开启 \(speed) · 已下发 \(live) 个实例"
             : "已开启 \(speed) · 实例启动后自动生效"
+    }
+
+    // MARK: - 战斗数据（攻 / 盾 / 血 / 怒）
+
+    private var isBattleStatsOn: Bool { enhancements.battleStatsEnabled }
+
+    /// 数值语义色与页面侧同一份口径（`GameEnhancementScript` 的 `BATTLE_COLORS`）。
+    private static let battleLegend: [(String, UInt32)] = [
+        ("攻", 0xFFD45A), ("盾", 0x66D9FF), ("血", 0xFF7777), ("怒", 0xD99BFF)
+    ]
+
+    private var battleStatsCard: some View {
+        featureCard(accent: Self.battleAccent, isActive: isBattleStatsOn) {
+            rowHeader(icon: "⚔️", title: "战斗数据",
+                      subtitle: "血条上方显示 攻/盾/血，怒气条下方显示 怒") {
+                Toggle("", isOn: Binding(
+                    get: { isBattleStatsOn },
+                    set: { session.setBattleStatsEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(Self.battleAccent)
+                .help(isBattleStatsOn ? "关闭并摘掉战斗里的标签" : "在战斗里显示攻/盾/血/怒")
+            }
+
+            if isBattleStatsOn {
+                battleLegendRow
+                battleStatsNote
+            }
+            statusLine(accent: Self.battleAccent, isActive: isBattleStatsOn, text: battleStatsStatusText)
+        }
+    }
+
+    /// 四色图例：直接对应页面侧画的四个标签。
+    private var battleLegendRow: some View {
+        HStack(spacing: 4) {
+            ForEach(Self.battleLegend, id: \.0) { entry in
+                HStack(spacing: 3) {
+                    Circle()
+                        .fill(Color(lobbyRGB: entry.1))
+                        .frame(width: 5, height: 5)
+                    Text(entry.0)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color(lobbyRGB: entry.1))
+                }
+                .padding(.horizontal, 5)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color(lobbyRGB: entry.1).opacity(0.35), lineWidth: 1)
+                )
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// 边界说明：这两条是「参考实现里被省略的重型机制」的直接后果，先说清楚，
+    /// 免得用户实测时以为是 bug。
+    private var battleStatsNote: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("数值 ≥1 万显示为「万」、≥1000 万显示为「亿」；只在战斗里生效（进战斗后 1~2 秒装钩子）。")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("⚠️ 竞技场（PVP）敌方的「攻」显示 --（敌方数值不在本地属性组件里）；回放里「攻」可能是旧值。")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var battleStatsStatusText: String {
+        let live = session.runningAccountIDs.count
+        guard isBattleStatsOn else { return "未开启 · 战斗里不显示数值" }
+        return live > 0
+            ? "已开启 · 已下发 \(live) 个实例，进战斗后生效"
+            : "已开启 · 实例启动后自动生效"
     }
 
     // MARK: - 聊天窗口显示 / 隐藏

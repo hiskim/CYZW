@@ -111,6 +111,39 @@ import Foundation
 // ⚠️ `mainLoop` 在 `_paused` 时不跑（页面隐藏 / `cc.game.pause()`），角标此时停在
 // 上一个读数而不是掉到 0——采样口在 `document.hidden` 时直接跳过。
 //
+// ── ⑤ 战斗数据（攻 / 盾 / 血 / 怒）────────────────────────────────────────
+// 参考实现：`RemoteRuntime/*/assets/game/builtin-battle-stats-overlay-apk.js`（1201 行，
+// 官方 APK 的内置项）。取它的三条主干：
+//
+// 1. **挂钩点** `SystemHeadBoard.prototype._updateLifeAndRage(entity)`——游戏自己刷
+//    血条 / 怒气条的地方，是「谁在场上、还有多少血」最省事的入口。
+// 2. **借游戏的手拿组件**：包装 `entity.getComponent` **一个调用周期**，把游戏自己
+//    要的组件记下来。这样不用猜组件类名 / 顺序，也不遍历整棵组件树。
+// 3. **标签画在血条容器上**：`headBoard.boardDisplay.ui` 就是血条那一层；从
+//    `headBoard.nameDisplay.ui` 的官方角色名文本框克隆样式（字体 / 描边 / 字号），
+//    然后把官方名字藏起来。布局照抄参考实现：
+//
+//        攻 / 盾 / 血   三行贴在血条上方（行高 = 字号 + 1，居中，宽 = 血条可见宽）
+//        怒             一行贴怒气条下方
+//
+//    数值口径：`血` = life 组件 `current`，`怒` = 另一个 `current/max` 组件，
+//    `盾` = 有 `getAllArmor()` 的那个组件，`攻` = `comp-attributes` 里的候选键
+//    （`Configs.BattleAttributeKey.ATTACK_FIGHTING / ATTACK_FINAL / BATTLE_ATTACK` …
+//    再退到实体快照的 `attack/atk`，最后才用 `ATTACK_ABS`）。≥1 万 → `x.x万`、
+//    ≥1000 万 → `x.x亿`。颜色：攻 `#FFD45A` / 盾 `#66D9FF` / 血 `#FF7777` / 怒 `#D99BFF`。
+//
+// ⚠️ **刻意省略**参考实现里三套重型机制（都不影响常规战斗读数，但要知道边界）：
+//   · `comp-attributes` 的写入观察者 + 影子层：它解决的是**回放态**（replay）下
+//     攻击值不发写事件的问题——被省略，回放里 `攻` 可能读旧值或 `--`；
+//   · 竞技场对手攻击预取（PVP 里敌方英雄的攻击不在本地属性组件里）→ 敌方 `攻` 显示 `--`；
+//   · buff 飘字上移做成**可选**：`comp-buff-fly-effect` 拿不到只降级成
+//     `battle-running-no-buff`（标签仍照画），不像参考实现那样直接判安装失败。
+// 挂钩失败 / 模块还没加载时用**降频轮询**兜底（前 60s 每 500ms、之后每 5s）——
+// 战斗模块只在进战斗时才加载，不能像十殿那样限时放弃。
+//
+// ⚠️ 关闭时**先解原型钩子、再摘标签**，并把官方角色名的文本 / 可见性原样还回去
+// （我们只把它藏起来，从没改过它的文本）。
+//
 // ⚠️ `window.__require` 是**游戏自己的**跨 bundle 模块注册表（不是宿主符号，
 // 见 `ios2-script-runtime.js` 的注释），文档起点注入时它还不存在，且
 // `NightmareBattlePanel` / `ChatPanel` 都要等对应玩法才会被加载。所以这里用
@@ -125,7 +158,7 @@ public enum GameEnhancementScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**。
     /// 诊断串里带 `v=`，一眼就能确认页面里跑的到底是哪一版——
     /// 省掉「你确定重建了吗 / 跑的是不是这一版」这类来回（已经吃过三次亏）。
-    public static let agentVersion = "12"
+    public static let agentVersion = "13"
 
     /// 聊天面板的模块名（与游戏侧一致，勿改）。
     public static let chatPanelModuleName = "ChatPanel"
@@ -139,12 +172,13 @@ public enum GameEnhancementScript {
     /// 1...10、0.5 步进）——两个「speed」语义不同，参数名分开写免得看串。
     public static func apply(enabled: Bool, nightmareSpeed: Int, hideChat: Bool,
                              uiSpeedEnabled: Bool, uiSpeed: Double,
-                             fpsDisplay: Bool) -> String {
+                             fpsDisplay: Bool, battleStats: Bool) -> String {
         "window.__LOBBY_ENHANCE__ ? window.__LOBBY_ENHANCE__.apply(" +
             "{enabled:\(enabled ? "true" : "false"),speed:\(nightmareSpeed)," +
             "hideChat:\(hideChat ? "true" : "false")," +
             "uiSpeedEnabled:\(uiSpeedEnabled ? "true" : "false"),uiSpeed:\(uiSpeed)," +
-            "fpsDisplay:\(fpsDisplay ? "true" : "false")}) : 'no-handler'"
+            "fpsDisplay:\(fpsDisplay ? "true" : "false")," +
+            "battleStats:\(battleStats ? "true" : "false")}) : 'no-handler'"
     }
 
     /// 只读诊断：当前页面侧加强状态。
@@ -190,6 +224,34 @@ public enum GameEnhancementScript {
 
           // 帧率角标：采样窗口 500ms（与官方 APK 的 fps 脚本同量级）。
           const FPS_TICK_MS = 500;
+
+          // 战斗数据（攻 / 盾 / 血 / 怒）——模块 id 与导出名照抄参考实现，勿改。
+          const BATTLE_HEAD_MODULE_IDS = ['system-head-board',
+                                          '../core/view/system/system-head-board',
+                                          '../../../../../../extras/battle/core/view/system/system-head-board'];
+          const BATTLE_ATTR_MODULE_IDS = ['comp-attributes',
+                                          '../attribute/component/comp-attributes',
+                                          '../../../../../../extras/battle/core/attribute/component/comp-attributes'];
+          const BATTLE_BUFF_MODULE_IDS = ['comp-buff-fly-effect',
+                                          '../component/comp-buff-fly-effect',
+                                          '../../../../../../extras/battle/core/view/component/comp-buff-fly-effect'];
+          const BATTLE_COLORS = { attack: '#FFD45A', hp: '#FF7777', shield: '#66D9FF', rage: '#D99BFF' };
+          // 血条上方三行（自上而下），怒气条下方一行。
+          const BATTLE_ROWS = ['attack', 'shield', 'hp'];
+          // 全量采样（含攻击值）120ms 一次；血/盾/怒这类「直接读组件」的快采样 50ms 一次。
+          const BATTLE_SAMPLE_MS = 120;
+          const BATTLE_SAFE_MS = 50;
+          // 战斗模块只在**进战斗**时加载：500ms 探一次，前 120 拍（≈60s）密探，
+          // 之后每 10 拍（5s）一次——不能像十殿那样限时放弃，否则「先进战斗再开开关」
+          // 就永远装不上了。
+          const BATTLE_POLL_MS = 500;
+          const BATTLE_POLL_FAST = 120;
+          const BATTLE_POLL_SLOW_EVERY = 10;
+          // comp-attributes 的兜底键：1 = ATTACK_ABS（固定攻击），11 = ATTACK_FIGHTING。
+          const BATTLE_ATTR_ABS_KEY = 1;
+          const BATTLE_ATTR_FALLBACK_KEY = 11;
+          // buff 飘字上移量（免得压在攻/盾/血三行上）。
+          const BATTLE_BUFF_CLEARANCE = 32;
 
           const state = {
             running: false,
@@ -258,6 +320,33 @@ public enum GameEnhancementScript {
             badge: null,
             timer: 0,
             hookInstalled: false,
+            note: 'idle'
+          };
+
+          // ── 战斗数据（攻 / 盾 / 血 / 怒）：状态 ──
+          //   labels      = entityID → 标签记录（含 4 个 GTextField 与上次文本）
+          //   records     = entity（WeakMap）→ 采样记录，给 50ms 快采样用
+          //   sampleTimes = entity → 上次全量采样时刻（120ms 节流）
+          const battle = {
+            enabled: false,
+            installed: false,
+            systemClass: null,
+            updateDescriptor: null,
+            removedDescriptor: null,
+            originalUpdate: null,
+            originalRemoved: null,
+            attrClass: null,
+            attrKeys: null,
+            labels: new Map(),
+            records: new WeakMap(),
+            sampleTimes: new WeakMap(),
+            buffFly: false,
+            buffFlyClass: null,
+            buffFlyDescriptor: null,
+            buffFlyOriginal: null,
+            timer: 0,
+            polls: 0,
+            err: '',
             note: 'idle'
           };
 
@@ -1388,6 +1477,675 @@ public enum GameEnhancementScript {
             return status();
           };
 
+          // ── 战斗数据（攻 / 盾 / 血 / 怒）：实现 ──
+          //
+          // 参考实现 `RemoteRuntime/*/assets/game/builtin-battle-stats-overlay-apk.js` 的三条主干：
+          //   ① 挂钩点 `SystemHeadBoard.prototype._updateLifeAndRage(entity)`——游戏自己刷
+          //      血条 / 怒气条的地方，是「谁在场上、血多少」最省事的入口；
+          //   ② **借游戏的手拿组件**：包装 `entity.getComponent` 一个调用周期，把游戏
+          //      自己要的组件记下来——不用猜组件类名，也不用遍历整棵组件树；
+          //   ③ 在 `headBoard.boardDisplay.ui`（血条容器）上克隆官方文字样式画 4 行：
+          //      攻 / 盾 / 血 贴在血条上方，怒 贴怒气条下方，官方角色名模板隐藏。
+          //
+          // 刻意省略参考实现的三套重型机制（都不影响常规战斗读数，见文件头 ⑤）：
+          //   comp-attributes 的写入观察者 / 影子层、竞技场对手攻击预取、buff 飘字偏移
+          //   （后者做成可选：模块缺失只记 note，不阻断整体安装）。
+          const battleResolve = (ids, exportName) => {
+            const require = resolveRequire();
+            if (!require) return null;
+            for (let index = 0; index < ids.length; index++) {
+              try {
+                const module = require(ids[index]);
+                if (!module) continue;
+                const klass = module[exportName] || module.default ||
+                  (typeof module === 'function' ? module : null);
+                if (klass) return klass;
+              } catch (error) {}
+            }
+            return null;
+          };
+
+          const battleFgui = () => window.fgui || window.fairygui || null;
+
+          const battleNumber = (value) => {
+            if (value == null) return null;
+            let resolved = value;
+            try { if (typeof value.toNumber === 'function') resolved = value.toNumber(); } catch (error) {}
+            const parsed = Number(resolved);
+            return isFinite(parsed) ? parsed : null;
+          };
+          const battlePositive = (value) => {
+            const parsed = battleNumber(value);
+            return parsed != null && parsed > 0 ? parsed : null;
+          };
+          const battleReadNumber = (source, keys) => {
+            if (!source) return null;
+            for (let index = 0; index < keys.length; index++) {
+              const value = battlePositive(source[keys[index]]);
+              if (value != null) return value;
+            }
+            if (typeof source.get === 'function') {
+              for (let index = 0; index < keys.length; index++) {
+                const value = battlePositive(source.get(keys[index]));
+                if (value != null) return value;
+              }
+            }
+            return null;
+          };
+          const battleSize = (target, name) => battleNumber(target && (target[name] || target['_' + name])) || 0;
+          // '1.0' → '1'：刻意不用正则（JS 正则里的转义点号在 Swift 多行字面量里是非法转义，别踩）。
+          const battleTrimZero = (text) => (text.length > 2 && text.slice(-2) === '.0' ? text.slice(0, -2) : text);
+          const battleFormat = (value) => {
+            if (value == null) return '';
+            const magnitude = Math.abs(value);
+            if (magnitude >= 10000000) return battleTrimZero((value / 100000000).toFixed(1)) + '亿';
+            if (magnitude >= 10000) return battleTrimZero((value / 10000).toFixed(1)) + '万';
+            return String(Math.round(value));
+          };
+          const battleText = (kind, value) => {
+            if (kind === 'shield') return '盾' + battleFormat(value || 0);
+            const prefix = kind === 'attack' ? '攻' : kind === 'hp' ? '血' : '怒';
+            return prefix + (value == null ? '--' : battleFormat(value));
+          };
+
+          // 攻击值：优先按 `Configs.BattleAttributeKey` 解析出的候选键读（ATTACK_FIGHTING 等），
+          // 再退到实体快照上的 attack/atk 字段，最后才用 ATTACK_ABS（固定攻击）。
+          const battleAttrKeys = () => {
+            if (battle.attrKeys) return battle.attrKeys;
+            const candidates = [];
+            let abs = BATTLE_ATTR_ABS_KEY;
+            try {
+              const require = resolveRequire();
+              const configs = require ? require('Configs') : null;
+              const table = configs && configs.BattleAttributeKey;
+              if (table) {
+                const absKey = battleNumber(table.ATTACK_ABS);
+                if (absKey != null) abs = absKey;
+                ['ATTACK_FIGHTING', 'ATTACK_FINAL', 'BATTLE_ATTACK'].forEach((name) => {
+                  const key = battleNumber(table[name]);
+                  if (key != null) candidates.push(key);
+                });
+                if (!candidates.length) {
+                  Object.keys(table).forEach((name) => {
+                    if (/^[A-Z][A-Z0-9_]*$/.test(name) && name.indexOf('ATTACK') >= 0 &&
+                        name.indexOf('ABS') < 0) {
+                      const key = battleNumber(table[name]);
+                      if (key != null) candidates.push(key);
+                    }
+                  });
+                }
+                if (!candidates.length) {
+                  const key = battleNumber(table.ATTACK);
+                  if (key != null) candidates.push(key);
+                }
+              }
+            } catch (error) {}
+            candidates.push(BATTLE_ATTR_FALLBACK_KEY);
+            battle.attrKeys = { candidates: candidates, abs: abs };
+            return battle.attrKeys;
+          };
+
+          const battleReadAttribute = (attributes, key) => {
+            if (!attributes) return null;
+            try {
+              let value = typeof attributes._get === 'function' ? attributes._get(key) : null;
+              if (value == null && attributes._attributes) {
+                const collection = attributes._attributes;
+                const entry = typeof collection.get === 'function' ? collection.get(key) : collection[key];
+                value = entry && entry.validValue;
+              }
+              if (value == null && typeof attributes._get !== 'function' &&
+                  typeof attributes.get === 'function') {
+                value = attributes.get(key);
+              }
+              return battlePositive(value);
+            } catch (error) {
+              return null;
+            }
+          };
+
+          const battleSnapshotAttack = (entity) => {
+            const actor = entity && entity.actor;
+            const data = actor && actor.data;
+            const sources = [data, data && data.originalFighter, actor, entity,
+                             data && data.attributes, data && data.attrs];
+            const keys = ['attack', 'atk', 'currentAttack', 'curAttack', 'attackValue', 'baseAttack'];
+            for (let index = 0; index < sources.length; index++) {
+              const value = battleReadNumber(sources[index], keys);
+              if (value != null) return value;
+            }
+            return null;
+          };
+
+          const battleReadAttack = (entity, attributes) => {
+            const keys = battleAttrKeys();
+            for (let index = 0; index < keys.candidates.length; index++) {
+              const value = battleReadAttribute(attributes, keys.candidates[index]);
+              if (value != null) return value;
+            }
+            const snapshot = battleSnapshotAttack(entity);
+            if (snapshot != null) return snapshot;
+            return battleReadAttribute(attributes, keys.abs);
+          };
+
+          // 借游戏的手拿组件：只在**它自己调 update 的那一瞬间**包装 getComponent。
+          const battleRunWithCapture = (entity, owner, args, originalUpdate) => {
+            if (!entity || typeof entity.getComponent !== 'function') {
+              return { result: originalUpdate.apply(owner, args), components: [] };
+            }
+            const components = [];
+            const originalGet = entity.getComponent;
+            try {
+              entity.getComponent = function () {
+                const component = originalGet.apply(this, arguments);
+                if (component) components.push(component);
+                return component;
+              };
+            } catch (error) {
+              return { result: originalUpdate.apply(owner, args), components: components };
+            }
+            try {
+              return { result: originalUpdate.apply(owner, args), components: components };
+            } finally {
+              try { entity.getComponent = originalGet; } catch (error) {}
+            }
+          };
+
+          const battleInspect = (entity, components) => {
+            if (!entity) return null;
+            if (!battle.attrClass) battle.attrClass = battleResolve(BATTLE_ATTR_MODULE_IDS, 'CompAttributes');
+            let attributes = null;
+            if (battle.attrClass) {
+              try { attributes = entity.getComponent(battle.attrClass); } catch (error) {}
+            }
+            let life = null;
+            let rage = null;
+            let shield = 0;
+            let shieldComponent = null;
+            let headBoard = null;
+            for (let index = 0; index < components.length; index++) {
+              const component = components[index];
+              if (!component) continue;
+              if (!headBoard && (component.boardDisplay || component.nameDisplay)) headBoard = component;
+              // 护盾：有 getAllArmor() 的那个组件（血/怒那两个只有 current/max）。
+              if (typeof component.getAllArmor === 'function') {
+                shieldComponent = component;
+                const armor = battleNumber(component.getAllArmor());
+                shield = armor != null ? Math.max(0, armor) : 0;
+                continue;
+              }
+              if (component.current == null || component.max == null) continue;
+              const max = battleNumber(component.max);
+              // 血：带 isInfinite() 或 max 明显偏大的那个；另一个当怒气（满怒气一般 100~1000）。
+              if (!life && (typeof component.isInfinite === 'function' || (max != null && max > 1000))) {
+                life = component;
+              } else if (!rage) {
+                rage = component;
+              }
+            }
+            if (!life || !rage || rage === life) {
+              const valued = components.filter((component) =>
+                component && component.current != null && component.max != null);
+              if (!life) {
+                life = valued.slice().sort((left, right) =>
+                  (battleNumber(right.max) || 0) - (battleNumber(left.max) || 0))[0] || null;
+              }
+              if (!rage || rage === life) {
+                rage = valued.find((component) => component !== life) || null;
+              }
+            }
+            const actor = entity.actor || {};
+            const id = entity.ID != null ? String(entity.ID) : String(actor.id != null ? actor.id : '');
+            if (!id) return null;
+            return {
+              id: id, entity: entity, headBoard: headBoard, attributes: attributes,
+              life: life, rage: rage, shieldComponent: shieldComponent, shield: shield,
+              attack: battleReadAttack(entity, attributes)
+            };
+          };
+
+          // 血条的**可见**范围：优先用 _barObjectH / _barMaxWidth（进度条实际占据的宽度），
+          // 拿不到再按（可能被压扁的）子节点退让——照抄参考实现的口径。
+          const battleBarBounds = (component, childNames) => {
+            const componentX = battleNumber(component && component.x) || 0;
+            const componentY = battleNumber(component && component.y) || 0;
+            const barMaxWidth = battleNumber(component && component._barMaxWidth);
+            let child = component && component._barObjectH;
+            let usable = child && (battleSize(child, 'width') > 0 || (barMaxWidth != null && barMaxWidth > 0));
+            if (!usable && component && typeof component.getChild === 'function') {
+              for (let index = 0; index < childNames.length && !usable; index++) {
+                try { child = component.getChild(childNames[index]); } catch (error) { child = null; }
+                usable = child && (battleSize(child, 'width') > 0 || (barMaxWidth != null && barMaxWidth > 0));
+              }
+            }
+            if (usable) {
+              const barStartX = battleNumber(component && component._barStartX);
+              const barStartY = battleNumber(component && component._barStartY);
+              let stableWidth = battleNumber(child.initWidth);
+              if (stableWidth == null || stableWidth <= 0) stableWidth = battleNumber(child.sourceWidth);
+              return {
+                x: componentX + (barStartX == null ? (battleNumber(child.x) || 0) : barStartX),
+                y: componentY + (barStartY == null ? (battleNumber(child.y) || 0) : barStartY),
+                width: barMaxWidth != null && barMaxWidth > 0 ? barMaxWidth
+                  : stableWidth != null && stableWidth > 0 ? stableWidth
+                  : battleSize(component, 'width') || battleSize(child, 'width'),
+                height: battleSize(child, 'height')
+              };
+            }
+            return { x: componentX, y: componentY,
+                     width: battleSize(component, 'width') || 62,
+                     height: battleSize(component, 'height') || 1 };
+          };
+
+          // 官方角色名文本框拿来当样式模板（字体/描边/字号），之后就把它藏起来。
+          const battleTemplate = (nameParent) => {
+            if (!nameParent) return null;
+            if (nameParent.m_name && 'text' in nameParent.m_name) return nameParent.m_name;
+            if (typeof nameParent.getChild === 'function') {
+              for (let index = 0; index < 4; index++) {
+                const child = nameParent.getChild(index === 0 ? 'name' : 'n' + index);
+                if (child && 'text' in child) return child;
+              }
+            }
+            return null;
+          };
+
+          const battleCopyStyle = (label, template) => {
+            if (!template) return;
+            ['font', 'fontSize', 'color', 'stroke', 'strokeColor', 'bold', 'italic', 'align',
+             'verticalAlign', 'leading', 'singleLine'].forEach((property) => {
+              try { if (property in template && property in label) label[property] = template[property]; } catch (error) {}
+            });
+            const officialSize = battleNumber(template.fontSize);
+            if (officialSize && 'fontSize' in label) {
+              label.fontSize = Math.max(12, Math.min(16, Math.round(officialSize * 0.78)));
+            }
+          };
+
+          const battleColor = (label, hex) => {
+            if (!label || !hex || !('color' in label)) return;
+            try {
+              let color = hex;
+              const cc = window.cc;
+              if (cc && typeof cc.Color === 'function' && typeof cc.Color.fromHEX === 'function') {
+                color = new cc.Color();
+                cc.Color.fromHEX(color, hex);
+              }
+              label.color = color;
+            } catch (error) {}
+          };
+
+          const battleCreateLabel = (parent, template, kind, width, height) => {
+            const fgui = battleFgui();
+            if (!parent || !fgui || typeof fgui.GTextField !== 'function' ||
+                typeof parent.addChild !== 'function') return null;
+            try {
+              const label = new fgui.GTextField();
+              label.name = 'lobbyBattleStat-' + kind;
+              label.touchable = false;
+              label.visible = true;
+              if ('autoSize' in label) {
+                label.autoSize = fgui.AutoSizeType && fgui.AutoSizeType.None != null
+                  ? fgui.AutoSizeType.None : 0;
+              }
+              battleCopyStyle(label, template);
+              battleColor(label, BATTLE_COLORS[kind]);
+              label.singleLine = true;
+              label.align = 'center';
+              label.verticalAlign = 'middle';
+              if (typeof label.setSize === 'function') label.setSize(width, height);
+              parent.addChild(label);
+              return label;
+            } catch (error) {
+              return null;
+            }
+          };
+
+          const battleFit = (label, text, width, baseFontSize) => {
+            if (!label) return;
+            const baseSize = Math.max(8, Math.round(baseFontSize || 12));
+            label.fontSize = baseSize;
+            const availableWidth = Math.max(1, width - 1);
+            const measured = battleNumber(label.textWidth);
+            if (text && measured != null && measured > availableWidth) {
+              label.fontSize = Math.max(8, Math.floor(baseSize * availableWidth / measured));
+            }
+          };
+
+          const battleApplyText = (record, kind, text, forceFit) => {
+            const label = record && record.labels && record.labels[kind];
+            if (!label) return false;
+            const changed = record.texts[kind] !== text;
+            if (changed) {
+              label.text = text;
+              record.texts[kind] = text;
+            }
+            if (changed || forceFit) battleFit(label, text, record.widths[kind], record.baseFontSize);
+            const visible = text !== '' && record.nameParent.visible !== false &&
+              record.boardParent.visible !== false;
+            if (label.visible !== visible) label.visible = visible;
+            if (label.touchable !== false) label.touchable = false;
+            return changed;
+          };
+
+          const battleSetPosition = (label, x, y) => {
+            if (label && typeof label.setPosition === 'function') {
+              label.setPosition(Math.round(x), Math.round(y));
+            }
+          };
+
+          const battleRemoveLabel = (id) => {
+            const record = battle.labels.get(String(id));
+            if (!record) return;
+            // 还原官方角色名（我们只把它藏起来，不能改它的文本）。
+            if (record.officialName && record.officialName.template) {
+              try {
+                record.officialName.template.text = record.officialName.text;
+                record.officialName.template.visible = record.officialName.visible;
+              } catch (error) {}
+            }
+            Object.keys(record.labels).forEach((kind) => {
+              const label = record.labels[kind];
+              try {
+                if (label && typeof label.removeFromParent === 'function') label.removeFromParent();
+                else if (label && label.parent && typeof label.parent.removeChild === 'function') {
+                  label.parent.removeChild(label);
+                }
+              } catch (error) {}
+            });
+            battle.labels.delete(String(id));
+          };
+
+          const battleRemove = (id) => {
+            const key = String(id);
+            const labelRecord = battle.labels.get(key);
+            const entity = labelRecord && labelRecord.entity;
+            if (entity) {
+              // WeakMap 里那两条（快采样记录 / 采样时刻）随实体一起丢。
+              try { battle.records.delete(entity); } catch (error) {}
+              try { battle.sampleTimes.delete(entity); } catch (error) {}
+            }
+            battleRemoveLabel(key);
+          };
+
+          const battleRefreshSafe = (record) => {
+            const labelRecord = record && record.id != null ? battle.labels.get(String(record.id)) : null;
+            if (!labelRecord) return;
+            const shield = record.shieldComponent;
+            const armor = shield && typeof shield.getAllArmor === 'function'
+              ? battleNumber(shield.getAllArmor()) : null;
+            battleApplyText(labelRecord, 'hp', battleText('hp', battleNumber(record.life && record.life.current)), false);
+            battleApplyText(labelRecord, 'shield', battleText('shield', Math.max(0, armor || 0)), false);
+            battleApplyText(labelRecord, 'rage', battleText('rage', battleNumber(record.rage && record.rage.current)), false);
+          };
+
+          const battleUpdateLabel = (snapshot) => {
+            const headBoard = snapshot.headBoard;
+            const boardParent = headBoard && headBoard.boardDisplay && headBoard.boardDisplay.ui;
+            const nameParent = headBoard && headBoard.nameDisplay && headBoard.nameDisplay.ui;
+            if (!boardParent || !nameParent) { battleRemove(snapshot.id); return; }
+            const template = battleTemplate(nameParent);
+            const nameHeight = battleSize(nameParent.m_name, 'height') || battleSize(nameParent, 'height') || 20;
+            const lifeBar = boardParent.m_lifeBar;
+            const rageBar = boardParent.m_rageBar;
+            const fontSize = Math.max(12, Math.min(16, Math.round((battleNumber(template && template.fontSize) || nameHeight) * 0.78)));
+            const rowHeight = fontSize + 1;
+            const lifeBounds = battleBarBounds(lifeBar, ['green', 'bar', 'red']);
+            const rageBounds = battleBarBounds(rageBar, ['bar', 'green', 'red']);
+            const statsWidth = Math.max(1, Math.round(lifeBounds.width));
+            const statsX = lifeBounds.x + (lifeBounds.width - statsWidth) / 2;
+            // 攻/盾/血 三行贴在血条**上方**，怒单独贴怒气条下方（与参考实现同布局）。
+            const statsY = lifeBounds.y - BATTLE_ROWS.length * rowHeight - 3;
+            const rageWidth = statsWidth;
+            const rageX = statsX;
+            const rageY = rageBounds.y + rageBounds.height;
+            let record = battle.labels.get(snapshot.id);
+            if (!record || record.nameParent !== nameParent || record.boardParent !== boardParent) {
+              battleRemoveLabel(snapshot.id);
+              record = { entity: snapshot.entity, nameParent: nameParent, boardParent: boardParent,
+                labels: {}, texts: {},
+                widths: { attack: statsWidth, shield: statsWidth, hp: statsWidth, rage: rageWidth },
+                baseFontSize: fontSize,
+                officialName: template ? { template: template, text: template.text, visible: template.visible } : null };
+              BATTLE_ROWS.forEach((kind) => {
+                record.labels[kind] = battleCreateLabel(boardParent, template, kind, statsWidth, rowHeight);
+              });
+              record.labels.rage = battleCreateLabel(boardParent, template, 'rage', rageWidth, rowHeight);
+              battle.labels.set(snapshot.id, record);
+            }
+            record.widths.attack = statsWidth;
+            record.widths.shield = statsWidth;
+            record.widths.hp = statsWidth;
+            record.widths.rage = rageWidth;
+            record.baseFontSize = fontSize;
+            if (record.officialName && record.officialName.template === template) {
+              if (template.text) record.officialName.text = template.text;
+              try { if (template.visible !== false) template.visible = false; } catch (error) {}
+            }
+            const texts = {
+              attack: battleText('attack', snapshot.attack),
+              shield: battleText('shield', snapshot.shield || 0),
+              hp: battleText('hp', battleNumber(snapshot.life && snapshot.life.current)),
+              rage: battleText('rage', battleNumber(snapshot.rage && snapshot.rage.current))
+            };
+            const layoutKey = [statsWidth, rowHeight, statsX, statsY, rageWidth, rageX, rageY].join(':');
+            const layoutChanged = record.layoutKey !== layoutKey;
+            BATTLE_ROWS.forEach((kind, index) => {
+              const label = record.labels[kind];
+              if (label && layoutChanged) {
+                label.align = 'center';
+                if (typeof label.setSize === 'function') label.setSize(statsWidth, rowHeight);
+                battleSetPosition(label, statsX, statsY + index * rowHeight);
+              }
+              battleApplyText(record, kind, texts[kind], layoutChanged);
+            });
+            const rageLabel = record.labels.rage;
+            if (rageLabel && layoutChanged) {
+              rageLabel.align = 'center';
+              if (typeof rageLabel.setSize === 'function') rageLabel.setSize(rageWidth, rowHeight);
+              battleSetPosition(rageLabel, rageX, rageY);
+            }
+            battleApplyText(record, 'rage', texts.rage, layoutChanged);
+            record.layoutKey = layoutKey;
+            // 50ms 快采样只需要「直接读组件」的字段，这里把记录挂回实体。
+            record.safeSampleAt = Date.now();
+            const sample = { id: snapshot.id, entity: snapshot.entity, life: snapshot.life,
+                             rage: snapshot.rage, shieldComponent: snapshot.shieldComponent };
+            try { battle.records.set(snapshot.entity, sample); } catch (error) {}
+          };
+
+          // buff 飘字上移（可选）：模块拿不到就跳过，只影响观感，不影响读数。
+          const battleUninstallBuffFly = () => {
+            const prototype = battle.buffFlyClass && battle.buffFlyClass.prototype;
+            if (battle.buffFly && prototype && prototype.setPosition &&
+                prototype.setPosition.__lobbyBattleBuffFly) {
+              try {
+                if (battle.buffFlyDescriptor) {
+                  Object.defineProperty(prototype, 'setPosition', battle.buffFlyDescriptor);
+                } else {
+                  delete prototype.setPosition;
+                }
+              } catch (error) {}
+            }
+            battle.buffFly = false;
+            battle.buffFlyClass = null;
+            battle.buffFlyDescriptor = null;
+            battle.buffFlyOriginal = null;
+          };
+
+          const battleInstallBuffFly = () => {
+            if (battle.buffFly) return true;
+            const klass = battleResolve(BATTLE_BUFF_MODULE_IDS, 'CompBuffFlyEffect');
+            if (!klass || !klass.prototype || typeof klass.prototype.setPosition !== 'function') return false;
+            const prototype = klass.prototype;
+            if (prototype.setPosition.__lobbyBattleBuffFly) {
+              battle.buffFlyClass = klass;
+              battle.buffFly = true;
+              return true;
+            }
+            battle.buffFlyClass = klass;
+            battle.buffFlyDescriptor = Object.getOwnPropertyDescriptor(prototype, 'setPosition');
+            battle.buffFlyOriginal = prototype.setPosition;
+            const original = prototype.setPosition;
+            const wrapped = function (x, y) {
+              const numericY = battleNumber(y);
+              return original.call(this, x, numericY == null ? y : numericY - BATTLE_BUFF_CLEARANCE);
+            };
+            wrapped.__lobbyBattleBuffFly = true;
+            try {
+              Object.defineProperty(prototype, 'setPosition', { configurable: true,
+                enumerable: battle.buffFlyDescriptor ? battle.buffFlyDescriptor.enumerable : false,
+                writable: true, value: wrapped });
+            } catch (error) {
+              battleUninstallBuffFly();
+              return false;
+            }
+            battle.buffFly = true;
+            return true;
+          };
+
+          const battleRestorePrototype = () => {
+            const prototype = battle.systemClass && battle.systemClass.prototype;
+            if (prototype) {
+              try {
+                const update = prototype._updateLifeAndRage;
+                if (update && update.__lobbyBattlePatched) {
+                  if (battle.updateDescriptor) Object.defineProperty(prototype, '_updateLifeAndRage', battle.updateDescriptor);
+                  else delete prototype._updateLifeAndRage;
+                }
+                const removed = prototype.onEntityRemoved;
+                if (removed && removed.__lobbyBattlePatched) {
+                  if (battle.removedDescriptor) Object.defineProperty(prototype, 'onEntityRemoved', battle.removedDescriptor);
+                  else delete prototype.onEntityRemoved;
+                }
+              } catch (error) {}
+            }
+            battle.systemClass = null;
+            battle.updateDescriptor = null;
+            battle.removedDescriptor = null;
+            battle.originalUpdate = null;
+            battle.originalRemoved = null;
+          };
+
+          const battleInstall = () => {
+            if (!battle.enabled || battle.installed) return battle.installed;
+            const klass = battleResolve(BATTLE_HEAD_MODULE_IDS, 'SystemHeadBoard');
+            if (!klass || !klass.prototype || typeof klass.prototype._updateLifeAndRage !== 'function') {
+              battle.note = 'battle-waiting-module';
+              return false;
+            }
+            const prototype = klass.prototype;
+            if (prototype._updateLifeAndRage.__lobbyBattlePatched) {
+              battle.systemClass = klass;
+              battle.installed = true;
+              battle.note = 'battle-running';
+              return true;
+            }
+            battle.systemClass = klass;
+            battle.updateDescriptor = Object.getOwnPropertyDescriptor(prototype, '_updateLifeAndRage');
+            battle.removedDescriptor = Object.getOwnPropertyDescriptor(prototype, 'onEntityRemoved');
+            battle.originalUpdate = prototype._updateLifeAndRage;
+            battle.originalRemoved = typeof prototype.onEntityRemoved === 'function'
+              ? prototype.onEntityRemoved : null;
+            const originalUpdate = battle.originalUpdate;
+            const originalRemoved = battle.originalRemoved;
+            const wrappedUpdate = function (entity) {
+              const capture = battleRunWithCapture(entity, this, arguments, originalUpdate);
+              try {
+                const now = Date.now();
+                let lastSampleAt = 0;
+                if (entity) {
+                  try { lastSampleAt = battle.sampleTimes.get(entity) || 0; } catch (error) {}
+                }
+                if (entity && now - lastSampleAt >= BATTLE_SAMPLE_MS) {
+                  try { battle.sampleTimes.set(entity, now); } catch (error) {}
+                  const snapshot = battleInspect(entity, capture.components);
+                  if (snapshot) battleUpdateLabel(snapshot);
+                }
+                let record = null;
+                try { record = battle.records.get(entity) || null; } catch (error) {}
+                if (record && now - (record.safeSampleAt || 0) >= BATTLE_SAFE_MS) {
+                  record.safeSampleAt = now;
+                  battleRefreshSafe(record);
+                }
+              } catch (error) {
+                battle.err = String((error && error.message) || error);
+              }
+              return capture.result;
+            };
+            const wrappedRemoved = function (entity) {
+              try {
+                if (entity) {
+                  const id = entity.ID != null ? entity.ID : (entity.actor && entity.actor.id);
+                  if (id != null) battleRemove(id);
+                }
+              } catch (error) {}
+              return originalRemoved ? originalRemoved.apply(this, arguments) : undefined;
+            };
+            wrappedUpdate.__lobbyBattlePatched = true;
+            wrappedRemoved.__lobbyBattlePatched = true;
+            try {
+              Object.defineProperty(prototype, '_updateLifeAndRage', { configurable: true,
+                enumerable: battle.updateDescriptor ? battle.updateDescriptor.enumerable : false,
+                writable: true, value: wrappedUpdate });
+              if (battle.originalRemoved) {
+                Object.defineProperty(prototype, 'onEntityRemoved', { configurable: true,
+                  enumerable: battle.removedDescriptor ? battle.removedDescriptor.enumerable : false,
+                  writable: true, value: wrappedRemoved });
+              }
+            } catch (error) {
+              battle.err = String((error && error.message) || error);
+              battleRestorePrototype();
+              battle.note = 'battle-install-failed';
+              return false;
+            }
+            battle.installed = true;
+            battle.note = battleInstallBuffFly() ? 'battle-running' : 'battle-running-no-buff';
+            return true;
+          };
+
+          const battleUninstall = () => {
+            battleRestorePrototype();
+            battleUninstallBuffFly();
+            Array.from(battle.labels.keys()).forEach((id) => battleRemoveLabel(id));
+            battle.records = new WeakMap();
+            battle.sampleTimes = new WeakMap();
+            battle.installed = false;
+          };
+
+          const battleStopPoll = () => {
+            if (battle.timer) { clearInterval(battle.timer); battle.timer = 0; }
+          };
+
+          const battleStartPoll = () => {
+            if (battle.timer || battle.installed) return;
+            battle.polls = 0;
+            battle.timer = setInterval(() => {
+              if (!battle.enabled) { battleStopPoll(); return; }
+              battle.polls += 1;
+              // 前 60s 每 500ms 探一次；之后每 10 拍（5s）一次——战斗模块只在进战斗时加载，
+              // 但也不能永远高频空转。
+              if (battle.polls > BATTLE_POLL_FAST && battle.polls % BATTLE_POLL_SLOW_EVERY !== 0) return;
+              if (battleInstall()) battleStopPoll();
+            }, BATTLE_POLL_MS);
+          };
+
+          const setBattleStats = (enabled) => {
+            const next = enabled === true;
+            if (next === battle.enabled) return status();
+            if (!next) {
+              battle.enabled = false;
+              battleStopPoll();
+              battleUninstall();
+              battle.note = 'battle-stopped';
+              return status();
+            }
+            battle.enabled = true;
+            battle.err = '';
+            if (!battleInstall()) battleStartPoll();
+            return status();
+          };
+
           // 「开着隐藏但一个面板都没命中」时自动附上结构探针——一次截图就能定位。
           const status = () => {
             let text = 'v=' + AGENT_VERSION +
@@ -1411,6 +2169,11 @@ public enum GameEnhancementScript {
               ' fps=' + (fps.enabled ? 1 : 0) + ':' +
               (fps.value === null ? '-' : Math.round(fps.value)) + '/' + fpsTarget() +
               ' hk=' + (fps.hookInstalled ? 1 : 0) +
+              // 战斗数据：battle=开关/标签数，inst=钩子是否装上，bf=飘字偏移是否生效。
+              ' battle=' + (battle.enabled ? 1 : 0) + '/' + battle.labels.size +
+              ' inst=' + (battle.installed ? 1 : 0) +
+              ' bf=' + (battle.buffFly ? 1 : 0) +
+              ' bNote=' + battle.note +
               ' note=' + state.note + ' chatNote=' + chat.note;
             if (chat.hidden && !chat.shells.length) {
               text += ' ' + probeChat();
@@ -1429,6 +2192,8 @@ public enum GameEnhancementScript {
             setUISpeed(next.uiSpeedEnabled, next.uiSpeed);
             // 帧率角标（纯显示，不碰引擎状态）。
             setFpsDisplay(!!next.fpsDisplay);
+            // 战斗数据浮层（挂钩 SystemHeadBoard + 画标签）。
+            setBattleStats(!!next.battleStats);
 
             if (enabled === state.running) {
               // 只改倍率：钩子已经在了，现场重扫一次面板即可（没面板时
@@ -1463,6 +2228,7 @@ public enum GameEnhancementScript {
             chat: setChatHidden,
             ui: setUISpeed,
             fps: setFpsDisplay,
+            battle: setBattleStats,
             probe: probeChat,
             status: status
           };

@@ -359,7 +359,8 @@ public final class GameViewportInstance: NSView {
                                                 hideChat: settings.chatPanelHidden,
                                                 uiSpeedEnabled: settings.uiSpeedEnabled,
                                                 uiSpeed: settings.uiSpeedMultiplier,
-                                                fpsDisplay: settings.fpsDisplayEnabled)
+                                                fpsDisplay: settings.fpsDisplayEnabled,
+                                                battleStats: settings.battleStatsEnabled)
         // 闭包会逃逸（evaluateJavaScript 的 completion 是 @escaping），
         // 所以只捕获值 + weak self，不把实例吊住。
         let accountName = account.nickname
