@@ -42,6 +42,20 @@ agent_created: true
     不能像十殿那样限时放弃，否则「先进战斗再开开关」就永远装不上；
   · 参考实现里另有 comp-attributes 写入观察者/影子层（回放态攻击值）、竞技场对手攻击预取
     （PVP 敌方攻击不在本地属性里）——不抄这两个，就要在 UI 上说明 `攻` 会显示 `--`。
+- **玩家ID（显示 / 一键复制）的口径**（参考 `builtin-player-info-id-apk.js`）：
+  · 玩家信息弹窗**本来就有** `m_playerid` / `m_btnCopyID` / `m_serverName`（外加
+    `m_serverName.parent` 下那个分隔线 `n101`）——官方客户端把它们藏起来了。所以
+    「显示 ID」= 把这几个节点放出来 + 填 `ID:<roleId>`，**不用自己画控件**；
+  · 挂 `PlayerInfoDialog` / `PlayerInfoTopDialog` 的 `onShow` / `onShown` / `onFixShow`，
+    且要在同一拍 + 0ms + 120ms 各同步一次（UI 有时晚于 `onShow` 才建好）；
+  · roleId 出处：`dialog.model.get(ModelConst.ROLE_INFO | 'roleInfo' | 'ROLE_INFO')` → `dialog.roleInfo`
+    （`consts.ModelConst.ROLE_INFO` 只是键名常量，取不到就用字符串键）；
+  · 复制按钮要**先 `clearClick()` 再 `onClick()`**（官方那颗在 WebKit 上走平台桥，不干活）；
+  · ⚠️ **复制必须由宿主写系统剪贴板**：页面 origin 是自定义 scheme（非安全上下文），
+    `navigator.clipboard` 不可用。链路：页面 `{type:'clipboard'}` → `PageEvent.clipboardWrite`
+    → `NSPasteboard`（长度封顶 256），页面再用 `TipsManager.SHOW_TIP` 飘字；兜底才是
+    参考实现那套 `execCommand('copy')`。**这条通道以后复制别的东西也能复用**；
+  · 弹窗类同样只在第一次打开时加载 → 降频轮询兜底（前 90s 每 1s、之后每 10s）。
 - **本机引擎的加速口径**（`ios-cocos/cocos-project/src/cocos2d-jsb.07adf.js`，如需「加速」类需求先读这一段）：
   `cc.Scheduler.update(t)` 开头 `1 !== this._timeScale && (t *= this._timeScale)`；
   `director.mainLoop` = `_compScheduler.updatePhase(dt)` → `_scheduler.update(dt)`；
@@ -332,8 +346,17 @@ cd /tmp/recon && cat > main.swift <<'EOF'
 import Foundation
 print(GameEnhancementScript.agent)
 EOF
-xcrun swiftc -o agent_dump /Users/gg/915/CYZW/LobbyCoreSystem/Sources/LobbyEngine/GameEnhancementScript.swift main.swift
+# ⚠️ 该文件现在有 `import LobbyDomain`，隔离编译要剥掉并补个同名桩
+#    （只补 webChannelName 这类稳定契约，别补业务）：
+python3 - <<'PY'
+src = open('/Users/gg/915/CYZW/LobbyCoreSystem/Sources/LobbyEngine/GameEnhancementScript.swift', encoding='utf-8').read()
+src = src.replace('import LobbyDomain',
+                  'public enum LobbyConfiguration { public static let webChannelName = "ios2Game" }')
+open('/tmp/recon/Agent.swift', 'w', encoding='utf-8').write(src)
+PY
+xcrun swiftc -Xfrontend -disable-sandbox -o agent_dump Agent.swift main.swift
 ./agent_dump > agent.js && $NODE --check agent.js
+grep -nE "const (AGENT_VERSION|PID_CHANNEL)" agent.js     # ← 顺带核对插值真的进去了
 
 # B. 假游戏环境跑行为（fake fgui.GRoot + fake __require，见 scripts/agent-harness.mjs 模板）
 $NODE harness.mjs
@@ -347,6 +370,15 @@ AGENT_JS=/tmp/recon/agent.js $NODE scripts/engine-speed-harness.mjs
 AGENT_JS=/tmp/recon/agent.js $NODE scripts/battle-stats-harness.mjs
 #     ⚠️ 假 `_updateLifeAndRage` 必须**真的去调 `entity.getComponent`**——代理是借游戏
 #     自己的组件查询来收集组件的，假 update 不查就整条捕获路径都测不到（测了个寂寞）。
+
+# B'''. 弹窗类功能（玩家ID 显示/复制）用 scripts/player-id-harness.mjs：
+AGENT_JS=/tmp/recon/agent.js $NODE scripts/player-id-harness.mjs
+#     假弹窗给全 onShow/onShown/onFixShow + ui.m_playerid/m_btnCopyID（**初始隐藏**，
+#     官方客户端就是这样）+ 假 `webkit.messageHandlers.<channel>`，断言「复制真的落到了宿主」。
+
+> ⚠️ 三个 harness 都要喂 **A 步导出的那份 `agent.js`**（不是「Python 抽 `"""…"""` 得到的
+> 源码副本」）：后者插值还是 `\(channel)` 这种占位符、行首缩进也不同，测出来的是另一份东西。
+> A 步顺带验证了插值，成本一条 `grep`——**别省**（插值名字写错时只有这一步抓得到）。
 
 # C. 真编译
 cd /Users/gg/915/CYZW/LobbyCoreSystem && \

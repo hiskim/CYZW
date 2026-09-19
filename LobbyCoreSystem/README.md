@@ -37,7 +37,7 @@
 - **脚本管理**：.js 导入/删除/三态作用域（禁用/单开/单多开），总开关 + 多开
   门禁双闸（语义与上一代一致），实例启动时按环境 atDocumentEnd 注入；脚本目录
   与上一代共用 `IOS2Scripts`。
-- **游戏加强**（独立分节页「游戏增强」，四张卡）：
+- **游戏加强**（独立分节页「游戏增强」，五张卡）：
   - **十殿加速**：改写 `NightmareBattlePanel.DEFAULT_TIMESCALE` 让十殿试炼战斗动画
     整体加速（只改画面节奏，不改战斗结算）。`__require` 未就绪时走 500ms × 120
     有界轮询补装钩子，倍率 1...1000（推荐 100）。
@@ -56,8 +56,16 @@
     comp-attributes 写入观察者 / 影子层（回放态攻击值）、竞技场对手攻击预取
     （PVP 敌方「攻」显示 `--`）、buff 飘字偏移降级为可选。战斗模块只在进战斗时加载
     → 用降频轮询兜底（前 60s 每 500ms、之后每 5s）。
+  - **玩家ID**：玩家信息弹窗里显示 `ID:xxxx` 并提供「复制ID」按钮。游戏自带的弹窗
+    本就有 `m_playerid` / `m_btnCopyID` / `m_serverName`（含 `m_serverName.parent` 下的
+    分隔线 `n101`），官方客户端把它们藏起来了 —— 所以这项不画新控件，只做三件事：
+    挂弹窗生命周期（`onShow`/`onShown`/`onFixShow`，同一拍 + 0ms + 120ms 各同步一次，
+    因为 UI 有时晚于 onShow 才建好）、放出节点并填 `ID:<roleId>`、把复制按钮重绑。
+    **复制由宿主写系统剪贴板**（页面 origin 是自定义 scheme，`navigator.clipboard`
+    不可用），走 `PageEvent.clipboardWrite` → `NSPasteboard`（长度封顶 256 字符），
+    页面再用 `TipsManager.SHOW_TIP` 飘字；桥不可用才退回 `execCommand('copy')`。
   - **聊天窗口**：整块隐藏游戏内聊天面板（skin 外壳），切回「显示」原地还原。
-  四项共用一个 atDocumentStart 预注入的代理脚本（哨兵幂等），开关 / 倍率即时落
+  五项共用一个 atDocumentStart 预注入的代理脚本（哨兵幂等），开关 / 倍率即时落
   UserDefaults 并广播全部存活实例，新实例在文档就绪时自行下发。
   ⚠️ 帧率角标也走同一个代理与下发链路，但**入口在设置页「目标帧率」卡**（见上）——
   它是那一排档位的自检工具，跟着被验证的东西放。

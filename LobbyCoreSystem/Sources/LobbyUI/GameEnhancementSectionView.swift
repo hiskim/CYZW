@@ -7,7 +7,7 @@ import LobbyEngine
 /// 与设置页的「全局配置」语义（画质/帧率/存储/CDN）不同类，独立成 tab
 /// 后每项功能一张顶层卡，有独立的扩展空间。
 ///
-/// 现有四项：
+/// 现有五项：
 /// - **十殿加速**：改写 `NightmareBattlePanel.DEFAULT_TIMESCALE`，让十殿试炼的战斗
 ///   动画整体加速（只改画面节奏，不改战斗结算）。
 /// - **UI 加速**：改引擎全局时间倍率（`cc.director.getScheduler()` 的 `_timeScale`），
@@ -16,6 +16,9 @@ import LobbyEngine
 /// - **战斗数据**：血条上方画「攻 / 盾 / 血」三行、怒气条下方画「怒」，数值直接读
 ///   战斗实体组件；参考官方 APK 的 `builtin-battle-stats-overlay-apk.js`，
 ///   细节与被省略的部分见文件头 ⑤。
+/// - **玩家ID**：玩家信息弹窗里显示 `ID:xxxx` 并提供「复制ID」按钮（游戏自带节点被官方
+///   藏起来了，这里只是放出来 + 把复制落到原生剪贴板）；参考官方 APK 的
+///   `builtin-player-info-id-apk.js`，见文件头 ⑥。
 /// - **聊天窗口**：把游戏内的聊天面板（消息列表 + 输入区）整块压成不可见；
 ///   切回「显示」即原地还原，不需要重载实例。
 ///
@@ -45,6 +48,8 @@ struct EnhancementsSidebarView: View {
     private static let uiSpeedAccent = Color(lobbyRGB: 0xA78BFA)
     /// 战斗数据主题色（蓝相位；卡里那 4 个色点用的是**数值语义色**，与卡色无关）。
     private static let battleAccent = Color(lobbyRGB: 0x60A5FA)
+    /// 玩家ID主题色（粉相位：与橙 / 青 / 紫 / 蓝 / 绿都分开）。
+    private static let playerIDAccent = Color(lobbyRGB: 0xF472B6)
 
     init(session: LobbySessionModel) {
         self.session = session
@@ -62,6 +67,7 @@ struct EnhancementsSidebarView: View {
                 nightmareCard
                 uiSpeedCard
                 battleStatsCard
+                playerIDCard
                 chatCard
 
                 // 页面侧回执：结果别只留在日志里——实测「没生效」时看一眼就能定性
@@ -423,6 +429,45 @@ struct EnhancementsSidebarView: View {
         guard isBattleStatsOn else { return "未开启 · 战斗里不显示数值" }
         return live > 0
             ? "已开启 · 已下发 \(live) 个实例，进战斗后生效"
+            : "已开启 · 实例启动后自动生效"
+    }
+
+    // MARK: - 玩家ID（显示 + 一键复制）
+
+    private var isPlayerIDOn: Bool { enhancements.playerIDEnabled }
+
+    /// 这项**不画新东西**：游戏自带的玩家信息弹窗里本来就有 ID 文本与「复制ID」按钮
+    /// （官方客户端把它们藏起来了），我们只是放出来并把复制落到原生剪贴板。
+    private var playerIDCard: some View {
+        featureCard(accent: Self.playerIDAccent, isActive: isPlayerIDOn) {
+            rowHeader(icon: "🆔", title: "玩家ID",
+                      subtitle: "玩家信息弹窗里显示 ID，并给「复制ID」按钮接通系统剪贴板") {
+                Toggle("", isOn: Binding(
+                    get: { isPlayerIDOn },
+                    set: { session.setPlayerIDEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(Self.playerIDAccent)
+                .help(isPlayerIDOn ? "关闭（ID 与复制按钮恢复隐藏）" : "在玩家信息弹窗里显示 ID 并可复制")
+            }
+
+            if isPlayerIDOn {
+                Text("看谁的信息就复制谁的 ID：点开玩家信息弹窗 → 复制ID → 已写进系统剪贴板并飘字提示。")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            statusLine(accent: Self.playerIDAccent, isActive: isPlayerIDOn, text: playerIDStatusText)
+        }
+    }
+
+    private var playerIDStatusText: String {
+        let live = session.runningAccountIDs.count
+        guard isPlayerIDOn else { return "未开启 · 弹窗里不显示 ID" }
+        return live > 0
+            ? "已开启 · 已下发 \(live) 个实例，打开弹窗即生效"
             : "已开启 · 实例启动后自动生效"
     }
 

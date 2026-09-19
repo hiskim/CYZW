@@ -174,6 +174,8 @@ public enum LobbyConfiguration {
         public static let enhanceFPSDisplay = "lobby.enhance.fpsDisplay.enabled"
         /// 战斗数据浮层：血条上方显示 攻/盾/血，怒气条下方显示 怒（默认 false）。
         public static let enhanceBattleStats = "lobby.enhance.battleStats.enabled"
+        /// 玩家信息弹窗里显示 ID 并提供「复制ID」按钮（默认 false）。
+        public static let enhancePlayerID = "lobby.enhance.playerId.enabled"
         /// 隐藏游戏内聊天窗口（默认 false = 保持游戏原样的显示）。
         public static let enhanceChatHidden = "lobby.enhance.chat.hidden"
     }

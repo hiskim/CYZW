@@ -1,4 +1,5 @@
 import Foundation
+import LobbyDomain
 
 // MARK: - 游戏加强 · 页面侧代理
 //
@@ -144,6 +145,28 @@ import Foundation
 // ⚠️ 关闭时**先解原型钩子、再摘标签**，并把官方角色名的文本 / 可见性原样还回去
 // （我们只把它藏起来，从没改过它的文本）。
 //
+// ── ⑥ 玩家ID（显示 + 一键复制）────────────────────────────────────────────
+// 参考实现：`RemoteRuntime/*/assets/game/builtin-player-info-id-apk.js`。
+//
+// 这项**不自己画标签**——玩家信息弹窗里本来就有 `m_playerid` / `m_btnCopyID` /
+// `m_serverName`（外加 `m_serverName.parent` 下那个分隔线 `n101`），是官方客户端
+// 把它们藏起来了。所以只做三件事：
+//
+// 1. 挂弹窗类（`PlayerInfoDialog` / `PlayerInfoTopDialog`）的生命周期
+//    （`onShow` / `onShown` / `onFixShow`）→ 每次打开都同步一次；
+// 2. 把那几个节点显示出来，并把 `m_playerid.text` 写成 `ID:<roleId>`。roleId 的出处
+//    按参考实现的顺序试：`dialog.model.get(ModelConst.ROLE_INFO | 'roleInfo' | 'ROLE_INFO')`
+//    → `dialog.roleInfo`；
+// 3. 清掉复制按钮原有的监听（官方那颗在 WebKit 上不干活，走的是平台桥）再绑自己的——
+//    **复制交给宿主写系统剪贴板**：页面 origin 是自定义 scheme（非安全上下文），
+//    `navigator.clipboard` 不可用；所以发 `{type:'clipboard'}` 消息由宿主落
+//    `NSPasteboard`（`PageEvent.clipboardWrite`）。桥不可用才退回参考实现那套
+//    「临时 textarea + execCommand('copy')」，成败都用游戏自己的 `TipsManager.SHOW_TIP` 提示。
+//
+// ⚠️ 弹窗 UI 有时在 `onShow` 之后才建好，所以同步要在同一拍 + 0ms + 120ms 各做一次
+// （参考实现同做法，少一次就会出现「第一次打开没 ID」）。弹窗类只在第一次打开玩家信息
+// 时才加载 → 同样用降频轮询兜底（前 90s 每 1s、之后每 10s）。
+//
 // ⚠️ `window.__require` 是**游戏自己的**跨 bundle 模块注册表（不是宿主符号，
 // 见 `ios2-script-runtime.js` 的注释），文档起点注入时它还不存在，且
 // `NightmareBattlePanel` / `ChatPanel` 都要等对应玩法才会被加载。所以这里用
@@ -158,7 +181,7 @@ public enum GameEnhancementScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**。
     /// 诊断串里带 `v=`，一眼就能确认页面里跑的到底是哪一版——
     /// 省掉「你确定重建了吗 / 跑的是不是这一版」这类来回（已经吃过三次亏）。
-    public static let agentVersion = "13"
+    public static let agentVersion = "14"
 
     /// 聊天面板的模块名（与游戏侧一致，勿改）。
     public static let chatPanelModuleName = "ChatPanel"
@@ -172,13 +195,14 @@ public enum GameEnhancementScript {
     /// 1...10、0.5 步进）——两个「speed」语义不同，参数名分开写免得看串。
     public static func apply(enabled: Bool, nightmareSpeed: Int, hideChat: Bool,
                              uiSpeedEnabled: Bool, uiSpeed: Double,
-                             fpsDisplay: Bool, battleStats: Bool) -> String {
+                             fpsDisplay: Bool, battleStats: Bool, playerID: Bool) -> String {
         "window.__LOBBY_ENHANCE__ ? window.__LOBBY_ENHANCE__.apply(" +
             "{enabled:\(enabled ? "true" : "false"),speed:\(nightmareSpeed)," +
             "hideChat:\(hideChat ? "true" : "false")," +
             "uiSpeedEnabled:\(uiSpeedEnabled ? "true" : "false"),uiSpeed:\(uiSpeed)," +
             "fpsDisplay:\(fpsDisplay ? "true" : "false")," +
-            "battleStats:\(battleStats ? "true" : "false")}) : 'no-handler'"
+            "battleStats:\(battleStats ? "true" : "false")," +
+            "playerID:\(playerID ? "true" : "false")}) : 'no-handler'"
     }
 
     /// 只读诊断：当前页面侧加强状态。
@@ -191,6 +215,9 @@ public enum GameEnhancementScript {
         let panelName = nightmarePanelName
         let chatModule = chatPanelModuleName
         let agentVersion = Self.agentVersion
+        // 原生消息通道名（页面桥契约）。取常量而不是写字面量：改名时这里会跟着断，
+        // 而不是静默地发到一个没人听的通道上。
+        let channel = LobbyConfiguration.webChannelName
         return """
         (() => {
           if (window.__LOBBY_ENHANCE__) return;
@@ -252,6 +279,18 @@ public enum GameEnhancementScript {
           const BATTLE_ATTR_FALLBACK_KEY = 11;
           // buff 飘字上移量（免得压在攻/盾/血三行上）。
           const BATTLE_BUFF_CLEARANCE = 32;
+
+          // 玩家ID（显示 + 一键复制）——模块 id / 导出名 / 生命周期方法照抄参考实现。
+          const PID_MODULE_IDS = ['PlayerInfoDialog', 'ui/playerinfo/PlayerInfoDialog',
+                                  '../ui/playerinfo/PlayerInfoDialog'];
+          const PID_EXPORTS = ['PlayerInfoDialog', 'PlayerInfoTopDialog'];
+          const PID_LIFECYCLE = ['onShow', 'onShown', 'onFixShow'];
+          // 弹窗类只在**第一次打开玩家信息**时加载：1s 一探，同样降频兜底。
+          const PID_POLL_MS = 1000;
+          const PID_POLL_FAST = 90;
+          const PID_POLL_SLOW_EVERY = 10;
+          // 原生消息通道（复制 ID 交给宿主写系统剪贴板）。
+          const PID_CHANNEL = '\(channel)';
 
           const state = {
             running: false,
@@ -346,6 +385,19 @@ public enum GameEnhancementScript {
             buffFlyOriginal: null,
             timer: 0,
             polls: 0,
+            err: '',
+            note: 'idle'
+          };
+
+          // ── 玩家ID：状态 ──
+          //   patches = [{ prototype, methodName, descriptor, wrapped }]，卸载时逐个还原
+          const pid = {
+            enabled: false,
+            installed: false,
+            patches: [],
+            timer: 0,
+            polls: 0,
+            synced: 0,
             err: '',
             note: 'idle'
           };
@@ -2146,6 +2198,231 @@ public enum GameEnhancementScript {
             return status();
           };
 
+          // ── 玩家ID：实现 ──
+          //
+          // 参考实现 `builtin-player-info-id-apk.js`。关键事实：**玩家信息弹窗里本来就有**
+          // `m_playerid` / `m_btnCopyID` / `m_serverName`（还有 `m_serverName.parent` 下那个
+          // 分隔线 `n101`），官方客户端把它们藏起来了。所以这项**不自己画标签**，只做三件事：
+          //   ① 挂弹窗类的生命周期（onShow / onShown / onFixShow）——每次打开都同步一次；
+          //   ② 把那几个节点显示出来，并把 `m_playerid.text` 写成 `ID:<roleId>`；
+          //   ③ 清掉复制按钮原有的点击监听再绑自己的——**复制交给宿主**（页面 origin 是
+          //      自定义 scheme，写不了系统剪贴板），postMessage 失败才退回 execCommand。
+          const pidClasses = () => {
+            const found = [];
+            PID_MODULE_IDS.forEach((id) => {
+              const require = resolveRequire();
+              if (!require) return;
+              let module = null;
+              try { module = require(id); } catch (error) { return; }
+              if (!module) return;
+              PID_EXPORTS.forEach((name) => {
+                const klass = module[name] || (name === PID_EXPORTS[0] ? module.default : null);
+                if (typeof klass === 'function' && klass.prototype && found.indexOf(klass) < 0) {
+                  found.push(klass);
+                }
+              });
+            });
+            return found;
+          };
+
+          // roleId 的出处，按参考实现的顺序试：模型表（键名可能是常量）→ 弹窗自身字段。
+          const pidRoleInfo = (dialog) => {
+            if (!dialog) return null;
+            const keys = ['roleInfo', 'ROLE_INFO'];
+            try {
+              const require = resolveRequire();
+              const consts = require ? (require('consts') || require('../../../../extras/consts/consts')) : null;
+              const modelConst = consts && (consts.ModelConst || (consts.default && consts.default.ModelConst));
+              if (modelConst && modelConst.ROLE_INFO != null) keys.unshift(modelConst.ROLE_INFO);
+            } catch (error) {}
+            if (dialog.model && typeof dialog.model.get === 'function') {
+              for (let index = 0; index < keys.length; index++) {
+                try {
+                  const value = dialog.model.get(keys[index]);
+                  if (value && value.roleId != null) return value;
+                } catch (error) {}
+              }
+            }
+            return dialog.roleInfo && dialog.roleInfo.roleId != null ? dialog.roleInfo : null;
+          };
+
+          // FairyGUI 对象 → cc 节点：`active` 与 `visible` 两套都可能（参考实现两条都认）。
+          const pidNode = (target) => target && (target._node || target.node || target);
+          const pidSetVisible = (target, visible) => {
+            const node = pidNode(target);
+            if (!node) return;
+            if ('active' in node) node.active = visible;
+            else if ('visible' in node) node.visible = visible;
+          };
+
+          const pidTip = (text) => {
+            // 用游戏自己的飘字（TipsManager.SHOW_TIP），与参考实现一致。
+            try {
+              const require = resolveRequire();
+              const module = require ? require('TipsManager') : null;
+              const manager = module && (module.TipsManager || module.default || module);
+              if (manager && typeof manager.SHOW_TIP === 'function') manager.SHOW_TIP(text);
+            } catch (error) {}
+          };
+
+          const pidCopyFallback = (text) => {
+            try {
+              if (!document.body || typeof document.execCommand !== 'function') return false;
+              const input = document.createElement('textarea');
+              input.value = text;
+              input.setAttribute('readonly', '');
+              input.style.position = 'fixed';
+              input.style.opacity = '0';
+              document.body.appendChild(input);
+              input.select();
+              const copied = document.execCommand('copy');
+              if (input.parentNode) input.parentNode.removeChild(input);
+              return copied !== false;
+            } catch (error) {
+              return false;
+            }
+          };
+
+          const pidCopy = (text) => {
+            // ① 交给宿主写系统剪贴板（唯一可靠路径）。
+            try {
+              const bridge = window.webkit && window.webkit.messageHandlers &&
+                window.webkit.messageHandlers[PID_CHANNEL];
+              if (bridge && typeof bridge.postMessage === 'function') {
+                bridge.postMessage({ type: 'clipboard', text: text });
+                pid.note = 'pid-copied';
+                pidTip('复制成功');
+                return true;
+              }
+            } catch (error) {
+              pid.err = String((error && error.message) || error);
+            }
+            // ② 桥不可用（页面跑在别的宿主里）：退回参考实现那套，成败都告诉用户。
+            const copied = pidCopyFallback(text);
+            pid.note = copied ? 'pid-copied-fallback' : 'pid-copy-failed';
+            pidTip(copied ? '复制成功' : '复制失败');
+            return copied;
+          };
+
+          const pidBindCopy = (dialog, roleId) => {
+            const button = dialog && dialog.ui && dialog.ui.m_btnCopyID;
+            if (!button || typeof button.clearClick !== 'function' || typeof button.onClick !== 'function') return;
+            // 先清掉游戏自己的监听：官方那颗按钮在 WebKit 上不干活（走的是平台桥）。
+            button.clearClick();
+            button.onClick(() => pidCopy(roleId));
+          };
+
+          const pidSync = (dialog) => {
+            if (!pid.enabled || !dialog) return;
+            const roleInfo = pidRoleInfo(dialog);
+            if (!roleInfo || !Number.isInteger(Number(roleInfo.roleId))) return;
+            const roleId = String(roleInfo.roleId);
+            const ui = dialog.ui;
+            pidSetVisible(ui && ui.m_serverName, true);
+            pidSetVisible(ui && ui.m_playerid, true);
+            pidSetVisible(ui && ui.m_btnCopyID, true);
+            // 分隔线也在同一个父节点下（参考实现按兄弟名找）。
+            const marker = ui && ui.m_serverName && ui.m_serverName.parent;
+            if (marker && typeof marker.getChild === 'function') pidSetVisible(marker.getChild('n101'), true);
+            if (ui && ui.m_playerid && 'text' in ui.m_playerid) ui.m_playerid.text = 'ID:' + roleId;
+            pidBindCopy(dialog, roleId);
+            pid.synced += 1;
+            pid.note = 'pid-synced';
+          };
+
+          // 弹窗显示后再补两次：UI 有时在 onShow 之后才建好（参考实现同做法）。
+          const pidSchedule = (dialog) => {
+            pidSync(dialog);
+            if (typeof window.setTimeout === 'function') {
+              window.setTimeout(() => pidSync(dialog), 0);
+              window.setTimeout(() => pidSync(dialog), 120);
+            }
+          };
+
+          const pidPatch = (klass, methodName) => {
+            const prototype = klass && klass.prototype;
+            if (!prototype || typeof prototype[methodName] !== 'function') return false;
+            if (prototype[methodName].__lobbyPidPatched) return true;
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
+            const original = prototype[methodName];
+            const wrapped = function () {
+              const result = original.apply(this, arguments);
+              pidSchedule(this);
+              return result;
+            };
+            wrapped.__lobbyPidPatched = true;
+            wrapped.__lobbyPidOriginal = original;
+            try {
+              Object.defineProperty(prototype, methodName, { configurable: true,
+                enumerable: descriptor ? descriptor.enumerable : false,
+                writable: true, value: wrapped });
+            } catch (error) {
+              pid.err = String((error && error.message) || error);
+              return false;
+            }
+            pid.patches.push({ prototype: prototype, methodName: methodName,
+                               descriptor: descriptor, wrapped: wrapped });
+            return true;
+          };
+
+          const pidInstall = () => {
+            if (!pid.enabled || pid.installed) return pid.installed;
+            const classes = pidClasses();
+            if (!classes.length) { pid.note = 'pid-waiting-module'; return false; }
+            let patched = 0;
+            classes.forEach((klass) => {
+              PID_LIFECYCLE.forEach((methodName) => { if (pidPatch(klass, methodName)) patched += 1; });
+            });
+            if (!patched) { pid.note = 'pid-no-hook'; return false; }
+            pid.installed = true;
+            pid.note = 'pid-running';
+            return true;
+          };
+
+          const pidUninstall = () => {
+            for (let index = pid.patches.length - 1; index >= 0; index--) {
+              const patch = pid.patches[index];
+              if (patch.prototype[patch.methodName] !== patch.wrapped) continue;
+              try {
+                if (patch.descriptor) Object.defineProperty(patch.prototype, patch.methodName, patch.descriptor);
+                else delete patch.prototype[patch.methodName];
+              } catch (error) {}
+            }
+            pid.patches = [];
+            pid.installed = false;
+          };
+
+          const pidStopPoll = () => {
+            if (pid.timer) { clearInterval(pid.timer); pid.timer = 0; }
+          };
+
+          const pidStartPoll = () => {
+            if (pid.timer || pid.installed) return;
+            pid.polls = 0;
+            pid.timer = setInterval(() => {
+              if (!pid.enabled) { pidStopPoll(); return; }
+              pid.polls += 1;
+              if (pid.polls > PID_POLL_FAST && pid.polls % PID_POLL_SLOW_EVERY !== 0) return;
+              if (pidInstall()) pidStopPoll();
+            }, PID_POLL_MS);
+          };
+
+          const setPlayerId = (enabled) => {
+            const next = enabled === true;
+            if (next === pid.enabled) return status();
+            if (!next) {
+              pid.enabled = false;
+              pidStopPoll();
+              pidUninstall();
+              pid.note = 'pid-stopped';
+              return status();
+            }
+            pid.enabled = true;
+            pid.err = '';
+            if (!pidInstall()) pidStartPoll();
+            return status();
+          };
+
           // 「开着隐藏但一个面板都没命中」时自动附上结构探针——一次截图就能定位。
           const status = () => {
             let text = 'v=' + AGENT_VERSION +
@@ -2174,6 +2451,9 @@ public enum GameEnhancementScript {
               ' inst=' + (battle.installed ? 1 : 0) +
               ' bf=' + (battle.buffFly ? 1 : 0) +
               ' bNote=' + battle.note +
+              // 玩家ID：pid=开关/已同步次数/钩子数，note 说明卡在哪一步。
+              ' pid=' + (pid.enabled ? 1 : 0) + '/' + pid.synced + '/' + pid.patches.length +
+              ' pNote=' + pid.note +
               ' note=' + state.note + ' chatNote=' + chat.note;
             if (chat.hidden && !chat.shells.length) {
               text += ' ' + probeChat();
@@ -2194,6 +2474,8 @@ public enum GameEnhancementScript {
             setFpsDisplay(!!next.fpsDisplay);
             // 战斗数据浮层（挂钩 SystemHeadBoard + 画标签）。
             setBattleStats(!!next.battleStats);
+            // 玩家ID（显示 + 复制按钮）。
+            setPlayerId(!!next.playerID);
 
             if (enabled === state.running) {
               // 只改倍率：钩子已经在了，现场重扫一次面板即可（没面板时
@@ -2229,6 +2511,7 @@ public enum GameEnhancementScript {
             ui: setUISpeed,
             fps: setFpsDisplay,
             battle: setBattleStats,
+            pid: setPlayerId,
             probe: probeChat,
             status: status
           };

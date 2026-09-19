@@ -22,6 +22,9 @@ public struct GameEnhancementSettings: Equatable, Sendable {
     /// 战斗数据浮层（血条上方 攻/盾/血，怒气条下方 怒）。
     public var battleStatsEnabled: Bool
 
+    /// 玩家信息弹窗里显示 ID + 复制按钮。
+    public var playerIDEnabled: Bool
+
     /// 隐藏游戏内聊天窗口（消息列表 + 输入区整块）。默认 false = 原样显示。
     public var chatPanelHidden: Bool
 
@@ -49,6 +52,7 @@ public struct GameEnhancementSettings: Equatable, Sendable {
                 uiSpeedMultiplier: Double = GameEnhancementSettings.defaultUISpeedMultiplier,
                 fpsDisplayEnabled: Bool = false,
                 battleStatsEnabled: Bool = false,
+                playerIDEnabled: Bool = false,
                 chatPanelHidden: Bool = false) {
         self.nightmareSpeedEnabled = nightmareSpeedEnabled
         self.nightmareSpeedMultiplier = Self.clamp(multiplier: nightmareSpeedMultiplier)
@@ -56,6 +60,7 @@ public struct GameEnhancementSettings: Equatable, Sendable {
         self.uiSpeedMultiplier = Self.clamp(speed: uiSpeedMultiplier)
         self.fpsDisplayEnabled = fpsDisplayEnabled
         self.battleStatsEnabled = battleStatsEnabled
+        self.playerIDEnabled = playerIDEnabled
         self.chatPanelHidden = chatPanelHidden
     }
 
@@ -143,6 +148,14 @@ public final class GameEnhancementStore: ObservableObject {
         }
     }
 
+    /// 玩家ID 显示 / 复制开关。
+    @Published public var playerIDEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(playerIDEnabled,
+                                      forKey: LobbyConfiguration.PreferenceKey.enhancePlayerID)
+        }
+    }
+
     /// 下发用的快照（倍率在这里兜底钳制，页面永远拿不到越界值）。
     public var settings: GameEnhancementSettings {
         GameEnhancementSettings(nightmareSpeedEnabled: nightmareSpeedEnabled,
@@ -151,6 +164,7 @@ public final class GameEnhancementStore: ObservableObject {
                                 uiSpeedMultiplier: uiSpeedMultiplier,
                                 fpsDisplayEnabled: fpsDisplayEnabled,
                                 battleStatsEnabled: battleStatsEnabled,
+                                playerIDEnabled: playerIDEnabled,
                                 chatPanelHidden: chatPanelHidden)
     }
 
@@ -245,5 +259,7 @@ public final class GameEnhancementStore: ObservableObject {
             forKey: LobbyConfiguration.PreferenceKey.enhanceFPSDisplay)
         battleStatsEnabled = defaults.bool(
             forKey: LobbyConfiguration.PreferenceKey.enhanceBattleStats)
+        playerIDEnabled = defaults.bool(
+            forKey: LobbyConfiguration.PreferenceKey.enhancePlayerID)
     }
 }

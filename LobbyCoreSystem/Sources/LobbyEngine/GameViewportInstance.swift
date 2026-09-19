@@ -360,7 +360,8 @@ public final class GameViewportInstance: NSView {
                                                 uiSpeedEnabled: settings.uiSpeedEnabled,
                                                 uiSpeed: settings.uiSpeedMultiplier,
                                                 fpsDisplay: settings.fpsDisplayEnabled,
-                                                battleStats: settings.battleStatsEnabled)
+                                                battleStats: settings.battleStatsEnabled,
+                                                playerID: settings.playerIDEnabled)
         // 闭包会逃逸（evaluateJavaScript 的 completion 是 @escaping），
         // 所以只捕获值 + weak self，不把实例吊住。
         let accountName = account.nickname
@@ -813,6 +814,14 @@ public final class GameViewportInstance: NSView {
             LobbyLog.warn("[instance] WebGL %@: %@", event, message)
         case .frameRateWrite(let fps, let stack):
             LobbyLog.debug("[instance] frame rate write: fps=%@ stack=%@", fps, stack)
+        case .clipboardWrite(let text):
+            // 剪贴板只由宿主写（页面在自定义 scheme 下写不了），写完记一条 info——
+            // 用户说「复制没反应」时，第一件事就是看这行有没有出现。
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            LobbyLog.info("[instance] clipboard write (%ld chars) from %@",
+                          text.count, account.nickname)
         case .input(let event):
             // 键鼠同步：本实例只有被允许发言时中控才会路由（中控会再校验一次）。
             sync?.publish(event, from: account.id)

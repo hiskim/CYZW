@@ -161,6 +161,12 @@ public enum PageEvent: Sendable {
     case loginDiag(message: String)
     /// 抓包探针的原始 WS 帧（`PacketCaptureScript` 上报；仅抓包开启时才有）。
     case packet(PacketFrame)
+    /// 页面请求把一段文本写进系统剪贴板（游戏内「复制玩家ID」）。
+    ///
+    /// 为什么不让页面自己写：页面 origin 是自定义 scheme（非安全上下文），
+    /// `navigator.clipboard` 根本不可用，`document.execCommand('copy')` 在 WKWebView
+    /// 里也不保证成功；而「复制 ID」是个一次必须成功的动作，所以由宿主写。
+    case clipboardWrite(text: String)
     /// 未识别的事件（前向兼容：新版本页面在旧宿主上运行）。
     case unknown(type: String)
 
@@ -206,6 +212,10 @@ public enum PageEvent: Sendable {
         case "frameRate":
             return .frameRateWrite(fps: stringified(body["fps"]),
                                    stack: stringified(body["stack"]))
+        case "clipboard":
+            // 长度封顶：剪贴板内容是页面说了算的，别让一段超长文本把系统剪贴板塞爆。
+            guard let text = body["text"] as? String, !text.isEmpty else { return .unknown(type: type) }
+            return .clipboardWrite(text: String(text.prefix(256)))
         case "input":
             guard let event = InputSyncEvent.decode(from: body) else { return .unknown(type: type) }
             return .input(event)
