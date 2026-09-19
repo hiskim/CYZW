@@ -161,11 +161,15 @@ public enum LobbyConfiguration {
         /// 脚本状态记录（JSON Data）。
         public static let scriptsRecords = "lobby.scripts.records"
 
-        // 游戏加强（十殿加速）
+        // 游戏加强（十殿加速 / UI 加速 / 聊天窗口）
         /// 十殿加速开关（默认 false，防误开）。
         public static let enhanceNightmareSpeedEnabled = "lobby.enhance.nightmareSpeed.enabled"
         /// 十殿加速倍率（Int，1...1000；默认 100）。
         public static let enhanceNightmareSpeedMultiplier = "lobby.enhance.nightmareSpeed.multiplier"
+        /// UI 加速开关（引擎全局时间倍率，默认 false，防误开）。
+        public static let enhanceUISpeedEnabled = "lobby.enhance.uiSpeed.enabled"
+        /// UI 加速倍率（Double，1...10、0.5 步进；默认 3，与官方 APK 运行时的默认档一致）。
+        public static let enhanceUISpeedMultiplier = "lobby.enhance.uiSpeed.multiplier"
         /// 隐藏游戏内聊天窗口（默认 false = 保持游戏原样的显示）。
         public static let enhanceChatHidden = "lobby.enhance.chat.hidden"
     }

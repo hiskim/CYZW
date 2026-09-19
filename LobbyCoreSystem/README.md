@@ -25,11 +25,19 @@
 - **脚本管理**：.js 导入/删除/三态作用域（禁用/单开/单多开），总开关 + 多开
   门禁双闸（语义与上一代一致），实例启动时按环境 atDocumentEnd 注入；脚本目录
   与上一代共用 `IOS2Scripts`。
-- **游戏加强**（设置页 · 游戏加强）：首项为**十殿加速**：
-  改写 `NightmareBattlePanel.DEFAULT_TIMESCALE` 让十殿试炼战斗动画整体加速
-  （只改画面节奏，不改战斗结算）。代理脚本 atDocumentStart 预注入 + 哨兵幂等，
-  开关 / 倍率（1...1000，推荐 100）即时落 UserDefaults 并广播全部存活实例，
-  新实例在文档就绪时自行下发；`__require` 未就绪时走 500ms × 120 有界轮询补装钩子。
+- **游戏加强**（独立分节页「游戏增强」，三张卡）：
+  - **十殿加速**：改写 `NightmareBattlePanel.DEFAULT_TIMESCALE` 让十殿试炼战斗动画
+    整体加速（只改画面节奏，不改战斗结算）。`__require` 未就绪时走 500ms × 120
+    有界轮询补装钩子，倍率 1...1000（推荐 100）。
+  - **UI 加速**：改引擎**全局**时间倍率（`cc.director.getScheduler()` 的 `_timeScale`），
+    面板过渡 / FairyGUI 补间 / cc 动作整体加快；机制与官方 APK 运行时的
+    `engineGlobalSpeed` 一致（默认档 3，本机上限收到 10）。同一条 `_timeScale` 只作用在
+    引擎 Scheduler 那一支，组件 `update(dt)` 走 `_compScheduler` 不加速——即
+    「动画快、逐帧逻辑不跟着快」。20ms 引导轮询等 `window.cc` 出现，100ms 保活 +
+    包装 `scheduler.update` 防被改回，关闭时先解包再还原接管前的原值。
+  - **聊天窗口**：整块隐藏游戏内聊天面板（skin 外壳），切回「显示」原地还原。
+  三项共用一个 atDocumentStart 预注入的代理脚本（哨兵幂等），开关 / 倍率即时落
+  UserDefaults 并广播全部存活实例，新实例在文档就绪时自行下发。
 - **键鼠同步（群控）**：纯 JS IPC 方案（坐标 0...1 归一化，禁止 CGEvent 模拟），
   混合路由（👑 主控独占发送 / 🔗 无主控时参与者互相同步），路由以账号分组为
   隔离边界；防回灌（ECHO 标记双闸门）、mousemove rAF 合并 + 原生 1/60s 节流

@@ -340,8 +340,10 @@ public final class GameViewportInstance: NSView {
               enhancementAttempt < Self.enhancementRetryLimit else { return }
         let settings = enhancements.settings
         let script = GameEnhancementScript.apply(enabled: settings.nightmareSpeedEnabled,
-                                                speed: settings.nightmareSpeedMultiplier,
-                                                hideChat: settings.chatPanelHidden)
+                                                nightmareSpeed: settings.nightmareSpeedMultiplier,
+                                                hideChat: settings.chatPanelHidden,
+                                                uiSpeedEnabled: settings.uiSpeedEnabled,
+                                                uiSpeed: settings.uiSpeedMultiplier)
         // 闭包会逃逸（evaluateJavaScript 的 completion 是 @escaping），
         // 所以只捕获值 + weak self，不把实例吊住。
         let accountName = account.nickname
@@ -356,9 +358,11 @@ public final class GameViewportInstance: NSView {
                 return
             }
             // 诊断串形如
-            // `running=1 speed=100 hook=1 panel=1 chat=0/0 skin=0/0 root=groot note=running-live chatNote=idle`；
+            // `running=1 speed=100 hook=1 panel=1 chat=0/0 skin=0/0 root=groot
+            //  ui=1x3 sched=1 wrap=1 uiNote=ui-running note=running-live chatNote=idle`；
             // 一个面板都没命中时还会自动附上结构探针（`probe env … roots=…`）。
-            // no-handler = 代理脚本没进页面（构建产物未更新）。
+            // no-handler = 代理脚本没进页面（构建产物未更新）；
+            // ui 段的 `sched=0` 说明引擎还没起来（页面侧自己会轮询等，不用重发）。
             let diagnostic = (result as? String) ?? String(describing: result)
             // 统一前缀便于捞：控制台筛 `[enhance]` 即可看到全部下发回执。
             LobbyLog.info("[enhance] %@", diagnostic)

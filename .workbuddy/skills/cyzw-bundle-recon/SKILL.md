@@ -18,6 +18,18 @@ agent_created: true
 - CDN 本地缓存 `~/Library/Application Support/GameLobby/CDN/`，
   `index.json` 是 `URL -> {path, byteCount}` 索引，`files/<2位>/<sha256>` 是内容。
 - 命令行 `grep` 用 **`-E`**（BSD BRE 不支持 `\|`，会恒无匹配、误判成「没改动」）。
+- **要找「某功能是怎么实现的」时，先在官方 APK 运行时里找，别从零猜**：
+  `~/Library/Application Support/RemoteRuntime/*/assets/game/` 下有整套内置脚本
+  （`native-game-host.js` = 宿主侧：引擎加速 / 帧率 / 断线重连 / 盐场视野；`builtin-*-apk.js`
+  = 各功能脚本）。`builtin-ten-temple-speed-apk.js` 之类往往是小号版的答案。
+- **本机引擎的加速口径**（`ios-cocos/cocos-project/src/cocos2d-jsb.07adf.js`，如需「加速」类需求先读这一段）：
+  `cc.Scheduler.update(t)` 开头 `1 !== this._timeScale && (t *= this._timeScale)`；
+  `director.mainLoop` = `_compScheduler.updatePhase(dt)` → `_scheduler.update(dt)`；
+  `ActionManager` / `AnimationManager` 在 `director.init()` 里 `scheduler.scheduleUpdate(…)`；
+  FairyGUI 的 `TweenManager.update` 在 `createTween` 里 `scheduler.schedule(TweenManager.update, _root, 0, false)`。
+  ⇒ `director.getScheduler().setTimeScale(n)` = **补间 / 动作 / 转场加速，组件 `update(dt)` 不加速**
+  （官方 APK 的 `engineGlobalSpeed` 就是这个机制，默认档 3）。要「某个面板内部」的节奏才用
+  `DEFAULT_TIMESCALE` 那种面板级钩子（十殿加速）。
 
 ## 1. 解出明文 bundle
 
@@ -143,9 +155,18 @@ open('/tmp/recon/mod.js','w').write(s[idx:end+12])
 | 3 页面代理 | `LobbyEngine/GameEnhancementScript.swift`（`agent` 字符串 + `apply()` + `status()`） |
 | 4 下发 | `LobbyEngine/GameViewportInstance.applyEnhancements()`（`didFinish` 时补一次） |
 | 5 唯一写入口 | `LobbyUI/LobbySessionModel.setXxx()`（落盘 + `broadcastEnhancements()`） |
-| 6 UI | `LobbyUI/GameEnhancementSectionView.swift`（用私有 `rowCard`/`rowHeader`/`statusLine`） |
+| 6 UI | `LobbyUI/GameEnhancementSectionView.swift`（用私有 `featureCard`/`rowHeader`/`statusLine`） |
 
-**改完 bump `App/Sources/GameLobbyApp.swift` 的 `buildTag`**，否则日志里分不清跑的是哪一版。
+**两个 bump 都要做**：`App/Sources/GameLobbyApp.swift` 的 `buildTag`（否则日志里分不清跑的是哪一版）
++ `GameEnhancementScript.agentVersion`（诊断串里的 `v=`，否则分不清页面里跑的是哪一代代理）。
+
+UI 细节（踩过）：
+- 倍率行别逐项复制，抽成共用 helper（现为 `speedRow(…)` / `quickSpeedButton(…)`）——两个功能
+  各自的输入框样式必须同源，否则改圆角 / 宽度必漏一个。
+- **小数倍率输入框：结尾是小数点时不许写档**。中间态 `1.` 会被 `Double("1.")=1` 解析并回写，
+  把小数点吞掉，用户永远打不出 `1.5`（整数倍率那套「输入即钳制」的写法不能照抄）。
+- 读 `Double` 偏好键必须 `object(forKey:) as? Double ?? 默认`，**不能用 `double(forKey:)`**
+  ——缺省键返回 0，钳制后变下界 1，表现是「默认档静默变 1（等于没开）」。
 
 代理脚本的红线：
 - 必须 `atDocumentStart` **预注入**（WKUserScript 运行时无法追加）——否则「实例已跑起来才开开关」= 点了没反应。
@@ -275,10 +296,37 @@ xcrun swiftc -o agent_dump /Users/gg/915/CYZW/LobbyCoreSystem/Sources/LobbyEngin
 # B. 假游戏环境跑行为（fake fgui.GRoot + fake __require，见 scripts/agent-harness.mjs 模板）
 $NODE harness.mjs
 
+# B'. 改**引擎全局状态**的功能（时间倍率 / 帧率 / director 包装）改用：
+AGENT_JS=/tmp/recon/agent.js $NODE scripts/engine-speed-harness.mjs
+
 # C. 真编译
 cd /Users/gg/915/CYZW/LobbyCoreSystem && \
   xcodebuild -project GameLobby.xcodeproj -scheme GameLobby -configuration Debug \
              -destination 'platform=macOS' -derivedDataPath /tmp/recon/DD build
+```
+
+⚠️ **受控沙箱里编译必挂，先加一个 flag。** Swift 编译器自己会用 `sandbox-exec` 隔离宏插件进程，
+在已经受限的环境里那次 `sandbox_apply` 会失败，报错长这样：
+
+```
+sandbox-exec: sandbox_apply: Operation not permitted
+error: external macro implementation type 'SwiftUIMacros.StateMacro' could not be found
+       for macro 'State()'; …swift-plugin-server produced malformed response
+```
+
+它会**逐个 `@State` 报一遍**，看着像 SwiftUI 用法写错了——其实跟代码无关（单独
+`swiftc -typecheck` 一个三行 `@State` 文件也一样报）。绕过（关掉 Bash 沙箱**无效**）：
+
+```bash
+xcodebuild … OTHER_SWIFT_FLAGS='-Xfrontend -disable-sandbox' build
+# 单独验证时同理：xcrun swiftc -typecheck -Xfrontend -disable-sandbox probe.swift
+```
+
+⚠️ **验产物要看对地方**：Debug 的代码在 `Contents/MacOS/潮音之王.debug.dylib`（十几 MB），
+主可执行文件只有 40KB——在主二进制上 `strings | grep` 什么都查不到，别据此判「改动没编进去」：
+
+```bash
+strings -a "…/潮音之王.app/Contents/MacOS/潮音之王.debug.dylib" | grep -c uiNote=
 ```
 注意：`node --check` **查不出**语义错误（例如把语句写成一个合法字符串表达式），
 所以 B 步不能跳。假环境**必须按真实层级搭**（层 → skin → container → ui），
@@ -486,6 +534,12 @@ tag 99 引用都会错位，读出来是「看着正常、值不对」的字符�
 
 - 第三方脚本（`~/Downloads/*.js`、脚本库里的）**不可修改**，只能读来学机制。
 - 需求若来自某个第三方脚本，说明里要写清「参考了什么、落到宿主哪一层」。
+- 说「某某脚本好像支持 X」时，**先取证它到底支持什么**：同目录下往往还有别的脚本才是真正
+  干这事的（例：被指的两个脚本一个只管帧率角标、一个是面板级加速，而「全局加速」其实在宿主的
+  `native-game-host.js` 里）。判据是 grep 出来的代码行，不是文件名。
+- 要「加速 / 减速 / 暂停」类需求，先按 §0 最后一条判作用域（Scheduler 那一支 vs 组件 `update`），
+  再决定改 `setTimeScale` 还是改面板的 `DEFAULT_TIMESCALE`——选错了会得到
+  「UI 快了但战斗没快」或反过来的假结论。
 - 写完追加 `.workbuddy/memory/YYYY-MM-DD.md`（含反解偏移量等可复现证据）。
 - **先想清楚「这个需求真的需要反解 bundle 吗」**：如果只是要一份数据（资料 / 排行 / 列表），
   服务端 HTTP+WSS 往往直接给（见 §6），比改游戏内行为便宜一个数量级。

@@ -6,7 +6,7 @@ import Foundation
 // （WKUserScript 只能在导航时注入、运行时无法追加），运行时只推配置——否则
 // 「实例已经跑起来才打开开关」就只能等下一次导航，用户看到的是「点了没反应」。
 //
-// 目前两项加强：
+// 目前三项加强：
 //
 // ── ① 十殿加速 ─────────────────────────────────────────────────────────────
 // 原理与第三方脚本（猫助手）完全一致——改写 `NightmareBattlePanel.DEFAULT_TIMESCALE`，
@@ -61,6 +61,39 @@ import Foundation
 //   - **诊断**：`status()` 里的 `skin=N/M` 表示 M 个面板里有 N 个解析到了 skin 外壳；
 //     若为 0 而界面仍有残留，说明该窗口走的是另一套挂载路径，需要再取证。
 //
+// ── ③ UI 加速 ─────────────────────────────────────────────────────────────
+// 机制与**官方 APK 运行时**的 `engineGlobalSpeed` 一致（参考实现
+// `assets/game/native-game-host.js`：`scheduler.setTimeScale(speed)`，0 表示暂停引擎，
+// 默认档 3、上限 50）：直接改引擎的全局时间倍率，由引擎自己把每帧 dt 乘上去。
+//
+// 为什么用这条，而不是像十殿那样改某个面板的 `DEFAULT_TIMESCALE`：
+// 本机引擎（`ios-cocos/cocos-project/src/cocos2d-jsb.07adf.js`）里
+//
+//     cc.Scheduler.prototype.update = function (t) { 1 !== this._timeScale && (t *= this._timeScale); … }
+//     cc.Director.prototype.mainLoop  →  _compScheduler.updatePhase(dt); _scheduler.update(dt);
+//
+// 也就是说 `_timeScale` 只作用在 **Scheduler 这一支**：
+//   · FairyGUI 的 `TweenManager.update` 是用 `scheduler.schedule(TweenManager.update, …)`
+//     挂上去的（`vendor/fairygui.js`）→ UI 补间 / 转场 / 动效跟着快；
+//   · `cc.ActionManager` 在 `director.init()` 里 `scheduler.scheduleUpdate(ActionManager,…)`
+//     → 动作 / 缓动 / 序列跟着快；
+//   · 组件自己的 `update(dt)` 走 `_compScheduler`，**不**经 Scheduler → 不加速。
+// 结果正好是「动画快、逐帧逻辑不跟着快」——这就是 UI 加速要的边界，比全局改
+// `DEFAULT_TIMESCALE` 那种面板级钩子更通用：不依赖具体面板类名，任何界面的
+// 补间 / 转场都受益。
+//
+// 三条实现要点（都是参考实现里踩实的）：
+// 1. **引导**：文档起点注入时 `window.cc` 还不存在，20ms 一探（≤1500 次 ≈ 30s），
+//    拿到 scheduler 才转入保活。
+// 2. **保活**：包装 `scheduler.update`（每帧顶回目标倍率）+ 100ms 定时复检——
+//    游戏自己或别的脚本随时可能把它改回去。关掉时**先解包再还原**原始倍率，
+//    并把接管前的原值记在 `ui.original`（换过引擎实例就重新记）。
+// 3. **范围**：倍率收在 1...10、0.5 步进（参考实现允许到 50，但倍率越高单帧 dt
+//    越大，越容易把补间推成跳帧）。1 = 没开，所以开关关闭等价于还原。
+//
+// ⚠️ 只提速**动画时间轴**，不改服务端结算节奏；但走 `schedule / scheduleOnce`
+// 的延时（心跳、冷却）也会跟着提前，倍率别拉太猛。
+//
 // ⚠️ `window.__require` 是**游戏自己的**跨 bundle 模块注册表（不是宿主符号，
 // 见 `ios2-script-runtime.js` 的注释），文档起点注入时它还不存在，且
 // `NightmareBattlePanel` / `ChatPanel` 都要等对应玩法才会被加载。所以这里用
@@ -75,7 +108,7 @@ public enum GameEnhancementScript {
     /// 代理脚本版本号。**每次改 `agent` 就 +1**。
     /// 诊断串里带 `v=`，一眼就能确认页面里跑的到底是哪一版——
     /// 省掉「你确定重建了吗 / 跑的是不是这一版」这类来回（已经吃过三次亏）。
-    public static let agentVersion = "10"
+    public static let agentVersion = "11"
 
     /// 聊天面板的模块名（与游戏侧一致，勿改）。
     public static let chatPanelModuleName = "ChatPanel"
@@ -84,10 +117,15 @@ public enum GameEnhancementScript {
     /// 返回值是页面侧的诊断串：
     /// `running=1 speed=100 hook=1 panel=1 chat=1/1:hidden note=running-live`；
     /// 代理不存在时返回 `no-handler`（页面未装代理脚本）。
-    public static func apply(enabled: Bool, speed: Int, hideChat: Bool) -> String {
+    ///
+    /// `nightmareSpeed` = 十殿加速倍率（Int），`uiSpeed` = UI 加速倍率（Double，
+    /// 1...10、0.5 步进）——两个「speed」语义不同，参数名分开写免得看串。
+    public static func apply(enabled: Bool, nightmareSpeed: Int, hideChat: Bool,
+                             uiSpeedEnabled: Bool, uiSpeed: Double) -> String {
         "window.__LOBBY_ENHANCE__ ? window.__LOBBY_ENHANCE__.apply(" +
-            "{enabled:\(enabled ? "true" : "false"),speed:\(speed)," +
-            "hideChat:\(hideChat ? "true" : "false")}) : 'no-handler'"
+            "{enabled:\(enabled ? "true" : "false"),speed:\(nightmareSpeed)," +
+            "hideChat:\(hideChat ? "true" : "false")," +
+            "uiSpeedEnabled:\(uiSpeedEnabled ? "true" : "false"),uiSpeed:\(uiSpeed)}) : 'no-handler'"
     }
 
     /// 只读诊断：当前页面侧加强状态。
@@ -119,6 +157,17 @@ public enum GameEnhancementScript {
           const CHAT_SLOW_SCAN_EVERY = 8;
           // 遍历上限，防病态场景把主线程拖住。
           const CHAT_WALK_LIMIT = 4000;
+
+          // UI 加速（引擎全局时间倍率）——与官方 APK 运行时同机制，见文件头 ③。
+          const MIN_UI_SPEED = 1;
+          const MAX_UI_SPEED = 10;
+          const UI_SPEED_STEP = 0.5;
+          const DEFAULT_UI_SPEED = 3;
+          // 引擎（cc.director）在文档起点还不存在：20ms 一探，最多 1500 次 ≈ 30s。
+          const UI_BOOT_MS = 20;
+          const UI_BOOT_MAX = 1500;
+          // 保活节拍：游戏自己或别的脚本随时可能把 timescale 改回去。
+          const UI_KEEPER_MS = 100;
 
           const state = {
             running: false,
@@ -157,6 +206,23 @@ public enum GameEnhancementScript {
             const parsed = parseInt(value, 10);
             if (!isFinite(parsed)) return DEFAULT_SPEED;
             return Math.max(MIN_SPEED, Math.min(MAX_SPEED, parsed));
+          };
+
+          // ── UI 加速：状态 ──
+          // 与十殿加速 / 聊天显隐三者互不影响，各自一份状态。
+          //   scheduler = 当前接管的 cc.Scheduler 实例
+          //   original  = 首次接管前的倍率（关闭时还原；换实例就重新记）
+          //   wrapped   = 已挂上我们 update 包装的那个 scheduler
+          const ui = {
+            enabled: false,
+            speed: DEFAULT_UI_SPEED,
+            scheduler: null,
+            original: null,
+            wrapped: null,
+            bootTimer: 0,
+            bootTries: 0,
+            keeper: 0,
+            note: 'idle'
           };
 
           // 游戏自己的跨 bundle 模块注册表：只读，绝不包装（包装会断掉
@@ -969,6 +1035,177 @@ public enum GameEnhancementScript {
             return status();
           };
 
+          // ── UI 加速：实现 ──
+          // 取引擎的全局调度器。`cc.director` 可能还没建起来（文档起点 / 引擎未加载），
+          // 拿到 null 就是「等下一拍再试」，不是错误。
+          const uiScheduler = () => {
+            try {
+              const director = window.cc && window.cc.director;
+              if (!director) return null;
+              if (typeof director.getScheduler === 'function') {
+                const scheduler = director.getScheduler();
+                if (scheduler) return scheduler;
+              }
+              return director._scheduler || null;
+            } catch (error) {}
+            return null;
+          };
+
+          const clampUISpeed = (value) => {
+            const parsed = Number(value);
+            if (!isFinite(parsed)) return DEFAULT_UI_SPEED;
+            const stepped = Math.round(parsed / UI_SPEED_STEP) * UI_SPEED_STEP;
+            return Math.max(MIN_UI_SPEED, Math.min(MAX_UI_SPEED, stepped));
+          };
+
+          // 记下**接管前**的原始倍率（关闭时还原用）。已经记过就不覆盖；
+          // 换过 scheduler 实例（引擎重建）时由 uiReassert 清空后重新记。
+          const uiCaptureOriginal = (scheduler) => {
+            if (ui.original !== null || !scheduler) return;
+            let current = NaN;
+            try {
+              current = typeof scheduler.getTimeScale === 'function'
+                ? Number(scheduler.getTimeScale())
+                : Number(scheduler._timeScale);
+            } catch (error) {}
+            ui.original = isFinite(current) ? current : 1;
+          };
+
+          // 把 timescale 顶回目标值。每帧（update 包装）与每 100ms（保活）各调一次，
+          // 代价只是两次属性读——命中目标就直接返回，不做无谓写入。
+          const uiReassert = (scheduler) => {
+            if (!ui.enabled) return;
+            const target = scheduler || uiScheduler();
+            if (!target) { ui.note = 'ui-waiting-engine'; return; }
+            if (ui.scheduler !== target) {
+              // 引擎换了实例：原始倍率要按新实例重新记（旧的那份已经没意义）。
+              ui.scheduler = target;
+              ui.original = null;
+            }
+            uiCaptureOriginal(target);
+            try {
+              if (typeof target.getTimeScale === 'function' &&
+                  Number(target.getTimeScale()) === ui.speed) {
+                if (ui.note !== 'ui-running') ui.note = 'ui-running';
+                return;
+              }
+              if (typeof target.setTimeScale === 'function') target.setTimeScale(ui.speed);
+              else target._timeScale = ui.speed;
+              ui.note = 'ui-running';
+            } catch (error) {
+              ui.note = 'ui-set-failed';
+            }
+          };
+
+          // 包一层 scheduler.update：游戏若在别处把倍率改回去，下一帧就顶回来。
+          // 用属性标记认自己包的那一层，解包时只认标记，绝不误摘别人的包装。
+          const uiWrapUpdate = () => {
+            const scheduler = ui.scheduler || uiScheduler();
+            if (!scheduler || typeof scheduler.update !== 'function') return false;
+            if (ui.wrapped === scheduler) return true;
+            if (scheduler.update.__lobbyUISpeedWrapped) { ui.wrapped = scheduler; return true; }
+            const originalUpdate = scheduler.update;
+            const wrapped = function () {
+              if (ui.enabled) uiReassert(this);
+              return originalUpdate.apply(this, arguments);
+            };
+            wrapped.__lobbyUISpeedWrapped = true;
+            wrapped.__lobbyUISpeedOriginal = originalUpdate;
+            try { scheduler.update = wrapped; } catch (error) { return false; }
+            ui.wrapped = scheduler;
+            return true;
+          };
+
+          const uiUnwrapUpdate = () => {
+            const scheduler = ui.wrapped;
+            ui.wrapped = null;
+            if (!scheduler) return;
+            try {
+              const current = scheduler.update;
+              if (current && current.__lobbyUISpeedWrapped &&
+                  typeof current.__lobbyUISpeedOriginal === 'function') {
+                scheduler.update = current.__lobbyUISpeedOriginal;
+              }
+            } catch (error) {}
+          };
+
+          const uiStopTimers = () => {
+            if (ui.keeper) { clearInterval(ui.keeper); ui.keeper = 0; }
+            if (ui.bootTimer) { clearInterval(ui.bootTimer); ui.bootTimer = 0; }
+          };
+
+          const uiStartKeeper = () => {
+            if (ui.keeper) return;
+            ui.keeper = setInterval(() => {
+              if (!ui.enabled) { uiStopTimers(); return; }
+              uiReassert(null);
+              uiWrapUpdate();
+            }, UI_KEEPER_MS);
+          };
+
+          // 引擎在就立刻接管；不在就走引导轮询等到它出现（文档起点注入是常态）。
+          // 注意：定时器本身在页面隐藏时会被 WebKit 降频，但那时引擎也停了，
+          // 回到前台第一次保活就会把倍率顶回来，所以不需要另挂 visibilitychange。
+          const uiStart = () => {
+            if (!ui.enabled) return;
+            if (uiScheduler()) {
+              uiReassert(null);
+              uiWrapUpdate();
+              uiStartKeeper();
+              return;
+            }
+            ui.note = 'ui-waiting-engine';
+            if (ui.bootTimer) return;
+            ui.bootTries = 0;
+            ui.bootTimer = setInterval(() => {
+              ui.bootTries += 1;
+              if (!ui.enabled) { uiStopTimers(); return; }
+              if (!uiScheduler()) {
+                if (ui.bootTries >= UI_BOOT_MAX) {
+                  uiStopTimers();
+                  ui.note = 'ui-no-engine';
+                }
+                return;
+              }
+              uiStopTimers();
+              uiReassert(null);
+              uiWrapUpdate();
+              uiStartKeeper();
+            }, UI_BOOT_MS);
+          };
+
+          const uiStop = () => {
+            uiStopTimers();
+            uiUnwrapUpdate();
+            // 还原：只把**我们**写上去的倍率退回接管前的值（原始值没记到就退回 1，
+            // 也就是引擎默认——比留在高速上安全）。
+            const scheduler = ui.scheduler;
+            const original = ui.original === null ? 1 : ui.original;
+            if (scheduler) {
+              try {
+                if (typeof scheduler.setTimeScale === 'function') scheduler.setTimeScale(original);
+                else scheduler._timeScale = original;
+              } catch (error) {}
+            }
+            ui.scheduler = null;
+            ui.original = null;
+            if (ui.note !== 'ui-stopped') ui.note = 'ui-stopped';
+          };
+
+          // 开关 + 倍率（幂等）。关掉等价于还原；开着改倍率立刻生效。
+          const setUISpeed = (enabled, speed) => {
+            ui.speed = clampUISpeed(speed);
+            if (enabled !== true) {
+              const hadState = ui.enabled || ui.scheduler || ui.wrapped || ui.keeper || ui.bootTimer;
+              ui.enabled = false;
+              if (hadState) uiStop();
+              return status();
+            }
+            ui.enabled = true;
+            uiStart();
+            return status();
+          };
+
           // 「开着隐藏但一个面板都没命中」时自动附上结构探针——一次截图就能定位。
           const status = () => {
             let text = 'v=' + AGENT_VERSION +
@@ -982,6 +1219,12 @@ public enum GameEnhancementScript {
               ' root=' + chat.root +
               ' mh=' + chat.classHooks +
               ' vg=' + chat.visibleGuards +
+              // UI 加速：ui=0/1 开关、后跟倍率；sched = 是否已拿到调度器（0 说明引擎还没起来）、
+              // wrap = 是否已包装 update；uiNote 说明当前卡在哪一步。
+              ' ui=' + (ui.enabled ? 1 : 0) + 'x' + ui.speed +
+              ' sched=' + (ui.scheduler ? 1 : 0) +
+              ' wrap=' + (ui.wrapped ? 1 : 0) +
+              ' uiNote=' + ui.note +
               ' note=' + state.note + ' chatNote=' + chat.note;
             if (chat.hidden && !chat.shells.length) {
               text += ' ' + probeChat();
@@ -996,6 +1239,8 @@ public enum GameEnhancementScript {
 
             // 聊天窗口显隐与十殿加速互相独立：先处理，免得被下面的早退吃掉。
             setChatHidden(!!next.hideChat);
+            // UI 加速同样独立（改的是引擎全局倍率，与具体面板无关）。
+            setUISpeed(next.uiSpeedEnabled, next.uiSpeed);
 
             if (enabled === state.running) {
               // 只改倍率：钩子已经在了，现场重扫一次面板即可（没面板时
@@ -1028,6 +1273,7 @@ public enum GameEnhancementScript {
             apply: apply,
             stop: () => { state.running = false; stop(); state.note = 'stopped'; return status(); },
             chat: setChatHidden,
+            ui: setUISpeed,
             probe: probeChat,
             status: status
           };

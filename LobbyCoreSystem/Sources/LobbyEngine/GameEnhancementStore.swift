@@ -11,6 +11,11 @@ public struct GameEnhancementSettings: Equatable, Sendable {
     /// 十殿加速倍率（始终落在 `multiplierRange` 内）。
     public var nightmareSpeedMultiplier: Int
 
+    /// UI 加速开关（引擎全局时间倍率）。
+    public var uiSpeedEnabled: Bool
+    /// UI 加速倍率（始终落在 `uiSpeedRange` 内、且为 0.5 的整数倍）。
+    public var uiSpeedMultiplier: Double
+
     /// 隐藏游戏内聊天窗口（消息列表 + 输入区整块）。默认 false = 原样显示。
     public var chatPanelHidden: Bool
 
@@ -21,11 +26,26 @@ public struct GameEnhancementSettings: Equatable, Sendable {
     /// 面板上的快捷倍率。
     public static let quickMultipliers = [10, 50, 100, 500]
 
+    /// UI 加速默认倍率。取 3 而不是 1——1 等于没开，参考实现（官方 APK 运行时
+    /// 的 `engineGlobalSpeed`）默认档就是 3。
+    public static let defaultUISpeedMultiplier: Double = 3
+    /// UI 加速合法区间。上界压到 10（参考实现允许到 50）：倍率越高，单个 tick 的
+    /// `dt` 越大，越容易把补间/物理推成跳帧；10 已经足够「明显变快」。
+    public static let uiSpeedRange: ClosedRange<Double> = 1...10
+    /// 倍率步进。半档起步，避免用户输入出 2.37 这种没法复现的值。
+    public static let uiSpeedStep: Double = 0.5
+    /// 面板上的快捷档。
+    public static let quickUISpeeds: [Double] = [1.5, 2, 3, 5]
+
     public init(nightmareSpeedEnabled: Bool,
                 nightmareSpeedMultiplier: Int,
+                uiSpeedEnabled: Bool = false,
+                uiSpeedMultiplier: Double = GameEnhancementSettings.defaultUISpeedMultiplier,
                 chatPanelHidden: Bool = false) {
         self.nightmareSpeedEnabled = nightmareSpeedEnabled
         self.nightmareSpeedMultiplier = Self.clamp(multiplier: nightmareSpeedMultiplier)
+        self.uiSpeedEnabled = uiSpeedEnabled
+        self.uiSpeedMultiplier = Self.clamp(speed: uiSpeedMultiplier)
         self.chatPanelHidden = chatPanelHidden
     }
 
@@ -33,6 +53,20 @@ public struct GameEnhancementSettings: Equatable, Sendable {
     /// 免得用户把输入框清成 0 之后看到倍率「跳回 100」而困惑）。
     public static func clamp(multiplier: Int) -> Int {
         min(max(multiplier, multiplierRange.lowerBound), multiplierRange.upperBound)
+    }
+
+    /// 钳制 UI 加速倍率：先量化到 0.5 步进，再收进闭区间。
+    /// NaN / 无穷（输入框里粘进来的脏值）一律退回默认档。
+    public static func clamp(speed: Double) -> Double {
+        guard speed.isFinite else { return defaultUISpeedMultiplier }
+        let stepped = (speed / uiSpeedStep).rounded() * uiSpeedStep
+        return min(max(stepped, uiSpeedRange.lowerBound), uiSpeedRange.upperBound)
+    }
+
+    /// 倍率文案：整数档显示 `x3`，半档显示 `x1.5`。
+    public static func describe(speed: Double) -> String {
+        let value = clamp(speed: speed)
+        return value == value.rounded() ? "x\(Int(value))" : "x\(value)"
     }
 }
 
@@ -67,10 +101,28 @@ public final class GameEnhancementStore: ObservableObject {
         }
     }
 
+    /// UI 加速开关（引擎全局时间倍率）。默认关闭。
+    @Published public var uiSpeedEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(uiSpeedEnabled,
+                                      forKey: LobbyConfiguration.PreferenceKey.enhanceUISpeedEnabled)
+        }
+    }
+
+    /// UI 加速倍率。越界 / 非 0.5 步进的值由调用方 / `settings` 读取路径钳制。
+    @Published public var uiSpeedMultiplier: Double {
+        didSet {
+            UserDefaults.standard.set(uiSpeedMultiplier,
+                                      forKey: LobbyConfiguration.PreferenceKey.enhanceUISpeedMultiplier)
+        }
+    }
+
     /// 下发用的快照（倍率在这里兜底钳制，页面永远拿不到越界值）。
     public var settings: GameEnhancementSettings {
         GameEnhancementSettings(nightmareSpeedEnabled: nightmareSpeedEnabled,
                                 nightmareSpeedMultiplier: nightmareSpeedMultiplier,
+                                uiSpeedEnabled: uiSpeedEnabled,
+                                uiSpeedMultiplier: uiSpeedMultiplier,
                                 chatPanelHidden: chatPanelHidden)
     }
 
@@ -102,5 +154,14 @@ public final class GameEnhancementStore: ObservableObject {
             multiplier: stored ?? GameEnhancementSettings.defaultMultiplier)
         chatPanelHidden = defaults.bool(
             forKey: LobbyConfiguration.PreferenceKey.enhanceChatHidden)
+        uiSpeedEnabled = defaults.bool(
+            forKey: LobbyConfiguration.PreferenceKey.enhanceUISpeedEnabled)
+        // Double 缺省键读出来是 0，直接当倍率用会被钳到 1（等于没开）——
+        // 必须按「键存不存在」判，缺省才落到默认档 3（`UserDefaults.integer`
+        // 缺省返回 0 的老坑，别在新键上重演）。
+        let storedSpeed = defaults.object(
+            forKey: LobbyConfiguration.PreferenceKey.enhanceUISpeedMultiplier) as? Double
+        uiSpeedMultiplier = GameEnhancementSettings.clamp(
+            speed: storedSpeed ?? GameEnhancementSettings.defaultUISpeedMultiplier)
     }
 }

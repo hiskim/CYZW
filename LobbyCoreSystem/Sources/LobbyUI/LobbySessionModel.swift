@@ -712,7 +712,7 @@ public final class LobbySessionModel: ObservableObject {
         }
     }
 
-    // MARK: - 游戏加强下发（十殿加速 / 聊天窗口显隐）
+    // MARK: - 游戏加强下发（十殿加速 / UI 加速 / 聊天窗口显隐）
 
     /// 十殿加速开关变更：落盘（store 内 didSet）+ 下发全部存活实例。
     /// 唯一写入路径——不让 UI 直接改 store，避免「改了值但没下发」的静默状态。
@@ -730,6 +730,21 @@ public final class LobbySessionModel: ObservableObject {
         broadcastEnhancements()
     }
 
+    /// UI 加速开关变更：落盘 + 下发全部存活实例。
+    public func setUISpeedEnabled(_ enabled: Bool) {
+        guard enhancements.uiSpeedEnabled != enabled else { return }
+        enhancements.uiSpeedEnabled = enabled
+        broadcastEnhancements()
+    }
+
+    /// UI 加速倍率变更（钳制到 1...10、0.5 步进）：落盘 + 下发全部存活实例。
+    public func setUISpeedMultiplier(_ multiplier: Double) {
+        let clamped = GameEnhancementSettings.clamp(speed: multiplier)
+        guard enhancements.uiSpeedMultiplier != clamped else { return }
+        enhancements.uiSpeedMultiplier = clamped
+        broadcastEnhancements()
+    }
+
     /// 聊天窗口显隐变更：落盘 + 下发全部存活实例。
     /// 关掉（显示）时页面侧会把当初被压住的面板放回来，不需要重载实例。
     public func setChatPanelHidden(_ hidden: Bool) {
@@ -743,9 +758,11 @@ public final class LobbySessionModel: ObservableObject {
     public func broadcastEnhancements() {
         let surfaces = pool.allSurfaces
         let settings = enhancements.settings
-        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld chat=%@): %ld instance(s)",
+        LobbyLog.info("[session] enhancement broadcast(nightmareSpeed=%@ x%ld uiSpeed=%@ %@ chat=%@): %ld instance(s)",
                       settings.nightmareSpeedEnabled ? "on" : "off",
                       settings.nightmareSpeedMultiplier,
+                      settings.uiSpeedEnabled ? "on" : "off",
+                      GameEnhancementSettings.describe(speed: settings.uiSpeedMultiplier),
                       settings.chatPanelHidden ? "hidden" : "shown",
                       surfaces.count)
         for instance in surfaces {

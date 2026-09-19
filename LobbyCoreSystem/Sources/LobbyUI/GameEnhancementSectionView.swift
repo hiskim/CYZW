@@ -3,13 +3,16 @@ import LobbyEngine
 
 /// 「游戏增强」独立分节页。
 ///
-/// 从设置页抽出的原因：增强类功能会持续扩展（十殿加速、聊天窗口、…），
+/// 从设置页抽出的原因：增强类功能会持续扩展（十殿加速、UI 加速、聊天窗口、…），
 /// 与设置页的「全局配置」语义（画质/帧率/存储/CDN）不同类，独立成 tab
 /// 后每项功能一张顶层卡，有独立的扩展空间。
 ///
-/// 现有两项：
+/// 现有三项：
 /// - **十殿加速**：改写 `NightmareBattlePanel.DEFAULT_TIMESCALE`，让十殿试炼的战斗
 ///   动画整体加速（只改画面节奏，不改战斗结算）。
+/// - **UI 加速**：改引擎全局时间倍率（`cc.director.getScheduler()` 的 `_timeScale`），
+///   面板过渡 / FairyGUI 补间 / cc 动作整体加快；机制与官方 APK 运行时的
+///   `engineGlobalSpeed` 一致，细节见 `GameEnhancementScript` 文件头 ③。
 /// - **聊天窗口**：把游戏内的聊天面板（消息列表 + 输入区）整块压成不可见；
 ///   切回「显示」即原地还原，不需要重载实例。
 ///
@@ -25,11 +28,15 @@ struct EnhancementsSidebarView: View {
     @ObservedObject private var enhancements: GameEnhancementStore
     /// 倍率输入框的编辑缓冲：输入即钳制并回写，避免出现「显示 9999、实际 1000」。
     @State private var multiplierDraft = ""
+    /// UI 加速倍率的编辑缓冲（同上，值是 Double、0.5 步进）。
+    @State private var uiSpeedDraft = ""
 
     /// 十殿主题色（与脚本侧 `#f59e0b` 建议提示同源）。
     private static let nightmareAccent = Color(lobbyRGB: 0xF59E0B)
     /// 聊天窗口主题色（取自大厅冷蓝白氛围里的青相位）。
     private static let chatAccent = Color(lobbyRGB: 0x22D3EE)
+    /// UI 加速主题色（紫相位：与十殿的橙、聊天的青互不撞色）。
+    private static let uiSpeedAccent = Color(lobbyRGB: 0xA78BFA)
 
     init(session: LobbySessionModel) {
         self.session = session
@@ -45,21 +52,34 @@ struct EnhancementsSidebarView: View {
                     .foregroundStyle(.secondary)
 
                 nightmareCard
+                uiSpeedCard
                 chatCard
 
                 // 页面侧回执：结果别只留在日志里——实测「没生效」时看一眼就能定性
                 // （no-handler = 代理没进页面；chat=1/0 = 没找到面板；root=no-root/scene 说明走的哪条路径）。
-                if (isNightmareOn || isChatHidden), let report = enhancements.lastPageReport {
+                if (isNightmareOn || isChatHidden || isUISpeedOn), let report = enhancements.lastPageReport {
                     pageReportLine(report)
                 }
             }
             .padding(.vertical, 2)
         }
-        .onAppear { multiplierDraft = String(enhancements.nightmareSpeedMultiplier) }
+        .onAppear {
+            multiplierDraft = String(enhancements.nightmareSpeedMultiplier)
+            uiSpeedDraft = Self.uiSpeedText(enhancements.uiSpeedMultiplier)
+        }
         .onChange(of: enhancements.nightmareSpeedMultiplier) { _, newValue in
             let text = String(newValue)
             if multiplierDraft != text { multiplierDraft = text }
         }
+        .onChange(of: enhancements.uiSpeedMultiplier) { _, newValue in
+            // 与 store 同步（外部改档 / 快捷档点击后回正输入框）。
+            if uiSpeedDraft != Self.uiSpeedText(newValue) { uiSpeedDraft = Self.uiSpeedText(newValue) }
+        }
+    }
+
+    /// 倍率 → 输入框文本：整数档不带小数点（`3` 而不是 `3.0`）。
+    private static func uiSpeedText(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(value)
     }
 
     /// 原样打印页面回执，可选中复制。
@@ -105,12 +125,39 @@ struct EnhancementsSidebarView: View {
     }
 
     private var multiplierRow: some View {
+        speedRow(draft: multiplierBinding,
+                 placeholder: "100",
+                 recommended: "推荐 100",
+                 quickOptions: GameEnhancementSettings.quickMultipliers.map {
+                     (value: Double($0), label: "x\($0)")
+                 },
+                 isSelected: { enhancements.nightmareSpeedMultiplier == Int($0) },
+                 accent: Self.nightmareAccent,
+                 onQuick: { value in
+                     session.setNightmareSpeedMultiplier(Int(value))
+                     multiplierDraft = String(Int(value))
+                 },
+                 onSubmit: { multiplierDraft = String(enhancements.nightmareSpeedMultiplier) })
+    }
+
+    /// 倍率行（十殿加速 / UI 加速共用）：文本框 + 快捷档胶囊。
+    ///
+    /// 两处样式**必须同源**——各自复制一份的话，改圆角 / 宽度时必漏掉一个；
+    /// 差异只在值域、步进与文案，靠参数注入。
+    private func speedRow(draft: Binding<String>,
+                          placeholder: String,
+                          recommended: String,
+                          quickOptions: [(value: Double, label: String)],
+                          isSelected: @escaping (Double) -> Bool,
+                          accent: Color,
+                          onQuick: @escaping (Double) -> Void,
+                          onSubmit: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("倍率")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                TextField("100", text: multiplierBinding)
+                TextField(placeholder, text: draft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .multilineTextAlignment(.center)
@@ -124,49 +171,50 @@ struct EnhancementsSidebarView: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                     )
-                    .onSubmit { multiplierDraft = String(enhancements.nightmareSpeedMultiplier) }
+                    .onSubmit(onSubmit)
                 Text("倍")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
-                Text("推荐 100")
+                Text(recommended)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
 
             HStack(spacing: 4) {
-                ForEach(GameEnhancementSettings.quickMultipliers, id: \.self) { value in
-                    quickMultiplierButton(value)
+                ForEach(quickOptions, id: \.value) { option in
+                    quickSpeedButton(option.label,
+                                     selected: isSelected(option.value),
+                                     accent: accent) {
+                        onQuick(option.value)
+                    }
                 }
             }
         }
     }
 
-    private func quickMultiplierButton(_ value: Int) -> some View {
-        let isSelected = enhancements.nightmareSpeedMultiplier == value
-        return Button {
-            session.setNightmareSpeedMultiplier(value)
-            multiplierDraft = String(value)
-        } label: {
-            Text("x\(value)")
+    private func quickSpeedButton(_ label: String, selected: Bool, accent: Color,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.75))
+                .foregroundStyle(selected ? Color.white : Color.white.opacity(0.75))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Self.nightmareAccent.opacity(0.55) : Color.white.opacity(0.07))
+                        .fill(selected ? accent.opacity(0.55) : Color.white.opacity(0.07))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(isSelected ? Self.nightmareAccent.opacity(0.9) : Color.white.opacity(0.10),
+                        .strokeBorder(selected ? accent.opacity(0.9) : Color.white.opacity(0.10),
                                       lineWidth: 1)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
         }
         .buttonStyle(.plain)
         .lobbyHoverHighlight(cornerRadius: 5, intensity: 0.12)
-        .help("把倍率设为 x\(value)")
+        .help("把倍率设为 \(label)")
     }
 
     /// 输入即钳制：只收数字、最多 4 位，越界立刻回写钳制值。
@@ -194,6 +242,94 @@ struct EnhancementsSidebarView: View {
         let live = session.runningAccountIDs.count
         let speed = "x\(enhancements.nightmareSpeedMultiplier)"
         guard isNightmareOn else { return "未开启 · 保持原始战斗节奏" }
+        return live > 0
+            ? "已开启 \(speed) · 已下发 \(live) 个实例"
+            : "已开启 \(speed) · 实例启动后自动生效"
+    }
+
+    // MARK: - UI 加速（引擎全局时间倍率）
+
+    private var isUISpeedOn: Bool { enhancements.uiSpeedEnabled }
+
+    /// 与十殿加速同形状（开关 + 倍率 + 快捷档 + 状态行），但改的是**引擎全局**时间倍率，
+    /// 所以没有「面板没打开」这类前置：开关一开，所有界面的补间 / 过渡都变快。
+    private var uiSpeedCard: some View {
+        featureCard(accent: Self.uiSpeedAccent, isActive: isUISpeedOn) {
+            rowHeader(icon: "⚡", title: "UI 加速", subtitle: "全局时间倍率——面板过渡 / 补间动效整体加快") {
+                Toggle("", isOn: Binding(
+                    get: { isUISpeedOn },
+                    set: { session.setUISpeedEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(Self.uiSpeedAccent)
+                .help(isUISpeedOn ? "关闭并还原引擎原始节奏" : "开启 UI 加速")
+            }
+
+            if isUISpeedOn {
+                uiSpeedRow
+                statusLine(accent: Self.uiSpeedAccent, isActive: true, text: uiSpeedStatusText)
+            }
+        }
+    }
+
+    private var uiSpeedRow: some View {
+        speedRow(draft: uiSpeedBinding,
+                 placeholder: "3",
+                 recommended: "推荐 3",
+                 quickOptions: GameEnhancementSettings.quickUISpeeds.map {
+                     (value: $0, label: GameEnhancementSettings.describe(speed: $0))
+                 },
+                 isSelected: { abs(enhancements.uiSpeedMultiplier - $0) < 0.001 },
+                 accent: Self.uiSpeedAccent,
+                 onQuick: { value in
+                     session.setUISpeedMultiplier(value)
+                     uiSpeedDraft = Self.uiSpeedText(value)
+                 },
+                 onSubmit: { uiSpeedDraft = Self.uiSpeedText(enhancements.uiSpeedMultiplier) })
+    }
+
+    /// 输入即钳制：只收数字与一个小数点、最多 4 字符；越界立刻回写钳制值。
+    ///
+    /// ⚠️ 与十殿（纯整数）的差别：**结尾是小数点时不写档**——否则输入「1.5」的
+    /// 中间态 `1.` 会被解析成 1 并回写掉小数点，用户永远打不出小数。
+    private var uiSpeedBinding: Binding<String> {
+        Binding(
+            get: { uiSpeedDraft },
+            set: { newValue in
+                let sanitized = Self.sanitizeSpeedInput(newValue)
+                uiSpeedDraft = sanitized
+                guard !sanitized.isEmpty, sanitized != ".",
+                      !sanitized.hasSuffix("."),
+                      let parsed = Double(sanitized) else { return }
+                session.setUISpeedMultiplier(parsed)
+                let clamped = Self.uiSpeedText(GameEnhancementSettings.clamp(speed: parsed))
+                if clamped != sanitized { uiSpeedDraft = clamped }
+            }
+        )
+    }
+
+    /// 输入过滤：只留数字与第一个小数点，最多 4 个字符（`1.75` 封顶）。
+    private static func sanitizeSpeedInput(_ raw: String) -> String {
+        var text = ""
+        var dotSeen = false
+        for character in raw where character.isNumber || character == "." {
+            if character == "." {
+                if dotSeen { continue }
+                dotSeen = true
+            }
+            text.append(character)
+            if text.count >= 4 { break }
+        }
+        return text
+    }
+
+    /// 状态文案（口径与十殿一致：存活实例数取 @Published 的 `runningAccountIDs`）。
+    private var uiSpeedStatusText: String {
+        let live = session.runningAccountIDs.count
+        let speed = GameEnhancementSettings.describe(speed: enhancements.uiSpeedMultiplier)
+        guard isUISpeedOn else { return "未开启 · 保持引擎原始节奏" }
         return live > 0
             ? "已开启 \(speed) · 已下发 \(live) 个实例"
             : "已开启 \(speed) · 实例启动后自动生效"
