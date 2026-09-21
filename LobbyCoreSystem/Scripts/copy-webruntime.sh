@@ -23,6 +23,8 @@
 #   - LobbyDomain/LobbyConfiguration.webRuntimeRoot
 #   - LobbyEngine/ScriptStore.scriptRuntimeSource()（直接读 src/ios2-script-runtime.js）
 #   - 页面侧硬编码：ios-cocos/cocos-project/src/ios2-web-index.html（<script> 顺序）
+#   - **Cocos 引擎的来源**：见下面 ① 里的引擎选择块。换引擎只需改那一处选择，
+#     目标路径恒为 src/ios2-web-cocos2d.js，别名与 html 都不用动。
 #
 set -eu
 
@@ -67,7 +69,52 @@ copy() {
 # ① 入口链，顺序与 ios2-web-index.html 的 <script> 标签一致
 copy "src/ios2-web-index.html"
 copy "src/settings.b2e22.js"        # → /settings.js      别名
-copy "src/ios2-web-cocos2d.js"      # → /cocos2d.js       别名（Cocos Web 引擎）
+
+# ── Cocos Web 引擎：按构建配置选一份，统一拷成 src/ios2-web-cocos2d.js ────────
+# 为什么统一成同一个目标路径：`GameResourceSchemeHandler.localPathAliases` 把
+# `/cocos2d.js` 映射到 `src/ios2-web-cocos2d.js`，`ios2-web-index.html` 也写死了
+# 这个 URL。**换引擎只换"拷哪一个源文件"，页面与别名一个字都不用改。**
+#
+# 仓库布局（`ios-cocos/cocos-project/src/`）——**规范路径上放的就是实际生效的那一份**，
+# 读文件的人不会读到一份"看起来是引擎、其实不跑"的东西：
+#
+#   src/ios2-web-cocos2d.js                      ← 项目自带引擎槽位 = **2.4.15 未压缩**
+#                                                   （Debug 用它；与官方 cocos2d-js.js 逐字节一致）
+#   src/vendor/cocos2d-2.4.15/cocos2d-js-min.js  ← Release/Profile 用（2.03 MB）
+#   src/vendor/cocos2d-2.4.9/ios2-web-cocos2d.js ← IOS2_ENGINE=legacy 的回退门（旧的 2.4.9）
+#
+# 默认选择：Debug → 规范路径那份；Release|Profile → 2.4.15 min。
+# 换引擎（升级/回退）：把新引擎放到规范路径，或改下面的映射；旧的别删，留着当回退门。
+#
+# 来源：官方 Cocos Creator **2.4.15** 浏览器(H5)引擎；443 个模块（未压缩版 444），
+#       与旧的 2.4.9 引擎模块集一致，不是裁剪版；全文无 `fsUtils` 引用 ⇒ 非 JSB 版。
+#
+# ⚠️ 每次换引擎都必须重新核对这一条（失效是**静默**的，不报错）：
+#    `cc.Texture2D.prototype._nativeAsset` 必须仍是**带 setter 的 accessor**
+#    （源码里是 `properties: { _nativeAsset: { get, set, override: true } }`）。
+#    `ios2-web-boot.js` 的 `installASTCTextureSupport` 会沿原型链找这个 accessor，
+#    找不到就**只发一条 `texture-patch-missing` 然后返回** —— ASTC 解析/上传整条链
+#    随之失效：不报错、贴图全空。启动后 `grep texture-patch` 应看到 `ready`。
+#
+# ⚠️ 另注：`ios-cocos/scripts/prepare_ios2*.sh` 里有一句给引擎打 wx 兼容补丁的
+#    `perl -0pi`。**它已经是死代码**——三份引擎里都不存在那个 `wx` 引用了
+#    （上游早就去掉了 WeChat 依赖），2.4.15 同样干净。这里不动那两个脚本，
+#    只记一笔：它不会再改变引擎内容。
+ENGINE_CANONICAL="src/ios2-web-cocos2d.js"                    # = 2.4.15 未压缩
+ENGINE_2415_MIN="src/vendor/cocos2d-2.4.15/cocos2d-js-min.js"  # Release/Profile
+ENGINE_LEGACY="src/vendor/cocos2d-2.4.9/ios2-web-cocos2d.js"   # 回退门
+case "${IOS2_ENGINE:-auto}" in
+    legacy) ENGINE_SRC="$ENGINE_LEGACY" ;;
+    2415|auto|"")
+        case "${CONFIGURATION:-Debug}" in
+            Release|Profile) ENGINE_SRC="$ENGINE_2415_MIN" ;;
+            *)               ENGINE_SRC="$ENGINE_CANONICAL" ;;
+        esac ;;
+    *) fail "IOS2_ENGINE 只认 legacy / 2415（收到「${IOS2_ENGINE}」）" ;;
+esac
+copy "$ENGINE_SRC" "src/ios2-web-cocos2d.js"  # → /cocos2d.js 别名（Cocos Web 引擎）
+echo "note: [Copy WebRuntime] Cocos 引擎 = $ENGINE_SRC （CONFIGURATION=${CONFIGURATION:-Debug}, IOS2_ENGINE=${IOS2_ENGINE:-auto}）"
+
 copy "jsb-adapter/game-defines.js"  # → /game-defines.js  别名
 copy "src/ios2-web-boot.js"         # → /boot.js          别名（引导 + 纹理/启动补丁）
 

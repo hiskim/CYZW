@@ -164,8 +164,10 @@ public actor CDNAssetStore: ResourceProviding {
 
     /// 返回缓存数据或发起（合并后的）下载。
     /// - Parameter source: "game" = 实例在途请求（高优先级、短超时）；"prefetch" = 预取。
-    public func data(for remoteURL: URL, source: String = "prefetch") async throws -> Data {
+    /// - Parameter requester: 发起方账号名，只进日志（见 `ResourceProviding.data` 的说明）。
+    public func data(for remoteURL: URL, source: String, requester: String? = nil) async throws -> Data {
         let key = remoteURL.absoluteString
+        let by = requester ?? "-"
         if let expiry = missingURLs[key] {
             if expiry > Date() {
                 // 用 warn 而不是 debug：默认档位是 info，debug 根本不会输出——
@@ -184,13 +186,16 @@ public actor CDNAssetStore: ResourceProviding {
             return cached
         }
         if let download = downloads[key] {
-            LobbyLog.verbose("[cdn] waiting for shared download: %@", key)
+            // 这一行是「N 个实例在等同一份下载」的直接证据：同一 key 会出现多条、
+            // 每条的 by= 都不同。哪个账号在这一列上出现得最多、出现得最晚，
+            // 哪个账号的这块画面就补得最晚。
+            LobbyLog.verbose("[cdn] %@ waiting for shared download: %@ (by=%@)", source, key, by)
             let data = try await download.value
             Self.contentCache.setObject(data as NSData, forKey: key as NSString, cost: data.count)
             return data
         }
 
-        LobbyLog.verbose("[cdn] %@ network download started: %@", source, key)
+        LobbyLog.verbose("[cdn] %@ network download started: %@ (by=%@)", source, key, by)
         // 游戏内的请求不能按后台预取对待：`.utility` 会被排在用户等待的工作之后，
         // 多开时十来个实例同时拉资源，这类任务容易被饿死——而它卡住的是所有
         // `await downloads[key]` 的实例。超时同理：预取 90s 没问题，游戏内请求
@@ -218,7 +223,8 @@ public actor CDNAssetStore: ResourceProviding {
             try store(data: data, for: key)
             Self.contentCache.setObject(data as NSData, forKey: key as NSString, cost: data.count)
             downloads[key] = nil
-            LobbyLog.verbose("[cdn] %@ download completed and cached: %@ (%ld bytes)", source, key, data.count)
+            LobbyLog.verbose("[cdn] %@ download completed and cached: %@ (%ld bytes) (by=%@)",
+                             source, key, data.count, by)
             return data
         } catch {
             if ((error as NSError).userInfo["lobbyStatusCode"] as? Int) == 404 {
@@ -300,7 +306,7 @@ public actor CDNAssetStore: ResourceProviding {
             ]
             for url in urls {
                 do {
-                    _ = try await data(for: url)
+                    _ = try await data(for: url, source: "prefetch", requester: nil)
                 } catch {
                     // 可选 bundle 由游戏惰性下载，失败不阻断预热。
                     LobbyLog.warn("[cdn] core prefetch failed: %@ (%@)", url.absoluteString, error.localizedDescription)

@@ -72,12 +72,29 @@ public protocol ResourceProviding: Sendable {
     func latestManifest() async throws -> ResourceManifest
     /// 取资源数据：内存 → 磁盘缓存 → 合并下载。
     /// - Parameter source: "game"（实例在途请求，高优先级短超时）或 "prefetch"。
-    func data(for remoteURL: URL, source: String) async throws -> Data
+    /// - Parameter requester: 发起方账号名（bin 文件名），只进日志、不参与调度。
+    ///
+    ///   为什么要有这一列：多开时一次点击会扇出到 N 个实例，N 个实例会去要**同一批**
+    ///   URL。下载按 URL 合并成一次网络请求，但每个实例各自解析、各自上传。
+    ///   于是「这个 1.4 MB 的大贴图是谁在等、等到了没有」是全链路里唯一能把
+    ///   「某窗口画面缺了一块」钉到具体账号上的线索——缺了它，日志只能看到
+    ///   `[cdn] game network download started`，读不出到底是谁要的。
+    func data(for remoteURL: URL, source: String, requester: String?) async throws -> Data
     /// 启动预热：清单 + 核心 bundle。失败不致命（实例可惰性重试）。
     func prepareForLaunch() async -> ResourceManifest?
     /// 游戏会话开始 / 结束（预取调度参考）。async 以便 actor 实现直接满足。
     func beginGameSession() async
     func endGameSession() async
+}
+
+public extension ResourceProviding {
+    /// 便捷重载：不关心发起方（预热、测试）。
+    ///
+    /// 放在扩展里而不是协议要求上——协议要求不允许带默认参数值。
+    func data(for remoteURL: URL, source: String = "prefetch",
+              requester: String? = nil) async throws -> Data {
+        try await data(for: remoteURL, source: source, requester: requester)
+    }
 }
 
 /// 账号认证协议（实现：LobbyEngine.AccountAuthenticator）。

@@ -78,7 +78,24 @@ public final class GameResourceSchemeHandler: NSObject, WKURLSchemeHandler, @unc
     private static let localDataCache = NSCache<NSString, NSData>()
 
     private let resources: ResourceProviding
+    /// 本实例的账号名（bin 文件名）。**这个 handler 是每实例一个**（见
+    /// `GameViewportInstance.init` 的 `GameResourceSchemeHandler(resources:)`），
+    /// 所以它是「哪个窗口请求了哪个资源」最便宜、最可靠的归因依据。
+    ///
+    /// 为什么必须带上：多开时一次点击会扇出到 N 个实例，每个实例都会去请求同一批
+    /// bundle。日志里少了这一列，"是哪个窗口要了 hero_hb106、它什么时候拿到"
+    /// 就永远对不上号——而"某窗口缺块"恰恰就是这条时间线的问题。
+    private let owner: String
     private var bundleVersions: [String: String] = [:]
+    /// 按 bundle 累计的请求数 + 统计窗口起点。
+    ///
+    /// 为什么要有：日志里**看不出"一个 bundle 到底加载完整了没有"**——
+    /// `bundle URL rewritten` 只记 `index.<ver>.js` 那一条，其余资源（config / native）
+    /// 只有**失败**才会留下 `CDN error`，成功与"压根没请求"完全无法区分。
+    /// 而"进某个界面但没加载完整"恰恰就是这个问题。
+    /// 60s 汇总一条，噪音可忽略，但足以看出"某个 bundle 只请求了 1 个文件就没了"。
+    private var bundleRequestCounts: [String: Int] = [:]
+    private var bundleCountsWindowStart = Date()
 
     /// 进行中的 urlSchemeTask（主线程访问）。
     private var pending: [ObjectIdentifier: (url: String, startedAt: Date)] = [:]
@@ -100,8 +117,9 @@ public final class GameResourceSchemeHandler: NSObject, WKURLSchemeHandler, @unc
     /// 砍太短会把正常的大包请求也误杀掉。
     private static let pendingAbandonAfter: TimeInterval = 45
 
-    public init(resources: ResourceProviding) {
+    public init(resources: ResourceProviding, owner: String) {
         self.resources = resources
+        self.owner = owner.isEmpty ? "-" : owner
         super.init()
     }
 
@@ -176,6 +194,7 @@ public final class GameResourceSchemeHandler: NSObject, WKURLSchemeHandler, @unc
             fail(urlSchemeTask, code: NSURLErrorFileDoesNotExist)
             return
         }
+        noteBundleRequest(remoteURL.absoluteString)
         // 先扫一遍悬挂任务（见 pendingAbandonAfter 注释）。
         enforcePendingTimeouts()
         pending[token] = (requestURL.absoluteString, Date())
@@ -185,11 +204,12 @@ public final class GameResourceSchemeHandler: NSObject, WKURLSchemeHandler, @unc
                 return
             }
             do {
-                let data = try await self.resources.data(for: remoteURL, source: "game")
+                let data = try await self.resources.data(for: remoteURL, source: "game", requester: self.owner)
                 self.enqueueDelivery(urlSchemeTask, data: data, url: requestURL,
                                      cacheControl: Self.remoteCacheControl(for: remoteURL))
             } catch {
-                LobbyLog.error("[scheme] CDN error: %@ (%@)", remoteURL.absoluteString, error.localizedDescription)
+                LobbyLog.error("[scheme] %@ CDN error: %@ (%@)",
+                               self.owner, remoteURL.absoluteString, error.localizedDescription)
                 self.fail(urlSchemeTask, code: (error as NSError).code)
             }
         }
@@ -281,24 +301,49 @@ public final class GameResourceSchemeHandler: NSObject, WKURLSchemeHandler, @unc
     /// 超时看门狗：20s 告警，45s 主动放弃（把「永久挂起」降级成「一次失败」）。
     private func enforcePendingTimeouts() {
         let now = Date()
+        flushBundleRequestCountsIfDue()
         guard now.timeIntervalSince(lastStaleReportAt) > 10 else { return }
         lastStaleReportAt = now
         for (token, entry) in pending {
             let age = now.timeIntervalSince(entry.startedAt)
             guard age >= Self.pendingAbandonAfter else {
                 if age >= Self.pendingStaleAfter {
-                    LobbyLog.warn("[scheme] task still pending (%.0fs): %@", age, entry.url)
+                    LobbyLog.warn("[scheme] %@ task still pending (%.0fs): %@", owner, age, entry.url)
                 }
                 continue
             }
             guard let task = tasks[token] else { continue }
-            LobbyLog.error("[scheme] task abandoned after %.0fs: %@", age, entry.url)
+            LobbyLog.error("[scheme] %@ task abandoned after %.0fs: %@", owner, age, entry.url)
             abandonedTasks.insert(token)
             fail(task, code: NSURLErrorTimedOut)
         }
     }
 
     // MARK: - 路径解析
+
+    /// 累计 `/remote/<bundle>/…` 的请求数，满 60s 打一条汇总。
+    /// 见 `bundleRequestCounts` 的注释：这是"某个界面有没有加载完整"唯一的读数。
+    private func noteBundleRequest(_ absoluteURL: String) {
+        guard let range = absoluteURL.range(of: "/remote/") else { return }
+        let rest = absoluteURL[range.upperBound...]
+        guard let slash = rest.firstIndex(of: "/") else { return }
+        let bundle = String(rest[rest.startIndex..<slash])
+        guard !bundle.isEmpty else { return }
+        bundleRequestCounts[bundle, default: 0] += 1
+        flushBundleRequestCountsIfDue()
+    }
+
+    private func flushBundleRequestCountsIfDue() {
+        let elapsed = Date().timeIntervalSince(bundleCountsWindowStart)
+        guard elapsed >= 60, !bundleRequestCounts.isEmpty else { return }
+        bundleCountsWindowStart = Date()
+        let top = bundleRequestCounts.sorted { $0.value > $1.value }
+        let shown = top.prefix(10).map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        let total = bundleRequestCounts.values.reduce(0, +)
+        bundleRequestCounts.removeAll(keepingCapacity: true)
+        LobbyLog.info("[scheme] %@ bundle requests in %ds: total=%ld %@%@",
+                      owner, Int(elapsed), total, shown, top.count > 10 ? " …" : "")
+    }
 
     private static func localResource(for url: URL) -> URL? {
         guard url.host == "app", let root = LobbyConfiguration.webRuntimeRoot else { return nil }
@@ -350,7 +395,8 @@ public final class GameResourceSchemeHandler: NSObject, WKURLSchemeHandler, @unc
                   filenameParts[0] == "index",
                   filenameParts[2] == "js" || filenameParts[2] == "jsc" else { continue }
             components[filenameIndex] = "index.\(version).\(filenameParts[2])"
-            LobbyLog.verbose("[scheme] bundle URL rewritten: %@ -> %@", path, components.joined(separator: "/"))
+            LobbyLog.verbose("[scheme] %@ bundle URL rewritten: %@ -> %@",
+                             owner, path, components.joined(separator: "/"))
             return components.joined(separator: "/")
         }
         return path

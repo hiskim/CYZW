@@ -931,6 +931,32 @@ public final class LobbySessionModel: ObservableObject {
             instance.applyEnergyPolicy(isFocused: instance.accountID == focusedAccountID)
         }
     }
+
+    // MARK: - 一键取证
+
+    /// 抓「当前焦点实例」的页面侧诊断快照（没有焦点实例时抓全部）。
+    ///
+    /// 触发入口：菜单栏「诊断 → 抓取渲染诊断快照」（⇧⌘A）。
+    /// 为什么优先只抓焦点那一个：缺块是**单个窗口**的现象，
+    /// 用户看到问题时会先点一下那个窗口（它就成了焦点），
+    /// 这时抓它最准；一次抓 7 个不但噪音大，还会把真正有问题的那条淹掉。
+    public func captureRenderAudit() async {
+        let surfaces = pool.allSurfaces
+        var targets = surfaces
+        if let focused = focusedAccountID,
+           let hit = surfaces.first(where: { $0.accountID == focused }) {
+            targets = [hit]
+        }
+        guard !targets.isEmpty else {
+            // 落盘由实例层负责（那里能拿到 DiagnosticsLog）；这里只记控制台。
+            LobbyLog.warn("[session] audit snapshot requested but no running instance")
+            return
+        }
+        LobbyLog.info("[session] audit snapshot requested: %ld instance(s)", targets.count)
+        for instance in targets {
+            await instance.captureDiagnosticsSnapshot(reason: "hotkey")
+        }
+    }
 }
 
 // MARK: - GameInstancePoolDelegate

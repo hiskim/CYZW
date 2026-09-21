@@ -88,6 +88,8 @@ public final class GameViewportInstance: NSView {
     private var enhancementAttempt = 0
     private var isStopped = false
     private var renderBadSamples = 0
+    /// 实例 ↔ WebContent PID 只打一次（见 `logWebProcessIdentity`）。
+    private var didLogWebProcessIdentity = false
     /// 在途下载的代理。`WKDownload.delegate` 是弱引用，不自己持有就会被提前释放，
     /// 表现为「下载一动不动、也不报错」。
     private var activeDownloads: [ObjectIdentifier: ScriptDownloadSink] = [:]
@@ -122,7 +124,7 @@ public final class GameViewportInstance: NSView {
         super.init(frame: NSRect(origin: .zero, size: Self.fallbackSize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
-        schemeHandler = GameResourceSchemeHandler(resources: resources)
+        schemeHandler = GameResourceSchemeHandler(resources: resources, owner: account.fileName)
         addSubview(webView)
         webView.frame = bounds
         buildLoadingOverlay()
@@ -524,7 +526,7 @@ public final class GameViewportInstance: NSView {
     public func applyEnergyPolicy(isFocused: Bool) {
         let muteWhenUnfocused = UserDefaults.standard.object(forKey: LobbyConfiguration.PreferenceKey.muteWhenUnfocused) as? Bool ?? true
         applyAudioMuted(isFocused ? false : muteWhenUnfocused)
-        applyFrameRate(isFocused ? TargetFrameRate.current() : Self.idleFrameRate)
+        applyFrameRate(isFocused ? TargetFrameRate.current() : Self.idleFrameRate, isFocused: isFocused)
     }
 
     /// 运行时改写主循环帧率的 JS（callAsyncJavaScript 函数体，允许 await）。
@@ -557,7 +559,11 @@ public final class GameViewportInstance: NSView {
         """
     }
 
-    private func applyFrameRate(_ fps: TargetFrameRate) {
+    /// - Parameter isFocused: 只进日志，不参与逻辑（逻辑只认 `fps`）。
+    ///   焦点切换会**同时**触发全部实例的重下发，而重下发在 15↔60 换档时要把主循环
+    ///   拆了重建；日志里不写清「哪个账号、是不是焦点」，一次点击扇出的 7 连发就分不清
+    ///   谁是谁，「某个窗口缺块 ↔ 它刚被拆过主循环」这条因果也就永远对不上号。
+    private func applyFrameRate(_ fps: TargetFrameRate, isFocused: Bool) {
         let body = Self.frameRateApplyScript(for: fps.rawValue)
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -570,9 +576,13 @@ public final class GameViewportInstance: NSView {
                 //   unavailable:N= 引擎结构不合，改不动（要查引擎版本）。
                 let result = try await self.webView.callAsyncJavaScript(body, arguments: [:],
                                                                        in: nil, contentWorld: .page)
-                LobbyLog.info("[instance] frame rate apply: %@", String(describing: result ?? "nil"))
+                LobbyLog.info("[instance] frame rate apply: %@ 焦点=%@ → %@",
+                              self.account.fileName, isFocused ? "on" : "off",
+                              String(describing: result ?? "nil"))
             } catch {
-                LobbyLog.warn("[instance] frame rate apply failed: %@", error.localizedDescription)
+                LobbyLog.warn("[instance] frame rate apply failed: %@ 焦点=%@ 目标=%ld: %@",
+                              self.account.fileName, isFocused ? "on" : "off",
+                              fps.rawValue, error.localizedDescription)
             }
         }
     }
@@ -806,8 +816,9 @@ public final class GameViewportInstance: NSView {
         case .ready(let readiness):
             // 启动沉降完成：释放启动槽位。多开时靠这个把「N 个实例同时抢
             // I/O 和 GPU」变成排队通过。
-            LobbyLog.info("[instance] ready: elapsed=%ldms stable=%@",
-                          readiness.elapsedMs, readiness.stable ? "yes" : "no")
+            LobbyLog.info("[instance] ready: %@ elapsed=%ldms stable=%@",
+                          account.fileName, readiness.elapsedMs, readiness.stable ? "yes" : "no")
+            logWebProcessIdentity()
             pool?.noteInstanceReady(accountID: account.id)
             // 再补一次加强下发。`didFinish` 只是**文档**加载完，此时 WebRuntime 往往
             // 还没把游戏 bundle 装起来（`window.fgui` / `__require` 都还不存在），
@@ -816,6 +827,25 @@ public final class GameViewportInstance: NSView {
             applyEnhancements()
         case .render(let sample):
             handleRenderIntegrity(sample)
+        case .renderGap(let gap):
+            // 缺口账本：事件驱动，能给出「缺了几个 / 缺了多久 / 缺的是哪几张图」。
+            // 同时落盘——这份文件就是为「用户不用从控制台挑行粘贴」准备的，
+            // 而缺块这个问题三次排查里有两次都卡在"日志没留痕"上。
+            if gap.reason.hasPrefix("ledger-") {
+                // 账本自述：装上了哪几个钩子 / 为什么装不上。
+                // 上一次「一条缺口都没有」时缺的就是这一行——分不清"没缺"还是"没装上"。
+                LobbyLog.info("[instance] render gap ledger: %@ %@ %@",
+                              account.fileName, gap.reason, gap.urls)
+                DiagnosticsLog.append("[render-gap-ledger] account=\(account.fileName) " +
+                                      "\(gap.reason) \(gap.urls)")
+            } else {
+                LobbyLog.warn("[instance] render gap (%@): %@ open=%ld total=%ld worst=%ldms kinds=%@ dirtyMarks=%ld urls=%@",
+                              gap.reason, account.fileName, gap.open, gap.total,
+                              gap.worstDwellMs, gap.kinds, gap.dirtyMarks, gap.urls)
+                DiagnosticsLog.append("[render-gap] account=\(account.fileName) reason=\(gap.reason) " +
+                                      "open=\(gap.open) total=\(gap.total) worst=\(gap.worstDwellMs)ms " +
+                                      "kinds=\(gap.kinds) dirtyMarks=\(gap.dirtyMarks) urls=\(gap.urls)")
+            }
         case .webGLFatal:
             // 上下文丢了且没恢复：Cocos 2.4 的 gfx 后端没有任何重建路径，
             // 局部补纹理救不回 program / buffer / VAO，只能整页重载。
@@ -824,7 +854,7 @@ public final class GameViewportInstance: NSView {
         case .memory(let reason, let assets, let nodes):
             LobbyLog.debug("[instance] web memory (%@): assets=%@ nodes=%@", reason, assets, nodes)
         case .graphics(let event, let message):
-            LobbyLog.warn("[instance] WebGL %@: %@", event, message)
+            LobbyLog.warn("[instance] WebGL %@: %@ (%@)", event, message, account.fileName)
         case .frameRateWrite(let fps, let stack):
             LobbyLog.debug("[instance] frame rate write: fps=%@ stack=%@", fps, stack)
         case .clipboardWrite(let text):
@@ -1029,24 +1059,126 @@ public final class GameViewportInstance: NSView {
         }
     }
 
+    /// 把实例与它的 WebContent 进程 PID 对上一次。
+    ///
+    /// 为什么需要：`WebContent[6135] CRASHSTRING`、`RBS assertion … PID=6135` 这类行
+    /// 全是 WebKit 自己打的，**只有裸 PID**。一次多开有 7~8 个 WebContent 进程，
+    /// 「到底哪个窗口在报错」从日志里完全读不出来，RBS 断言那批噪音就一直没法归位。
+    ///
+    /// `_webProcessIdentifier` 是私有 getter，所以先 `responds(to:)` 探一下再取值——
+    /// KVC 取未定义的 key 会抛 ObjC 异常，Swift 接不住、直接崩，必须先探。
+    /// 探不到就老实打 `?`：诊断信息宁缺勿假，绝不用「启动顺序」猜。
+    private func logWebProcessIdentity() {
+        guard !didLogWebProcessIdentity else { return }
+        didLogWebProcessIdentity = true
+        var identifier = "?"
+        let selector = NSSelectorFromString("_webProcessIdentifier")
+        if webView.responds(to: selector),
+           let raw = webView.value(forKey: "_webProcessIdentifier") as? NSNumber,
+           raw.int32Value > 0 {
+            identifier = String(raw.int32Value)
+        }
+        LobbyLog.info("[instance] %@ webcontent pid=%@", account.fileName, identifier)
+    }
+
+    /// 一键取证：把页面侧的三张「卡片」抓回来并落盘。
+    ///
+    /// 为什么要有宿主侧入口：`window.__ios2RenderAudit()` 只能在 Web 检查器控制台手敲，
+    /// 而"看到缺块的那一瞬间"本身很短——右键、开检查器、切 Console、粘命令，
+    /// 等敲完缺口往往已经自愈（缺块本来就是几百毫秒到几秒的瞬态）。
+    /// 做成菜单里的一个快捷键，按下去就落盘，才赶得上那一刻。
+    ///
+    /// 抓三样：
+    ///   1. `__ios2RenderAudit()`  —— 被静默的渲染构件（类无关）+ 渲染组件类直方图 + 子树轮廓
+    ///   2. `__ios2RenderGapDump()` —— 缺口账本（当前缺几个、缺多久、缺哪几张）
+    ///   3. 视口指纹（顺带打一条 `[instance] WebGL viewport`）
+    ///
+    /// 结果写 `diagnostics.log`（前缀 `[audit]`）——那才是排查者真正会读的地方，
+    /// 不依赖用户从控制台挑行粘贴。
+    @MainActor
+    public func captureDiagnosticsSnapshot(reason: String) async {
+        // ⚠️ `callAsyncJavaScript` 的入参是**函数体**（等价于 async function 的 body），
+        // 所以必须用**顶层 `return`** 交回值。第一版把整段包在 `(function(){…})()` 里，
+        // 那条表达式语句的值不会被返回 → 拿到 `nil`（`.37` 实测踩到）。
+        // 对照：`frameRateApplyScript` 一直是顶层 `return`，所以它从来没问题。
+        let body = """
+        const out = { ok: false, at: Date.now() };
+        try {
+          out.multiOpen = !!(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.multiOpen);
+        } catch (ignored) {}
+        try {
+          out.audit = window.__ios2RenderAudit ? window.__ios2RenderAudit(20)
+                                               : { reason: 'audit-not-installed' };
+          out.ok = true;
+        } catch (error) { out.auditError = String((error && error.message) || error); }
+        try {
+          out.gaps = window.__ios2RenderGapDump ? window.__ios2RenderGapDump()
+                                                : { reason: 'gapdump-not-installed' };
+        } catch (error) { out.gapError = String((error && error.message) || error); }
+        try { return JSON.stringify(out); }
+        catch (stringifyError) {
+          return '{"stringifyError":"' + String((stringifyError && stringifyError.message) || stringifyError) + '"}';
+        }
+        """
+        // 先打一发最小探针：万一还是拿不到值，这一行能区分
+        // 「通道不通」和「那一段 JS 自己没返回值」——免得再花一轮排查。
+        if let ping = try? await webView.callAsyncJavaScript("return 'pong:' + Date.now();",
+                                                             arguments: [:], in: nil,
+                                                             contentWorld: .page) {
+            LobbyLog.info("[instance] audit ping: %@ %@", account.fileName,
+                          String(describing: ping))
+        } else {
+            LobbyLog.warn("[instance] audit ping failed: %@ (page channel unreachable)", account.fileName)
+        }
+        do {
+            let result = try await webView.callAsyncJavaScript(body, arguments: [:],
+                                                              in: nil, contentWorld: .page)
+            let raw = (result as? String) ?? String(describing: result ?? "nil")
+            // 单条封顶：账本文件是取证卡片，不该被一次快照挤爆（超限只留尾部）。
+            let text = raw.count > 6000 ? String(raw.prefix(6000)) + "…(截断)" : raw
+            LobbyLog.info("[instance] audit snapshot: %@ %@", account.fileName, text)
+            DiagnosticsLog.append("[audit] account=\(account.fileName) reason=\(reason) \(text)")
+            reportViewportFingerprintForAudit()
+        } catch {
+            LobbyLog.warn("[instance] audit snapshot failed: %@ %@",
+                          account.fileName, error.localizedDescription)
+            DiagnosticsLog.append("[audit] account=\(account.fileName) reason=\(reason) FAILED \(error.localizedDescription)")
+        }
+    }
+
+    /// 取证时顺带补一条视口指纹（页面里那个函数不带账号，这里借 `graphics` 通道的账号字段）。
+    @MainActor
+    private func reportViewportFingerprintForAudit() {
+        let body = "if (window.__ios2ViewportFingerprint) window.__ios2ViewportFingerprint('audit');"
+        Task { @MainActor [weak self] in
+            _ = try? await self?.webView.callAsyncJavaScript(body, arguments: [:],
+                                                            in: nil, contentWorld: .page)
+        }
+    }
+
     /// 渲染完整性：连续 3 个采样周期报缺失 → 请求整页兜底重载（有限次数）。
     private func handleRenderIntegrity(_ sample: RenderHealthSample) {
         guard sample.missingCount > 0 else {
             if renderBadSamples > 0 {
-                LobbyLog.info("[instance] render integrity recovered after %ld degraded sample(s)", renderBadSamples)
+                LobbyLog.info("[instance] render integrity recovered after %ld degraded sample(s): %@",
+                              renderBadSamples, account.fileName)
             }
             renderBadSamples = 0
             return
         }
         // 上下文已丢的场景交给 webgl-fatal 单独兜底，不重复触发。
         guard !sample.contextLost else {
-            LobbyLog.warn("[instance] render integrity degraded while WebGL context is lost; deferring to webgl-fatal")
+            LobbyLog.warn("[instance] render integrity degraded while WebGL context is lost; deferring to webgl-fatal: %@",
+                          account.fileName)
             return
         }
         renderBadSamples += 1
-        LobbyLog.warn("[instance] render integrity degraded (%@): missing=%ld/%ld texture=%ld material=%ld",
-                      sample.reason, sample.missingCount, sample.visible,
+        LobbyLog.warn("[instance] render integrity degraded (%@): %@ missing=%ld/%ld texture=%ld material=%ld",
+                      sample.reason, account.fileName, sample.missingCount, sample.visible,
                       sample.missingTexture, sample.missingMaterial)
+        DiagnosticsLog.append("[render] degraded reason=\(sample.reason) account=\(account.fileName) " +
+                              "missing=\(sample.missingCount)/\(sample.visible) " +
+                              "texture=\(sample.missingTexture) material=\(sample.missingMaterial)")
         guard renderBadSamples >= Self.renderIntegrityBadSampleLimit else { return }
         requestAutomaticReload(reason: "missing \(sample.missingCount)/\(sample.visible) after \(renderBadSamples) samples")
     }

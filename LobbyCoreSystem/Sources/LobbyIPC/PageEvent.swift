@@ -27,6 +27,46 @@ public struct RenderHealthSample: Sendable {
     }
 }
 
+/// 缺口账本样本（事件驱动，替代 12s 定点采样）。
+///
+/// 为什么要有：`RenderHealthSample` 是**定时**采样，而"元素不全"是**几百毫秒到几秒的瞬态**
+/// ——12s 一次基本必然错过，实测三份日志里 `render integrity degraded` 一条都没有。
+/// 页面侧改成在 `cc.Sprite._applySpriteFrame` 走静默 `disableRender()` 那一支时**记账**、
+/// 贴图 `load` 回来时**销账**，于是任何时刻都能回答：
+/// "现在有几个节点因为贴图没到画不出来、缺了多久、缺的是哪几张图"。
+public struct RenderGapSample: Sendable {
+    /// 当前仍缺着的节点数（销账后应为 0）。
+    public let open: Int
+    /// 本次会话累计发生过的缺口次数。
+    public let total: Int
+    /// 单个缺口的最长存活时长（毫秒）——"缺了几百毫秒"和"缺了一分钟"是完全不同的病。
+    public let worstDwellMs: Int
+    /// 触发上报的原因：`gap-open` / `gap-close` / `throttle` / `manual`。
+    public let reason: String
+    /// 缺口贴图文件名（截断后的前几个），用来直接指认是哪张图。
+    public let urls: String
+    /// 缺口的种类（去重后用 `+` 连接）：`sprite-texture` / `font-atlas` / `font-config` /
+    /// `skeleton-texture`。**只看这列就能知道缺的是图片还是文字**，不必再猜。
+    public let kinds: String
+    /// `markSceneRenderDataDirty()` 被调用的次数。
+    ///
+    /// **这是区分两种病的唯一判据**：缺口存在却一次都没补过渲染脏标记 ⇒ 是"补不上"
+    /// （贴图到了但 assembler 不再进来，见 `ios2-web-boot.js` 里 `markSceneRenderDataDirty`
+    /// 的注释）；补过且缺口随后消失 ⇒ 只是"后到"。
+    public let dirtyMarks: Int
+
+    public init(open: Int, total: Int, worstDwellMs: Int, reason: String, urls: String,
+                kinds: String = "", dirtyMarks: Int) {
+        self.open = open
+        self.total = total
+        self.worstDwellMs = worstDwellMs
+        self.reason = reason
+        self.urls = urls
+        self.kinds = kinds
+        self.dirtyMarks = dirtyMarks
+    }
+}
+
 /// 实例启动沉降报告（场景加载完成、资源不再变动）。
 public struct InstanceReadiness: Sendable {
     public let stable: Bool
@@ -126,6 +166,8 @@ public enum PageEvent: Sendable {
     case ready(InstanceReadiness)
     /// 渲染完整性采样。
     case render(RenderHealthSample)
+    /// 缺口账本（事件驱动，比 12s 采样可靠得多）。见 `RenderGapSample`。
+    case renderGap(RenderGapSample)
     /// WebGL 上下文丢失且未恢复（Cocos 2.4 无重建路径，只能整页重载）。
     case webGLFatal
     /// 内存采样。
@@ -206,6 +248,16 @@ public enum PageEvent: Sendable {
                 visible: body["visible"] as? Int ?? 0,
                 contextLost: (body["contextLost"] as? Bool) == true,
                 reason: body["reason"] as? String ?? "unknown"
+            ))
+        case "render-gap":
+            return .renderGap(RenderGapSample(
+                open: integer(body["open"]),
+                total: integer(body["total"]),
+                worstDwellMs: integer(body["worstMs"]),
+                reason: body["reason"] as? String ?? "unknown",
+                urls: String((body["urls"] as? String ?? "").prefix(240)),
+                kinds: String((body["kinds"] as? String ?? "").prefix(120)),
+                dirtyMarks: integer(body["dirtyMarks"])
             ))
         case "webgl-fatal":
             return .webGLFatal

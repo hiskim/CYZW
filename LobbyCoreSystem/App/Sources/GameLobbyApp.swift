@@ -10,7 +10,7 @@ import SwiftUI
 enum LobbyComposition {
     /// 构建指纹。排查「改了但没重装 / 跑的是旧版」这一类别时，看启动第一行日志即可。
     /// **每次改动宿主侧行为就 bump 一次。**
-    static let buildTag = "2026-09-19.31"
+    static let buildTag = "2026-09-21.42"
 
     /// 组装会话门面（窗口级单例）。主线程执行（实例池 / 会话门面均为 MainActor 类型）。
     @MainActor
@@ -93,6 +93,18 @@ struct GameLobbyApp: App {
         // 沉浸式无框窗口：隐藏标题栏文字，让毛玻璃材质延伸到交通灯区域
         // （配合 LobbyRootView 里的 .ignoresSafeArea()）。
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandMenu("诊断") {
+                Button("抓取渲染诊断快照") {
+                    Task { @MainActor in await session.captureRenderAudit() }
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+
+                Divider()
+
+                Text("先点一下出问题的那个窗口，再按 ⇧⌘A。结果写入 diagnostics.log 的 [audit] 行")
+            }
+        }
     }
 }
 

@@ -1972,6 +1972,535 @@
         return snapshot;
     }
 
+    // ------------------------------------------------------------------
+    // 缺口账本（事件驱动）——把引擎的「静默 disableRender」变成可计时的事件
+    // ------------------------------------------------------------------
+    //
+    // 为什么必须事件驱动：`collectRenderIntegrity()` 是**定时**采样（+4s 首采、此后每 12s），
+    // 而"元素不全"是**几百毫秒到几秒的瞬态** —— 三次实测日志里
+    // `render integrity degraded` 一条都没出现过，不是没缺，是采样永远错过。
+    //
+    // 引擎在贴图未就绪时走的是 `cc.Sprite._applySpriteFrame` 里的
+    //   `r && r.loaded ? this._applySpriteSize() : (this.disableRender(), ...)`
+    // 而 `disableRender()` 只清 `_renderFlag`，不 log / 不 emit / 不 throw ——
+    // 「这块画不出来」在日志里零痕迹（见 `ios2-web-cocos2d.js` 里 Sprite 的定义）。
+    //
+    // 这里在 `_applySpriteFrame` / `_validateRender` 外面包一层：
+    //   走到未就绪那一支 → 记进账本（带起始时刻）；贴图 `load` 回来 → 销账、累计存活时长。
+    // 于是任何时刻都能回答「现在缺几张、缺了多久、缺的是哪几张图」，
+    // 而且零遍历成本、100% 覆盖，不靠采样运气。
+    var GAP_REPORT_MIN_INTERVAL_MS = 5000;
+    /// 同一批缺口持续超过这个时长 ⇒ 降频上报。
+    ///
+    /// 为什么要有：新加的 `sprite-empty`（节点在、图还没赋）在 FairyGUI 里可能是
+    /// **设计上就空着的占位**。若一批缺口永不闭合还每 5s 报一次，几分钟就能把
+    /// `diagnostics.log`（256 KB 上限）刷穿，把真正的证据挤掉。
+    /// "缺了 3 秒"和"缺了 5 分钟"本来就是两种病，降频顺带把这件事区分开。
+    var GAP_REPORT_LONG_INTERVAL_MS = 60000;
+    var GAP_LONG_LIVED_AFTER_MS = 60000;
+    /// 账本容量上限：只为防病态场景无限增长，正常远到不了。
+    var GAP_LEDGER_LIMIT = 512;
+
+    var gapLedger = {
+        installed: false,
+        hooks: [],         // 实际包上了哪几个钩子（自述用；空 = 装不上，必须能看见）
+        open: {},          // compId -> { node, nodeName, texture, kind, since, url, recheck }
+        openCount: 0,
+        total: 0,
+        worstMs: 0,
+        dirtyMarks: 0,
+        lastReportAt: 0,
+        wasOpen: false,
+        openSince: 0,      // 当前这批缺口的起点（空 → 非空时置位）
+        seq: 0
+    };
+
+    /// 清掉节点已经销毁的条目。
+    ///
+    /// 为什么必须清：贴图若**始终没到**（资源 404、实例被停），那条记录会永远留着，
+    /// `openCount` 就永远 > 0，上报会每 5s 一条无限刷下去。节点销毁 = 这个缺口
+    /// 已经不存在了（不是"还在缺"），按存在性销账才是诚实记账。
+    function closeGapEntry(id) {
+        var entry = gapLedger.open[id];
+        if (!entry) return false;
+        var dwell = Date.now() - entry.since;
+        if (dwell > gapLedger.worstMs) gapLedger.worstMs = dwell;
+        delete gapLedger.open[id];
+        return true;
+    }
+
+    /// 逐条复查并清掉已经不该在账上的条目。
+    ///
+    /// 两条复查依据：
+    ///   ① 节点已销毁 ⇒ 这个缺口已经不存在了（不是"还在缺"）。
+    ///   ② `recheck()` 返回 false ⇒ 它已经不缺了。
+    /// 为什么要 ②：有些缺口**没有贴图可以挂 `load` 监听**（例如 BMFont 的 `.fnt`
+    /// 配置没解析出来）。只靠事件销账的话，这类条目会永远留在账上，
+    /// `openCount` 永不归零、上报无限刷——那是假账。
+    function pruneGapLedger() {
+        var ids = Object.keys(gapLedger.open);
+        var removed = false;
+        for (var index = 0; index < ids.length; index++) {
+            var entry = gapLedger.open[ids[index]];
+            var gone = false;
+            if (entry.node && entry.node.isValid === false) gone = true;
+            else if (typeof entry.recheck === 'function') {
+                try { gone = !entry.recheck(); } catch (error) { gone = true; }
+            }
+            if (gone && closeGapEntry(ids[index])) removed = true;
+        }
+        if (removed) gapLedger.openCount = Object.keys(gapLedger.open).length;
+    }
+
+    function gapShortName(texture) {
+        var url = texture && (texture._nativeUrl || texture.nativeUrl);
+        if (!url) return '?';
+        var parts = String(url).split('/');
+        return parts[parts.length - 1] || '?';
+    }
+
+    function gapUrls() {
+        var ids = Object.keys(gapLedger.open);
+        var out = [];
+        var seen = {};
+        for (var index = 0; index < ids.length && out.length < 6; index++) {
+            var entry = gapLedger.open[ids[index]];
+            // 去重：31 个 `sprite-empty` 会把 6 个名额全占满，等于什么都没说。
+            var label = entry.texture ? entry.url : (entry.url + '@' + (entry.nodeName || '?'));
+            if (seen[label]) continue;
+            seen[label] = true;
+            out.push(label);
+        }
+        return out.join(',');
+    }
+
+    /// 节流上报：只在「由空变非空」「由非空变空」两个跳变点立即报，
+    /// 持续缺着的时候最多每 5s 一条 —— 既不丢关键瞬间，也不会把日志刷爆。
+    function postGapReport(reason) {
+        var now = Date.now();
+        pruneGapLedger();
+        var isOpen = gapLedger.openCount > 0;
+        var transition = (isOpen !== gapLedger.wasOpen);
+        if (transition) {
+            gapLedger.wasOpen = isOpen;
+            gapLedger.openSince = isOpen ? now : 0;
+        }
+        if (!transition && !isOpen) return;
+        // 同一批缺口持续太久就降频（见 GAP_REPORT_LONG_INTERVAL_MS）
+        var interval = (gapLedger.openSince && now - gapLedger.openSince > GAP_LONG_LIVED_AFTER_MS)
+            ? GAP_REPORT_LONG_INTERVAL_MS : GAP_REPORT_MIN_INTERVAL_MS;
+        if (!transition && now - gapLedger.lastReportAt < interval) return;
+        gapLedger.lastReportAt = now;
+        postGapPayload(reason, gapLedger.openCount, gapLedger.total,
+                       Math.round(gapLedger.worstMs), gapUrls(), gapKinds());
+    }
+
+    /// 账本自述：安装结果、包上了哪几个钩子。
+    ///
+    /// 为什么必须发这条：上一次实测"一条 `[render-gap]` 都没有"，但**无法判断**
+    /// 是"没缺"还是"账本压根没装上"——安装成功的 `console.log` 走的是 debug 级，
+    /// 在默认日志档位下被丢掉了。诊断工具自己不可观测，就等于没有。
+    /// 这条走 `render-gap` 通道，一定到得了原生并落盘。
+    function reportLedgerState(reason, detail) {
+        postGapPayload(reason, gapLedger.openCount, gapLedger.total,
+                       Math.round(gapLedger.worstMs), detail, gapKinds());
+    }
+
+    function postGapPayload(reason, open, total, worstMs, urls, kinds) {
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        var handler = handlers && handlers.ios2Game;
+        if (!handler || typeof handler.postMessage !== 'function') return;
+        try {
+            handler.postMessage({
+                type: 'render-gap',
+                instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                reason: reason,
+                open: open,
+                total: total,
+                worstMs: worstMs,
+                dirtyMarks: gapLedger.dirtyMarks,
+                kinds: kinds,
+                urls: urls
+            });
+        } catch (ignored) {}
+    }
+
+    /// 缺口按 kind 计数（`sprite-empty=1,label-blocked=3`）。
+    ///
+    /// 为什么必须带计数：只报 kind 名字的话，`sprite-empty+label-empty` 看起来"两类都有"，
+    /// 而真相可能是"1 个 Sprite + 500 个误报的 Label"。**主次必须一眼看得出来。**
+    function gapKinds() {
+        var ids = Object.keys(gapLedger.open);
+        var counts = {};
+        for (var index = 0; index < ids.length; index++) {
+            var kind = gapLedger.open[ids[index]].kind || '?';
+            counts[kind] = (counts[kind] || 0) + 1;
+        }
+        var parts = [];
+        Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })
+            .forEach(function (kind) { parts.push(kind + '=' + counts[kind]); });
+        return parts.join(',');
+    }
+
+    /// 推断"这个构件为什么没画"的类别 + 相关贴图（**只在确认它真的没画之后再调用**）。
+    ///
+    /// 注意职责划分：**"有没有画"由 `_renderFlag` 决定**（见 `noteRenderFlagGap`），
+    /// 这里只负责给已确认的缺口贴一个可读标签。
+    function describeGapAsset(component) {
+        var nodeName = (component && component.node && component.node.name) || '?';
+        try {
+            // Sprite / Mask：靠 spriteFrame
+            if (component.spriteFrame !== undefined) {
+                var frame = component._spriteFrame;
+                var texture = frame && typeof frame.getTexture === 'function' ? frame.getTexture() : null;
+                if (!texture) return { kind: 'sprite-empty', texture: null, url: '<no-frame>@' + nodeName };
+                return { kind: texture.loaded === false ? 'sprite-texture' : 'sprite-blocked',
+                         texture: texture, url: gapShortName(texture) };
+            }
+            // Label：只有 BMFont 才依赖图集/配置；TTF（font 为 null）本来就能画
+            if (component.font !== undefined || component.string !== undefined) {
+                var font = component.font;
+                var BitmapFont = window.cc && cc.BitmapFont;
+                if (font && BitmapFont && font instanceof BitmapFont) {
+                    var atlas = font.spriteFrame;
+                    var atlasTexture = atlas && typeof atlas.getTexture === 'function'
+                        ? atlas.getTexture() : null;
+                    if (atlasTexture && atlasTexture.loaded === false) {
+                        return { kind: 'font-atlas', texture: atlasTexture, url: gapShortName(atlasTexture) };
+                    }
+                    if (!font._fntConfig) {
+                        return { kind: 'font-config', texture: null, url: '<no-fnt>@' + nodeName };
+                    }
+                }
+                // 图集没问题却仍然没画 ⇒ 不是贴图链路，交给阻塞分支
+                return { kind: 'label-blocked', texture: null, url: '<label>@' + nodeName };
+            }
+            if (component.skeletonData !== undefined) {
+                return { kind: 'skeleton-blocked', texture: null, url: '<skeleton>@' + nodeName };
+            }
+        } catch (ignored) {}
+        return { kind: 'blocked-' + classifyRenderer(component), texture: null, url: '<' + classifyRenderer(component) + '>@' + nodeName };
+    }
+
+    /// **唯一**的缺口判定入口 —— 依据是引擎的最终裁决：`node._renderFlag` 有没有 `FLAG_RENDER`。
+    ///
+    /// 为什么不用"逐个判分支条件"（第一版的做法）：
+    /// `.39` 是按各自的条件记的 —— `_applySpriteFrame` 看 `!texture.loaded`、`Label._validateRender`
+    /// 看 `!font` …… 结果 **TTF 的 `cc.Label`（`font` 本来就是 null，完全正常）被大批误记成
+    /// `label-empty`**：账本 20 秒内涨到上限 **511**、`worst` 一路飙到 **57 秒**，
+    /// 而同期 audit 的 `silencedByClass` **只有 `Sprite`，一个 `Label` 都没有**。
+    /// **账本比现实多报了 500 倍，两个探针互相打架。**
+    ///
+    /// 改用 `_renderFlag` 之后：与"谁调了 `disableRender()`"无关，也与 audit 用的是**同一个信号**，
+    /// 两边从此不会再给出不同的答案。
+    function noteRenderFlagGap(component) {
+        try {
+            var node = component && component.node;
+            if (!node || typeof node._renderFlag !== 'number') return;
+            if (node.activeInHierarchy === false) return;
+            var Flow = window.cc && cc.RenderFlow;
+            var flag = Flow && (Flow.FLAG_RENDER || Flow.FLAG_UPDATE_RENDER_DATA);
+            if (!flag) return;
+            var id = component.__ios2GapId || (component.__ios2GapId = 'c' + (++gapLedger.seq));
+            if (node._renderFlag & flag) {
+                // 在画 → 销账（这是唯一可信的"好了"）
+                if (gapLedger.open[id] && closeGapEntry(id)) {
+                    gapLedger.openCount = Object.keys(gapLedger.open).length;
+                    postGapReport('gap-close');
+                }
+                return;
+            }
+            if (gapLedger.open[id]) return;                   // 已在账上，别重复
+            if (gapLedger.openCount >= GAP_LEDGER_LIMIT) return;
+            var info = describeGapAsset(component);
+            gapLedger.open[id] = {
+                node: node, nodeName: node.name, texture: info.texture, kind: info.kind,
+                since: Date.now(), url: info.url,
+                recheck: function () {
+                    return !(typeof node._renderFlag === 'number' && !(node._renderFlag & flag));
+                }
+            };
+            gapLedger.openCount = Object.keys(gapLedger.open).length;
+            gapLedger.total++;
+            if (info.texture && !info.texture.__ios2GapWatch && typeof info.texture.once === 'function') {
+                info.texture.__ios2GapWatch = true;
+                info.texture.once('load', function () { settleRenderGap(info.texture); });
+            }
+            postGapReport('gap-open');
+        } catch (ignored) {}
+    }
+
+    function settleRenderGap(texture) {
+        var ids = Object.keys(gapLedger.open);
+        var changed = false;
+        for (var index = 0; index < ids.length; index++) {
+            if (gapLedger.open[ids[index]].texture !== texture) continue;
+            if (closeGapEntry(ids[index])) changed = true;
+        }
+        if (!changed) return;
+        gapLedger.openCount = Object.keys(gapLedger.open).length;
+        postGapReport('gap-close');
+    }
+
+    /// 给某个类的 `method` 包一层：调完原方法后跑 `probe(this)`。
+    /// 返回 true 表示真的包上了（方法不存在就什么都不做，不抛）。
+    function wrapRenderHook(className, method, probe) {
+        var klass = window.cc && cc[className];
+        var proto = klass && klass.prototype;
+        if (!proto || typeof proto[method] !== 'function') return false;
+        if (proto[method].__ios2GapWrapped) return false;
+        var original = proto[method];
+        var wrapper = function () {
+            var result = original.apply(this, arguments);
+            try { probe(this); } catch (ignored) {}
+            return result;
+        };
+        wrapper.__ios2GapWrapped = true;
+        proto[method] = wrapper;
+        return true;
+    }
+
+    /// 装缺口账本。覆盖面**逐类挂**，并把"实际挂上了哪几个"回报给宿主——
+    /// 上一次实测"一条缺口都没有"时，我们连账本装没装上都判断不了（安装日志是 debug 级，
+    /// 默认档位被丢掉）。诊断工具自己不可观测，等于没有。
+    function installRenderGapLedger() {
+        if (gapLedger.installed) return false;
+        var hooks = [];
+
+        // 全部走同一个判定入口 `noteRenderFlagGap`（依据 `node._renderFlag`）。
+        // 挂钩子的作用只是"给我一个**时机**"，判定与具体的引擎分支条件无关 ——
+        // 这样"某类构件的分支条件被我写错了"不会再污染账本。
+        if (wrapRenderHook('Sprite', '_applySpriteFrame', noteRenderFlagGap)) hooks.push('Sprite._applySpriteFrame');
+        if (wrapRenderHook('Sprite', '_validateRender', noteRenderFlagGap)) hooks.push('Sprite._validateRender');
+        if (wrapRenderHook('Label', '_validateRender', noteRenderFlagGap)) hooks.push('Label._validateRender');
+        if (wrapRenderHook('Mask', '_validateRender', noteRenderFlagGap)) hooks.push('Mask._validateRender');
+        if (wrapRenderHook('Skeleton', '_validateRender', noteRenderFlagGap)) hooks.push('Skeleton._validateRender');
+
+        if (!hooks.length) {
+            reportLedgerState('ledger-unavailable',
+                'no hook point (cc.Sprite=' + !!(window.cc && cc.Sprite) + ')');
+            return false;
+        }
+        // 脏标记计数：**这是区分两种病的唯一判据** ——
+        // 缺口存在却从未补过脏标记 ⇒ 贴图到了但 assembler 不再进来（"补不上"）；
+        // 补过且缺口随后消失 ⇒ 只是"后到"。
+        var originalDirty = markSceneRenderDataDirty;
+        markSceneRenderDataDirty = function () {
+            gapLedger.dirtyMarks++;
+            return originalDirty.apply(this, arguments);
+        };
+
+        gapLedger.installed = true;
+        gapLedger.hooks = hooks;
+        // 心跳：只在账上还有缺口时才干活。
+        // 为什么必须有：有些缺口没有贴图可挂 `load`（如 `.fnt` 配置），只能靠
+        // 定期 `pruneGapLedger()` 复查销账；没有心跳的话 `openCount` 会永远卡在 >0。
+        // 健康时这个 tick 是空转（两次属性读取后 return），代价可忽略。
+        window.setInterval(function () {
+            if (!gapLedger.installed) return;
+            if (gapLedger.openCount === 0 && !gapLedger.wasOpen) return;
+            postGapReport('tick');
+        }, GAP_REPORT_MIN_INTERVAL_MS);
+        reportLedgerState('ledger-installed', hooks.join('+'));
+        return true;
+    }
+    window.__ios2InstallRenderGapLedger = installRenderGapLedger;
+
+    /// 只读快照：**没有副作用**，可以趁"正缺着"反复按。
+    /// （对比 `window.__ios2RenderIntegrityCheck()`：那个会触发恢复+标脏，当场把缺块补上。）
+    window.__ios2RenderGapDump = function () {
+        var now = Date.now();
+        pruneGapLedger();
+        var ids = Object.keys(gapLedger.open);
+        var list = [];
+        for (var index = 0; index < ids.length; index++) {
+            var entry = gapLedger.open[ids[index]];
+            list.push({ url: entry.url, kind: entry.kind, node: entry.nodeName,
+                        aliveMs: now - entry.since });
+        }
+        return {
+            installed: gapLedger.installed,
+            hooks: gapLedger.hooks,
+            open: gapLedger.openCount,
+            total: gapLedger.total,
+            worstMs: Math.round(gapLedger.worstMs),
+            dirtyMarks: gapLedger.dirtyMarks,
+            kinds: gapKinds(),
+            openGaps: list
+        };
+    };
+
+    /// 引擎是压缩过的，`comp.constructor.name` 只会给出 `Qi` / `zi` / `CCClass` 这种
+    /// 无意义的名字（`.38` 实测：`classes:{"CCClass":180,"Qi":132,"zi":56}`，完全读不出来）。
+    /// 用 `instanceof` 反查真名——`cc` 上的构造器是好的，这一步零成本。
+    function classifyRenderer(comp) {
+        var c = window.cc;
+        if (c) {
+            try {
+                if (c.Mask && comp instanceof c.Mask) return 'Mask';
+                if (c.Sprite && comp instanceof c.Sprite) return 'Sprite';
+                if (c.Label && comp instanceof c.Label) return 'Label';
+                if (c.RichText && comp instanceof c.RichText) return 'RichText';
+                if (c.Graphics && comp instanceof c.Graphics) return 'Graphics';
+                if (c.ParticleSystem && comp instanceof c.ParticleSystem) return 'ParticleSystem';
+                if (c.MotionStreak && comp instanceof c.MotionStreak) return 'MotionStreak';
+                if (c.TiledLayer && comp instanceof c.TiledLayer) return 'TiledLayer';
+            } catch (ignored) {}
+        }
+        return (comp.constructor && comp.constructor.name) || '?';
+    }
+
+    /// 节点在树里的短路径（`A/B/C`），最多向上 4 层。
+    /// 光有 `Image` 这个名字定位不到任何东西——FairyGUI 里满树都是 `Image`/`GImage`。
+    function nodePath(node, maxDepth) {
+        var parts = [];
+        var cursor = node;
+        var limit = maxDepth || 4;
+        while (cursor && parts.length < limit) {
+            parts.unshift(cursor.name || '?');
+            cursor = cursor.parent;
+        }
+        return parts.join('/');
+    }
+
+    /// 类无关的「被静默构件」审计 —— **不问是谁调的 `disableRender()`，直接看结果**。
+    ///
+    /// 为什么需要它：逐类挂钩总有漏网的（引擎里 `disableRender()` 的定义散落在
+    /// Sprite / Label / Mask / Skeleton / ParticleSystem / TiledLayer / ArmatureDisplay …
+    /// 每一处都是静默的）。而所有路径的**共同结果**只有一个：
+    /// `node._renderFlag` 少了 `FLAG_RENDER` 位。查这个位就与"谁干的"无关了。
+    ///
+    /// 同时给出**渲染组件类直方图** —— 这直接回答"这套 UI 到底由什么构成"，
+    /// 决定了还有哪些类是必须挂钩的。**只读，无副作用。**
+    window.__ios2RenderAudit = function (sampleLimit) {
+        var out = { ok: false, reason: 'not-installed', scanned: 0, withRenderer: 0,
+                    silenced: [], classes: {}, silencedByClass: {} };
+        try {
+            var Flow = window.cc && cc.RenderFlow;
+            var flag = Flow && (Flow.FLAG_RENDER || Flow.FLAG_UPDATE_RENDER_DATA);
+            var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+            if (!scene) { out.reason = 'no-scene'; return out; }
+            if (!flag) { out.reason = 'no-renderflag-const'; return out; }
+            out.ok = true;
+            out.reason = 'ok';
+            var limit = sampleLimit || 40;
+            // 第二次遍历用的「带渲染组件的子树轮廓」，用来一眼看出**有没有两套 UI 同时活着**
+            // （例如"大厅上还叠着玩具的页面"这种层叠）。
+            out.outline = [];
+            // 40 条：这份结果会被落盘（单条封顶 6 KB），列太长会把其它字段挤掉。
+            var outlineLimit = 40;
+            var stack = [[scene, 0]];
+            while (stack.length) {
+                var item = stack.pop();
+                var node = item[0];
+                var depth = item[1];
+                if (!node) continue;
+                var children = node._children || [];
+                for (var c = 0; c < children.length; c++) stack.push([children[c], depth + 1]);
+                if (node.activeInHierarchy === false) continue;
+                if (typeof node.opacity === 'number' && node.opacity <= 0) continue;
+                out.scanned++;
+                var renderers = 0;
+                var offRenderers = 0;
+                var comps = node._components || [];
+                for (var i = 0; i < comps.length; i++) {
+                    var comp = comps[i];
+                    if (!comp || comp.node !== node) continue;
+                    // 渲染类组件：靠 _renderFlag 表达"要不要画"
+                    if (typeof comp.markForRender !== 'function' &&
+                        typeof comp.disableRender !== 'function') continue;
+                    var name = classifyRenderer(comp);
+                    renderers++;
+                    out.withRenderer++;
+                    out.classes[name] = (out.classes[name] || 0) + 1;
+                    if (typeof node._renderFlag !== 'number') continue;
+                    if (!(node._renderFlag & flag)) {
+                        offRenderers++;
+                        out.silencedByClass[name] = (out.silencedByClass[name] || 0) + 1;
+                        if (out.silenced.length < limit) {
+                            var frame = comp.spriteFrame || (comp.font && comp.font.spriteFrame);
+                            var texture = frame && typeof frame.getTexture === 'function' ? frame.getTexture() : null;
+                            out.silenced.push({
+                                node: nodePath(node, 3), comp: name,
+                                textureState: texture ? (texture.loaded === false ? 'not-loaded' : 'loaded')
+                                                       : 'no-texture',
+                                url: texture ? gapShortName(texture) : undefined
+                            });
+                        }
+                    }
+                }
+                if (renderers > 0 && out.outline.length < outlineLimit) {
+                    out.outline.push({
+                        depth: depth, node: node.name,
+                        parent: (node.parent && node.parent.name) || '',
+                        children: children.length, renderers: renderers, off: offRenderers
+                    });
+                }
+            }
+        } catch (error) {
+            out.ok = false;
+            out.reason = 'error:' + (error && error.message);
+        }
+        return out;
+    };
+
+    /// 上报本窗口的「视口指纹」。
+    ///
+    /// 为什么必须记：多开时同一次点击按**归一化坐标（0..1）**广播，
+    /// 各窗口换算回自己的绝对像素。**前提是各窗口的 UI 布局随宽高比等比变化**——
+    /// 一旦游戏的适配策略让可见尺寸/设计分辨率随窗口变化（Widget 自适应、非 EXACT_FIT），
+    /// **同一个归一化位置就会落到不同的按钮上**。实测已出现：同一次点击
+    /// 5 个窗口进了「军团战抽奖」、另外 2 个进了「邮件」，而报缺块的正是那 2 个。
+    /// 这条指纹就是用来坐实"窗口尺寸 → 布局"这一环的。
+    function reportViewportFingerprint(reason) {
+        try {
+            var canvas = document.getElementById('GameCanvas');
+            var view = window.cc && cc.view;
+            // ⚠️ 必须用闭包绑定 `this`：`cc.view.getFrameSize` 是**方法**，
+            // 抽出来当裸函数调用会丢 `this` → 抛错 → 整列都变成 `?`（.35 实测就是这么废掉的）。
+            function size(call) {
+                try {
+                    var v = call();
+                    return v ? { w: Math.round(v.width), h: Math.round(v.height) } : null;
+                } catch (ignored) { return null; }
+            }
+            function text(o) { return o ? o.w + 'x' + o.h : '?'; }
+            var visible = size(function () { return view.getVisibleSize(); });
+            var design = size(function () { return view.getDesignResolutionSize(); });
+            // 适配策略直接推导：比 `view._resolutionPolicy.name`（私有、且实测拿不到）可靠。
+            //   visible == design          → EXACT_FIT（设计分辨率被拉伸填满）
+            //   visible.w == design.w      → FIXED_WIDTH（**高度随窗口比例变**）
+            //   visible.h == design.h      → FIXED_HEIGHT（宽度随窗口比例变）
+            //   两者都更小                  → SHOW_ALL（留黑边）
+            var fit = '?';
+            if (visible && design) {
+                if (visible.w === design.w && visible.h === design.h) fit = 'EXACT_FIT';
+                else if (visible.w === design.w) fit = 'FIXED_WIDTH';
+                else if (visible.h === design.h) fit = 'FIXED_HEIGHT';
+                else if (visible.w < design.w && visible.h < design.h) fit = 'SHOW_ALL';
+                else fit = 'other';
+            }
+            var winW = Math.round(window.innerWidth);
+            var winH = Math.round(window.innerHeight);
+            var text1 = 'reason=' + reason +
+                // 引擎版本：换引擎（Debug 未压缩 / Release min / legacy 回退）之后，
+                // 「跑的是哪一个」必须有据可查 —— 否则又会掉进"改了但没生效"那类坑。
+                ' engine=' + ((window.cc && cc.ENGINE_VERSION) || '?') +
+                ' win=' + winW + 'x' + winH +
+                ' aspect=' + (winW ? (winH / winW).toFixed(4) : '?') +
+                ' canvasAttr=' + (canvas ? canvas.width + 'x' + canvas.height : '?') +
+                ' canvasCSS=' + (canvas ? Math.round(canvas.clientWidth) + 'x' + Math.round(canvas.clientHeight) : '?') +
+                ' dpr=' + (window.devicePixelRatio || 1) +
+                ' frame=' + text(size(function () { return view.getFrameSize(); })) +
+                ' visible=' + text(visible) +
+                ' design=' + text(design) +
+                ' fit=' + fit +
+                ' multOpen=' + !!(window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.multiOpen);
+            postWebGraphicsLog('viewport', text1);
+        } catch (ignored) {}
+    }
+    window.__ios2ViewportFingerprint = reportViewportFingerprint;
+
     function installRenderIntegrityWatchdog() {
         if (renderIntegrityState.installed) return;
         renderIntegrityState.installed = true;
@@ -2140,8 +2669,25 @@
         parser.__ios2ASTCPVRParser = astcPVRParser;
         parser.register('.pvr', astcPVRParser);
 
-        var descriptor = Object.getOwnPropertyDescriptor(texturePrototype, '_nativeAsset');
-        if (!descriptor || typeof descriptor.set !== 'function') return;
+        var descriptor = null;
+        // 沿原型链向上找**真正定义 accessor 的那一层**。
+        //
+        // 为什么不直接 `getOwnPropertyDescriptor(cc.Texture2D.prototype, …)`：
+        // 引擎里 `_nativeAsset` 是从基类 `cc.Asset` **override** 过来的
+        // （`_nativeAsset: { get, set, override: true }`）。老引擎恰好把它落在
+        // `cc.Texture2D.prototype` 自己身上，所以直接取得到；但换引擎时只要
+        // 定义位置挪一层，这里就会拿到 `undefined` —— 而下面的 `return` 是
+        // **静默**的：ASTC 解析/上传整条链失效、贴图全空、日志一条都没有。
+        // 这个坑比它看起来值钱，所以这里宁可多走一遍原型链。
+        for (var owner = texturePrototype; owner; owner = Object.getPrototypeOf(owner)) {
+            var candidate = Object.getOwnPropertyDescriptor(owner, '_nativeAsset');
+            if (candidate && typeof candidate.set === 'function') { descriptor = candidate; break; }
+        }
+        if (!descriptor) {
+            postWebGraphicsLog('texture-patch-missing',
+                'cc.Texture2D._nativeAsset 没有 accessor setter —— ASTC 管线已停用（贴图会全空）');
+            return;
+        }
         Object.defineProperty(texturePrototype, '_nativeAsset', {
             configurable: descriptor.configurable,
             enumerable: descriptor.enumerable,
@@ -2169,6 +2715,11 @@
                 data._data = null;
             }
         });
+        // 装在成功也要留一行：换引擎之后「ASTC 管线到底有没有生效」必须一眼可查，
+        // 否则上面那条静默 return 会让我们又回到"改了但没生效"的老坑里。
+        postWebGraphicsLog('texture-patch-ready',
+            'ASTC/PVR 管线已接管 cc.Texture2D._nativeAsset（engine=' +
+            ((window.cc && cc.ENGINE_VERSION) || '?') + '）');
         installWebGLContextRecovery();
     }
 
@@ -2325,6 +2876,15 @@
                     installASTCTextureSupport();
                     console.log('[ios2-web] WebKit PVR parser restored after engine init');
                     installDirectorAssetReleaseHook();
+                    // 缺口账本要在第一个场景加载**之前**装好，否则启动期那一批
+                    // 「贴图后到」就全落在观测之外了——而那正是最容易复现的场景。
+                    // 装没装上由 `render-gap` 通道自述（`ledger-installed` /
+                    // `ledger-unavailable`），不依赖 console——debug 级在默认档位会被丢掉。
+                    installRenderGapLedger();
+                    // 视口指纹：立刻一条 + 8s 一条。晚的那条是等游戏自己把
+                    // 设计分辨率 / 适配策略设完之后再采——那才是实际生效的值。
+                    reportViewportFingerprint('engine-init');
+                    window.setTimeout(function () { reportViewportFingerprint('settled'); }, 8000);
                     // 兜底：自检看门狗正常由启动沉降（sendReady）接手。万一沉降
                     // 因故没上报（页面卡在加载中等），这里 20s 后也必须把它拉起来，
                     // 否则「元素不全」又回到无人观测的状态。
