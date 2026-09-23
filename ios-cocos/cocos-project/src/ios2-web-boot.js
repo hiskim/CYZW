@@ -2549,10 +2549,15 @@
                 // 于是同一次点击「5 个窗口进了 A、2 个进了 B」。
                 // 所以"某个窗口画面不对"的第一嫌疑人**不是渲染，而是它开的根本是另一个界面**。
                 // 这一列就是判"是不是同一个页面"的唯一读数 —— 比猜渲染靠谱得多。
+                //
+                // ⚠️ 不能只认 `window.fgui`：实测（2026-09-23）`packages=?` 说明这个全局
+                //    取不到，于是这一整条会**静默为空**。所以下面 `skeleton` 是从**场景树**
+                //    直接读的（不依赖任何 FGUI 全局），两条互为兜底。
                 try {
-                    var fgAny = window.fgui || window.fairygui;
+                    var fgAny = window.fgui || window.fairygui || window.fairygui_cc ||
+                                (window.cc && cc.fgui) || null;
                     var grObj = fgAny && fgAny.GRoot && fgAny.GRoot.inst;
-                    var grNode2 = grObj && (grObj.node || grObj._node);
+                    var grNode2 = grObj && (grObj.node || grObj._node || grObj._displayObject);
                     var gkids = (grNode2 && grNode2._children) || [];
                     var panels = [];
                     for (var p = 0; p < gkids.length && p < 14; p++) {
@@ -2562,8 +2567,27 @@
                         panels.push(pk.name + ':' + pw + 'x' + ph +
                                     (pk.activeInHierarchy === false ? ':off' : ''));
                     }
-                    layout.topPanels = panels;
-                } catch (ignoredP2) {}
+                    if (panels.length) layout.topPanels = panels;
+                    else layout.topPanelsMiss = 'no-groot';
+                } catch (ignoredP2) { layout.topPanelsMiss = 'throw'; }
+                // 场景树深度 1~3 的「骨架」：`<depth>:<name>:<WxH>#<子数>`。
+                // 不依赖 FGUI 全局，直接回答"最外层开了哪些东西"—— 是判"同一个界面"的兜底读数。
+                var skeleton = [];
+                var seenSkeleton = {};
+                for (var k3 = 0; k3 < all.length; k3++) {
+                    var e3 = all[k3];
+                    if (e3.hidden || e3.depth < 1 || e3.depth > 3) continue;
+                    var kidCount = (e3.node._children || []).length;
+                    if (kidCount < 1) continue;                 // 只要容器
+                    var key3 = e3.depth + ':' + e3.node.name;
+                    if (seenSkeleton[key3]) continue;
+                    seenSkeleton[key3] = 1;
+                    var sw = 0, sh = 0;
+                    try { sw = Math.round(e3.node.width); sh = Math.round(e3.node.height); } catch (ignoredSk) {}
+                    skeleton.push(e3.depth + ':' + e3.node.name + ':' + sw + 'x' + sh + '#' + kidCount);
+                    if (skeleton.length >= 24) break;
+                }
+                layout.skeleton = skeleton;
                 var oversized = [];
                 var collapsed = 0, badScale = 0, maxSpan = 0;
                 for (var q = 0; q < geo.length; q++) {
@@ -2632,33 +2656,74 @@
                     var vs = cc.view.getVisibleSize();
                     ref = Math.max(vs.width, vs.height);
                 } catch (ignoredRef) {}
-                var stack = [scene];
+                var stack = [[scene, 0, false]];
                 var count = 0;
+                var containers = [];
                 while (stack.length) {
-                    var node = stack.pop();
+                    var item = stack.pop();
+                    var node = item[0];
+                    var depth = item[1];
+                    var hidden = item[2];
                     if (!node) continue;
                     count++;
+                    // 隐藏沿子树往下传（父节点 inactive 时子节点的 activeInHierarchy 也是 false，
+                    // 逐节点判断会把整棵隐藏树拆成一堆记录）。
+                    if (!hidden && (node.activeInHierarchy === false ||
+                                    (typeof node.opacity === 'number' && node.opacity <= 0))) hidden = true;
                     try {
                         var span = Math.max(Math.abs(node.width * node.scaleX),
                                             Math.abs(node.height * node.scaleY));
                         if (isFinite(span)) {
-                            if (span > sample.maxSpan) sample.maxSpan = span;
+                            if (span > sample.maxSpan) {
+                                sample.maxSpan = span;
+                                // ⚠️ **只报数字没用**：`maxSpan=34720` 回答不了"是谁"。
+                                // 带上最大那个的短路径，`[mem]` 自己就能点名 ——
+                                // 这样**不用按快捷键、不用抓快照**，60s 的曲线里就带着元凶。
+                                sample.biggestSpan = nodePath(node, 5);
+                            }
                             if (ref > 0 && span > ref * 2) sample.big++;
                         }
                     } catch (ignoredSpan) {}
                     var kids = node._children || [];
-                    for (var i = 0; i < kids.length; i++) stack.push(kids[i]);
+                    // 「容器型」节点 = 面板 / 页面容器（子节点越多越像）。深度 ≤6 够覆盖 FGUI 的页面层。
+                    //
+                    // 为什么也要塞进这条**周期性**读数：`⇧⌘D` 要靠人按，实测**一次都没被按过**
+                    // （diagnostics.log 里 `reason=hotkey-all` = 0 条）。而这个故障是**持续**的
+                    // —— 只要在坏着的时候有一条读数就够了，那就让它**自己**留下来，不依赖人。
+                    // 输出会把两端对齐着看：异常窗口的面板名单与正常窗口差在哪一项。
+                    if (depth <= 6 && kids.length >= 4) {
+                        containers.push({ name: node.name, kids: kids.length,
+                                          depth: depth, hidden: hidden });
+                    }
+                    for (var i = 0; i < kids.length; i++) stack.push([kids[i], depth + 1, hidden]);
                 }
                 sample.nodes = count;
                 sample.maxSpan = Math.round(sample.maxSpan);
                 sample.refSpan = Math.round(ref);
+                if (containers.length) {
+                    containers.sort(function (a, b) { return b.kids - a.kids; });
+                    var topPanels = containers.slice(0, 8);
+                    // 选完再按名字排序：六条日志并排看时，同一面板才对得齐。
+                    topPanels.sort(function (a, b) {
+                        return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+                    });
+                    sample.panels = topPanels.map(function (c) {
+                        return c.depth + ':' + c.name + '#' + c.kids + (c.hidden ? '!' : '');
+                    }).join('/');
+                }
             }
         } catch (ignored) {}
         try {
             var am = window.cc && cc.assetManager;
             if (am) {
-                if (am.bundles && typeof am.bundles.getBundleNames === 'function') {
-                    sample.bundles = am.bundles.getBundleNames().length;
+                // ⚠️ 实测（2026-09-23）：`getBundleNames` 这个存在的假设**不成立**，
+                //    日志里 `bundles=?` 一直是问号。多试几种口径，别静默留空。
+                var bs = am.bundles;
+                if (bs) {
+                    if (typeof bs.getBundleNames === 'function') sample.bundles = bs.getBundleNames().length;
+                    else if (bs._map && typeof bs._map.size === 'number') sample.bundles = bs._map.size;
+                    else if (typeof bs.getKeyValues === 'function') sample.bundles = bs.getKeyValues().length;
+                    else if (typeof bs.count === 'number') sample.bundles = bs.count;
                 }
                 var cache = am.assets;
                 if (cache) {
@@ -2669,9 +2734,13 @@
             }
         } catch (ignored) {}
         try {
-            var fgui = window.fgui;
-            if (fgui && fgui.UIPackage && fgui.UIPackage._packageInstById) {
-                sample.packages = Object.keys(fgui.UIPackage._packageInstById).length;
+            // 同样别只认一个全局：先找得到 `fgui` 再说，找不到就留 `?`（不假装 0）。
+            var fg = window.fgui || window.fairygui || window.fairygui_cc ||
+                     (window.cc && cc.fgui) || null;
+            var UP = fg && fg.UIPackage;
+            if (UP) {
+                var byId = UP._packageInstById || UP._instById || null;
+                if (byId) sample.packages = Object.keys(byId).length;
             }
         } catch (ignored) {}
         try {
@@ -2713,7 +2782,9 @@
                         ' lsKB=' + (sample.localStorageKB === undefined ? '?' : sample.localStorageKB) +
                         ' span=' + (sample.maxSpan === undefined ? '?' : sample.maxSpan) +
                         '/ref' + (sample.refSpan === undefined ? '?' : sample.refSpan) +
-                        ' big=' + (sample.big === undefined ? '?' : sample.big),
+                        ' big=' + (sample.big === undefined ? '?' : sample.big) +
+                        ' biggest=' + (sample.biggestSpan === undefined ? '-' : sample.biggestSpan) +
+                        ' panels=' + (sample.panels === undefined ? '-' : sample.panels),
                 nodes: String(sample.nodes)
             });
         } catch (ignored) {}

@@ -862,12 +862,13 @@ public final class GameViewportInstance: NSView {
             // 现在页面侧每 60s 采一次，这里落 info；`webcontent` 那一项才是大头。
             let resident = Self.residentMemoryMB()
             let webMemory = webContentMemoryMB()
-            LobbyLog.info("[mem] %@ (%@): %@ nodes=%@ resident=%ldMB webcontent=%ldMB",
-                          account.fileName, reason, assets, nodes, resident, webMemory)
+            let system = Self.systemMemory()
+            LobbyLog.info("[mem] %@ (%@): %@ nodes=%@ resident=%ldMB webcontent=%ldMB %@",
+                          account.fileName, reason, assets, nodes, resident, webMemory, system)
             if reason == "audit" {
                 DiagnosticsLog.append("[mem] account=\(account.fileName) reason=\(reason) " +
                                       "\(assets) nodes=\(nodes) " +
-                                      "resident=\(resident)MB webcontent=\(webMemory)MB")
+                                      "resident=\(resident)MB webcontent=\(webMemory)MB \(system)")
             }
         case .graphics(let event, let message):
             LobbyLog.warn("[instance] WebGL %@: %@ (%@)", event, message, account.fileName)
@@ -1193,6 +1194,51 @@ public final class GameViewportInstance: NSView {
         }
         guard result == KERN_SUCCESS else { return -1 }
         return Int(info.resident_size) / (1024 * 1024)
+    }
+
+    /// 整机内存压力读数 —— **"内存"这条线真正该看的其实是它。**
+    ///
+    /// 为什么（2026-09-23 实测）：6 个实例各 ~700MB RSS（footprint ≈ ×2 ≈ 1.4GB）
+    /// ⇒ 24GB 的机器上 `kern.memorystatus_vm_pressure_level = 2 (WARN)`、
+    ///   空闲内存只剩 **99 MB**、**压缩器吃掉 10.4 GB**。
+    /// 这一条把之前所有"看起来矛盾"的观察一次性解释掉：
+    ///   · 5 个窗口正常、1 个坏，而**每个窗口自己的指标都一样**
+    ///     ⇒ 差异不在某个窗口，而在**整机压力下谁运气不好**；
+    ///   · 坏的那个 `webcontent=396MB` 比正常的 `664MB` **还低** ——
+    ///     不是"内容少"，而是它的页面**被系统压缩走了**（RSS 不含压缩页），
+    ///     这本身就是"它被挤得最厉害"的证据；
+    ///   · 日志干净（压缩/换页造成的停顿里最容易撞上 §11 那种**静默**失败）；
+    ///   · "重开就好"（重启一次释放几 GB，压力解除）、"越用越容易出问题"（压力是累积的）。
+    /// 用户最早那句"内存到 1.3G 就出问题"说的其实就是这个（1.4GB × 6 ≈ 8.4GB）。
+    ///
+    /// 只读整机统计，**不需要任何 entitlement**。
+    private static func systemMemory() -> String {
+        var pageSize = 0
+        var size = MemoryLayout<Int>.size
+        if sysctlbyname("hw.pagesize", &pageSize, &size, nil, 0) != 0 || pageSize <= 0 {
+            pageSize = 16384
+        }
+        var pressure: Int32 = 0
+        var pressureSize = MemoryLayout<Int32>.size
+        let hasPressure = sysctlbyname("kern.memorystatus_vm_pressure_level",
+                                       &pressure, &pressureSize, nil, 0) == 0
+
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let result: kern_return_t = withUnsafeMutablePointer(to: &stats) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                host_statistics64(mach_host_self(), host_flavor_t(HOST_VM_INFO64), rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else {
+            return "sysP=\(hasPressure ? Int(pressure) : -1) sysMem=?"
+        }
+        let toMB: (natural_t) -> Int = { Int($0) * pageSize / (1024 * 1024) }
+        // 1=NORMAL / 2=WARN / 4=CRITICAL。`sysFree` 是"真正能立刻用的"，
+        // `sysComp` 是压缩器占用 —— **这一个才是"挤没挤"的直接读数**。
+        return "sysP=\(hasPressure ? Int(pressure) : -1) " +
+               "sysFree=\(toMB(stats.free_count &+ stats.speculative_count))MB " +
+               "sysComp=\(toMB(stats.compressor_page_count))MB"
     }
 
     /// 本实例 **WebContent 子进程**的常驻内存（MB）。
