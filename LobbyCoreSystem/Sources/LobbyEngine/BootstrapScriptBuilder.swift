@@ -14,6 +14,23 @@ import LobbyDomain
 /// ⚠️ 字段名与页面侧硬编码契约逐字节对齐（见 LobbyConfiguration 页面桥契约注释），
 /// 改名即静默失效。
 public enum BootstrapScriptBuilder {
+    /// WS 帧嗅探开关 —— **默认关**。
+    ///
+    /// 它当初是为了回答一个问题：`login_serverlist` 到底走 HTTP 还是 WS。
+    /// **那题早就有答案了**（走 HTTP，`/login/serverlist` 由宿主代发，见 XHR 垫片那段注释），
+    /// 但这段嗅探一直挂在**每一帧**上：
+    /// `WebSocket.prototype.send` 被包一层，对每个二进制帧做
+    /// `for (key = 2; key <= 249; key++)` × 最多 92 字节的**逐字符 XOR 试解**
+    /// ⇒ 每帧最高约 **2.3 万次字符操作 + 约 250 个临时字符串**。
+    /// 战斗里外发帧是持续的，而它**实战里什么都不产出**
+    /// （`[login-stats]` 里的 `wsLoginCmds` 一直是 `[]`）。
+    ///
+    /// ⇒ 纯诊断、每帧、零产出。内存紧张时，持续的分配垃圾只会加重 GC 抖动，
+    /// 而这层开销**原生版本没有**（§38 的"我们比原生多背了什么"）。
+    ///
+    /// 要复查那个问题就把这里改成 `true` —— 只影响诊断，**不碰登录链路**。
+    public static let enablesWebSocketSniff = false
+
     public struct Configuration: Sendable {
         public let instanceID: String
         public let accountName: String
@@ -187,8 +204,12 @@ public enum BootstrapScriptBuilder {
         var __loginStats = { authXHR: 0, credentialXHR: 0, serverListXHR: 0, passthroughLoginXHR: 0,
                              passthroughPaths: [], parseHooked: false, wsLoginCmds: [] };
         // WS 嗅探：帧是 BON + 单字节 XOR（密钥在头 4 字节里），所以对 2..249 逐把钥匙试一遍，
-        // 看解密后有没有 `login_xxx` —— 只要 1KB 级的字节，代价可以忽略。
+        // 看解密后有没有 `login_xxx`。
+        // ⚠️ 原注释写的是"只要 1KB 级的字节，代价可以忽略" —— **那句是错的**：
+        //    代价不在单帧大小，而在**它挂在每一帧上**（而且绝大多数帧扫完 248 把钥匙都不会命中）。
         // 目的：确认 `login_serverlist` 到底走的是 HTTP 还是 WS。
+        // ⚠️ **默认关**（见 `enablesWebSocketSniff`）：结论已落地，而它的代价是**每一帧**。
+        if (\(Self.enablesWebSocketSniff ? "true" : "false")) {
         (function () {
           var proto = window.WebSocket && window.WebSocket.prototype;
           if (!proto || !proto.send || proto.__lobbySniffed) return;
@@ -221,6 +242,7 @@ public enum BootstrapScriptBuilder {
           proto.send = function (data) { sniff(data); return originalSend.apply(this, arguments); };
           proto.__lobbySniffed = true;
         })();
+        }
         window.__LOBBY_LOGIN__ = {
           pending: __loginPending,
           credentialBytes: function () { return __credentialBytes ? __credentialBytes.length : 0; },
