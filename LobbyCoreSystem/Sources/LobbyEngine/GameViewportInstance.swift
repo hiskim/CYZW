@@ -90,6 +90,9 @@ public final class GameViewportInstance: NSView {
     private var renderBadSamples = 0
     /// 实例 ↔ WebContent PID 只打一次（见 `logWebProcessIdentity`）。
     private var didLogWebProcessIdentity = false
+    /// WebContent 子进程 PID（上面那次探测拿到的）。0 = 没探到。
+    /// 用它按 `proc_pidinfo` 读**这个实例自己**的常驻内存。
+    private var webProcessID: pid_t = 0
     /// 在途下载的代理。`WKDownload.delegate` 是弱引用，不自己持有就会被提前释放，
     /// 表现为「下载一动不动、也不报错」。
     private var activeDownloads: [ObjectIdentifier: ScriptDownloadSink] = [:]
@@ -852,7 +855,20 @@ public final class GameViewportInstance: NSView {
             LobbyLog.error("[instance] WebGL context unrecoverable, reloading")
             requestAutomaticReload(reason: "webgl context lost")
         case .memory(let reason, let assets, let nodes):
-            LobbyLog.debug("[instance] web memory (%@): assets=%@ nodes=%@", reason, assets, nodes)
+            // 页面侧的对象/资产规模 + **这个实例自己的 WebContent 常驻内存** + 本进程常驻内存。
+            //
+            // 原来这里只打 `.debug`，而页面侧**从来没发过这条** ⇒ 内存一直是个盲区
+            // （只能靠活动监视器肉眼盯"到 1.3G 就出问题"这种说法）。
+            // 现在页面侧每 60s 采一次，这里落 info；`webcontent` 那一项才是大头。
+            let resident = Self.residentMemoryMB()
+            let webMemory = webContentMemoryMB()
+            LobbyLog.info("[mem] %@ (%@): %@ nodes=%@ resident=%ldMB webcontent=%ldMB",
+                          account.fileName, reason, assets, nodes, resident, webMemory)
+            if reason == "audit" {
+                DiagnosticsLog.append("[mem] account=\(account.fileName) reason=\(reason) " +
+                                      "\(assets) nodes=\(nodes) " +
+                                      "resident=\(resident)MB webcontent=\(webMemory)MB")
+            }
         case .graphics(let event, let message):
             LobbyLog.warn("[instance] WebGL %@: %@ (%@)", event, message, account.fileName)
         case .frameRateWrite(let fps, let stack):
@@ -1077,6 +1093,7 @@ public final class GameViewportInstance: NSView {
            let raw = webView.value(forKey: "_webProcessIdentifier") as? NSNumber,
            raw.int32Value > 0 {
             identifier = String(raw.int32Value)
+            webProcessID = pid_t(raw.int32Value)
         }
         LobbyLog.info("[instance] %@ webcontent pid=%@", account.fileName, identifier)
     }
@@ -1135,7 +1152,9 @@ public final class GameViewportInstance: NSView {
                                                               in: nil, contentWorld: .page)
             let raw = (result as? String) ?? String(describing: result ?? "nil")
             // 单条封顶：账本文件是取证卡片，不该被一次快照挤爆（超限只留尾部）。
-            let text = raw.count > 6000 ? String(raw.prefix(6000)) + "…(截断)" : raw
+            // 12000：审计一次要装下 `outline[40]`（含 subtree）+ `silenced[20]` + `hidden[10]`
+            // 大约 7~8 KB，6000 会把尾部的 `gaps` 整段切掉——而 `gaps` 恰恰是判据之一。
+            let text = raw.count > 12000 ? String(raw.prefix(12000)) + "…(截断)" : raw
             LobbyLog.info("[instance] audit snapshot: %@ %@", account.fileName, text)
             DiagnosticsLog.append("[audit] account=\(account.fileName) reason=\(reason) \(text)")
             reportViewportFingerprintForAudit()
@@ -1146,14 +1165,85 @@ public final class GameViewportInstance: NSView {
         }
     }
 
-    /// 取证时顺带补一条视口指纹（页面里那个函数不带账号，这里借 `graphics` 通道的账号字段）。
+    /// 取证时顺带补一条视口指纹与一次内存采样（页面里那两个函数不带账号，靠 graphics/memory 通道的账号字段）。
     @MainActor
     private func reportViewportFingerprintForAudit() {
-        let body = "if (window.__ios2ViewportFingerprint) window.__ios2ViewportFingerprint('audit');"
+        let body = """
+        if (window.__ios2ViewportFingerprint) window.__ios2ViewportFingerprint('audit');
+        if (window.__ios2MemorySample) window.__ios2MemorySample('audit');
+        """
         Task { @MainActor [weak self] in
             _ = try? await self?.webView.callAsyncJavaScript(body, arguments: [:],
                                                             in: nil, contentWorld: .page)
         }
+    }
+
+    /// 本进程常驻内存（MB）。`task_info(MACH_TASK_BASIC_INFO)` 不需要任何 entitlement。
+    ///
+    /// ⚠️ 这只是**宿主进程**：6 个游戏实例的页面堆全在各自的 WebContent 子进程里（各 ~1.4 GB），
+    /// 所以这个数通常只有几百 MB，**不能拿来判"哪个窗口内存高"** —— 要配 `webContentMemoryMB()`。
+    /// 失败返回 -1（不假装 0）。
+    private static func residentMemoryMB() -> Int {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result: kern_return_t = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return -1 }
+        return Int(info.resident_size) / (1024 * 1024)
+    }
+
+    /// 本实例 **WebContent 子进程**的常驻内存（MB）。
+    ///
+    /// 为什么必须读它、而不是读本进程：截图实测 —— 6 个游戏实例各占 **1.33~1.52 GB**
+    /// （合计 8.3 GB），**页面堆的大头全在 WebContent 里**，主进程只有几百 MB。
+    /// 用户"内存到 1.3G 后容易出问题"说的就是这些进程，所以必须**按账号**把它记成曲线。
+    ///
+    /// ⚠️ `proc_pidinfo` 声明在 `libproc.h` 里，Swift 直接看不到 ⇒ 用 `dlsym` 取符号；
+    /// 结构体 `proc_taskinfo` 按 libproc.h 的字段顺序自己声明（全是定长整数，没有对齐陷阱）。
+    /// 任何一步失败都返回 **-1**，不假装 0（`0` 会被误读成"没占内存"）。
+    private static let procPidinfo: (@convention(c) (Int32, Int32, UInt64, UnsafeMutableRawPointer?, Int32) -> Int32)? = {
+        guard let handle = dlopen(nil, RTLD_NOW),
+              let symbol = dlsym(handle, "proc_pidinfo") else { return nil }
+        return unsafeBitCast(symbol,
+                             to: (@convention(c) (Int32, Int32, UInt64, UnsafeMutableRawPointer?, Int32) -> Int32).self)
+    }()
+
+    /// 对应 libproc.h 的 `struct proc_taskinfo`（flavor = PROC_PIDTASKINFO = 4）。
+    private struct ProcTaskInfo {
+        var virtualSize: UInt64 = 0
+        var residentSize: UInt64 = 0
+        var totalUser: UInt64 = 0
+        var totalSystem: UInt64 = 0
+        var threadsUser: UInt64 = 0
+        var threadsSystem: UInt64 = 0
+        var policy: Int32 = 0
+        var faults: Int32 = 0
+        var pageins: Int32 = 0
+        var cowFaults: Int32 = 0
+        var messagesSent: Int32 = 0
+        var messagesReceived: Int32 = 0
+        var syscallsMach: Int32 = 0
+        var syscallsUnix: Int32 = 0
+        var csw: Int32 = 0
+        var threadnum: Int32 = 0
+        var numrunning: Int32 = 0
+        var priority: Int32 = 0
+    }
+
+    private func webContentMemoryMB() -> Int {
+        guard let call = Self.procPidinfo, webProcessID > 0 else { return -1 }
+        var info = ProcTaskInfo()
+        let size = Int32(MemoryLayout<ProcTaskInfo>.size)
+        let got = withUnsafeMutablePointer(to: &info) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: UInt8.self, capacity: Int(size)) {
+                call(webProcessID, 4, 0, $0, size)   // PROC_PIDTASKINFO
+            }
+        }
+        guard got == size else { return -1 }
+        return Int(info.residentSize / (1024 * 1024))
     }
 
     /// 渲染完整性：连续 3 个采样周期报缺失 → 请求整页兜底重载（有限次数）。

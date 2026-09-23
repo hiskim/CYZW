@@ -934,16 +934,20 @@ public final class LobbySessionModel: ObservableObject {
 
     // MARK: - 一键取证
 
-    /// 抓「当前焦点实例」的页面侧诊断快照（没有焦点实例时抓全部）。
+    /// 抓页面侧诊断快照并落盘。
     ///
-    /// 触发入口：菜单栏「诊断 → 抓取渲染诊断快照」（⇧⌘A）。
-    /// 为什么优先只抓焦点那一个：缺块是**单个窗口**的现象，
-    /// 用户看到问题时会先点一下那个窗口（它就成了焦点），
-    /// 这时抓它最准；一次抓 7 个不但噪音大，还会把真正有问题的那条淹掉。
-    public func captureRenderAudit() async {
+    /// 触发入口（菜单栏「诊断」）：
+    /// - **抓取渲染诊断快照**（⇧⌘A）—— 只抓**当前焦点**实例
+    /// - **抓取全部实例诊断快照**（⇧⌘D）—— 一次抓**所有在跑实例**
+    ///
+    /// 为什么还要"全部"那一个：缺口/异常是**单个窗口**的现象，要定位就得**横向比**。
+    /// 而逐个窗口按快捷键时，**两次按之间总会发生点击**（用户自己点、或同步回放），
+    /// 于是两份快照**不是同一时刻**、界面对不上——实测就踩过这个坑（§29）。
+    /// 一次抓全部 ⇒ 同一瞬间的 N 份快照，才真的可比。
+    public func captureRenderAudit(allInstances: Bool = false) async {
         let surfaces = pool.allSurfaces
         var targets = surfaces
-        if let focused = focusedAccountID,
+        if !allInstances, let focused = focusedAccountID,
            let hit = surfaces.first(where: { $0.accountID == focused }) {
             targets = [hit]
         }
@@ -954,7 +958,7 @@ public final class LobbySessionModel: ObservableObject {
         }
         LobbyLog.info("[session] audit snapshot requested: %ld instance(s)", targets.count)
         for instance in targets {
-            await instance.captureDiagnosticsSnapshot(reason: "hotkey")
+            await instance.captureDiagnosticsSnapshot(reason: allInstances ? "hotkey-all" : "hotkey")
         }
     }
 }

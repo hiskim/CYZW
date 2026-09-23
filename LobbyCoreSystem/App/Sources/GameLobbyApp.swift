@@ -10,7 +10,7 @@ import SwiftUI
 enum LobbyComposition {
     /// 构建指纹。排查「改了但没重装 / 跑的是旧版」这一类别时，看启动第一行日志即可。
     /// **每次改动宿主侧行为就 bump 一次。**
-    static let buildTag = "2026-09-21.42"
+    static let buildTag = "2026-09-23.47"
 
     /// 组装会话门面（窗口级单例）。主线程执行（实例池 / 会话门面均为 MainActor 类型）。
     @MainActor
@@ -100,9 +100,15 @@ struct GameLobbyApp: App {
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
 
+                Button("抓取全部实例诊断快照") {
+                    Task { @MainActor in await session.captureRenderAudit(allInstances: true) }
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+
                 Divider()
 
-                Text("先点一下出问题的那个窗口，再按 ⇧⌘A。结果写入 diagnostics.log 的 [audit] 行")
+                Text("单个：先点一下那个窗口，再按 ⇧⌘A")
+                Text("全部：⇧⌘D —— 一次抓所有实例，快照同一时刻、可直接横向对比")
             }
         }
     }

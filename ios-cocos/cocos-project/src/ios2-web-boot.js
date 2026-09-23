@@ -2373,7 +2373,13 @@
     /// 同时给出**渲染组件类直方图** —— 这直接回答"这套 UI 到底由什么构成"，
     /// 决定了还有哪些类是必须挂钩的。**只读，无副作用。**
     window.__ios2RenderAudit = function (sampleLimit) {
-        var out = { ok: false, reason: 'not-installed', scanned: 0, withRenderer: 0,
+        // allNodes / hiddenNodes / hidden 是用来分「没建」与「建了没启用」的：
+        // `scanned` 只数 `activeInHierarchy !== false` 的节点，**隐藏的子树被整棵跳过**——
+        // 于是"内容区没被创建"和"内容区建了但被隐藏/没 add 进树"在看板上长得一样。
+        // 实测（§27）：超级13 的 `scanned` 只有超级04 的 0.46（471 vs 1035），
+        // 而截图里那块位置露出的是**下面一层**——更像"建了但没启用"，必须能分开。
+        var out = { ok: false, reason: 'not-installed', scanned: 0, allNodes: 0,
+                    hiddenNodes: 0, hidden: [], withRenderer: 0,
                     silenced: [], classes: {}, silencedByClass: {} };
         try {
             var Flow = window.cc && cc.RenderFlow;
@@ -2384,23 +2390,37 @@
             out.ok = true;
             out.reason = 'ok';
             var limit = sampleLimit || 40;
-            // 第二次遍历用的「带渲染组件的子树轮廓」，用来一眼看出**有没有两套 UI 同时活着**
-            // （例如"大厅上还叠着玩具的页面"这种层叠）。
+            // 一次遍历收集全部信息（含**未激活**的节点），最后再排序输出。
+            // ⚠️ 必须先把"隐藏根"标记沿着子树传下去：父节点 inactive 时子节点
+            //    `activeInHierarchy` 也是 false，逐节点判断会把整棵隐藏树拆成 N 条记录。
             out.outline = [];
             // 40 条：这份结果会被落盘（单条封顶 6 KB），列太长会把其它字段挤掉。
             var outlineLimit = 40;
-            var stack = [[scene, 0]];
+            var all = [];        // { node, depth, own, off, hidden }
+            var hiddenTop = [];  // 顶层被隐藏的子树（按节点数降序取前 10）
+            var geo = [];        // 有渲染构件、且**没被隐藏**的节点 → 供布局体检用
+            var stack = [[scene, 0, null]];
             while (stack.length) {
                 var item = stack.pop();
                 var node = item[0];
                 var depth = item[1];
+                var hiddenRoot = item[2];
                 if (!node) continue;
+                out.allNodes++;
                 var children = node._children || [];
-                for (var c = 0; c < children.length; c++) stack.push([children[c], depth + 1]);
-                if (node.activeInHierarchy === false) continue;
-                if (typeof node.opacity === 'number' && node.opacity <= 0) continue;
-                out.scanned++;
-                var renderers = 0;
+                if (!hiddenRoot &&
+                    (node.activeInHierarchy === false ||
+                     (typeof node.opacity === 'number' && node.opacity <= 0))) {
+                    hiddenRoot = { name: node.name, depth: depth, nodes: 0, renderers: 0 };
+                    // ⚠️ 这里**不能**设"只收前 N 条"的上限。
+                    // `.43` 就是这么写的（`if (hiddenTop.length < 20) push`），
+                    // 而遍历是栈式 DFS、**顺序不等于规模**：结果超级03 只收进了一串小面板
+                    // （47/23/15/4/3/2…），把四千多节点的大面板全漏了 ——
+                    // 两份审计的 `hidden` 构成因此完全不可比（前10 合计 98 vs 11063，差 113 倍）。
+                    // 全部收下、最后再排序取前几条，才是"按规模"的读法。
+                    hiddenTop.push(hiddenRoot);
+                }
+                var own = 0;
                 var offRenderers = 0;
                 var comps = node._components || [];
                 for (var i = 0; i < comps.length; i++) {
@@ -2410,7 +2430,8 @@
                     if (typeof comp.markForRender !== 'function' &&
                         typeof comp.disableRender !== 'function') continue;
                     var name = classifyRenderer(comp);
-                    renderers++;
+                    own++;
+                    if (hiddenRoot) { hiddenRoot.renderers++; continue; }   // 隐藏子树只计数，不参与直方图
                     out.withRenderer++;
                     out.classes[name] = (out.classes[name] || 0) + 1;
                     if (typeof node._renderFlag !== 'number') continue;
@@ -2429,20 +2450,276 @@
                         }
                     }
                 }
-                if (renderers > 0 && out.outline.length < outlineLimit) {
-                    out.outline.push({
-                        depth: depth, node: node.name,
-                        parent: (node.parent && node.parent.name) || '',
-                        children: children.length, renderers: renderers, off: offRenderers
-                    });
+                if (hiddenRoot) {
+                    hiddenRoot.nodes++;
+                    out.hiddenNodes++;
+                } else {
+                    out.scanned++;
+                }
+                all.push({ node: node, depth: depth, own: own, off: offRenderers, hidden: !!hiddenRoot });
+                // 布局体检的取样：**只看"没被隐藏且真的会画"的节点**。
+                // 隐藏面板的尺寸再离谱也不影响观感（这正是 §30 那 3.1 万隐藏节点不该混进来的原因）。
+                if (!hiddenRoot && own > 0) {
+                    var gw = 0, gh = 0, gsx = 1, gsy = 1;
+                    try { gw = node.width; gh = node.height; } catch (ignoredW) {}
+                    try { gsx = node.scaleX; gsy = node.scaleY; } catch (ignoredS) {}
+                    geo.push({ node: node, w: gw, h: gh, sx: gsx, sy: gsy });
+                }
+                for (var c = 0; c < children.length; c++) stack.push([children[c], depth + 1, hiddenRoot]);
+            }
+            // 子树规模：按深度**降序**把每个节点的合计往上累加（深的先算，父节点收到的已是子树和）。
+            all.sort(function (a, b) { return b.depth - a.depth; });
+            var subtree = new Map();
+            for (var k = 0; k < all.length; k++) {
+                var e = all[k];
+                var total = e.own + (subtree.get(e.node) || 0);
+                subtree.set(e.node, total);
+                if (e.node.parent) {
+                    subtree.set(e.node.parent, (subtree.get(e.node.parent) || 0) + total);
                 }
             }
+            // ★ outline 按「**子树**渲染构件数」降序，而不是遍历顺序。
+            //   实测教训：按遍历顺序输出的两份审计前 30 条**一模一样**（都是 postprocess /
+            //   Splash 那批），真正的差异全被 40 条上限挤掉了 —— 排序后才读得出来。
+            var ranked = [];
+            for (var k2 = 0; k2 < all.length; k2++) {
+                var e2 = all[k2];
+                if (e2.hidden || e2.own === 0) continue;
+                ranked.push({
+                    depth: e2.depth, node: e2.node.name,
+                    parent: (e2.node.parent && e2.node.parent.name) || '',
+                    children: (e2.node._children || []).length,
+                    renderers: e2.own, subtree: subtree.get(e2.node) || e2.own, off: e2.off
+                });
+            }
+            ranked.sort(function (a, b) { return b.subtree - a.subtree; });
+            out.outline = ranked.slice(0, outlineLimit);
+            hiddenTop.sort(function (a, b) { return b.nodes - a.nodes; });
+            // 12 条：够看出"哪个面板被藏了"，又不至于把落盘额度吃光。
+            out.hidden = hiddenTop.slice(0, 12);
+            out.hiddenRoots = hiddenTop.length;
+
+            // ── 布局体检 ────────────────────────────────────────────────────
+            //
+            // 为什么必须加（2026-09-23 截图）：超级03 打开「副本」后，整页只剩**背景**
+            // 和一个**占满屏幕的大元素**，四张功能卡片全没了 —— 而**顶栏 HUD 与底栏正常**。
+            // 这条证据把方向掰过来了：
+            //   · 背景渲染出来了 ⇒ 那个面板 **visible 是真的**（否则什么都看不到）
+            //     ⇒ §27 的"面板根本没被创建/被藏起来"这个分支**排除**；
+            //   · 底栏（GRoot 直接子级）正常 ⇒ **不是全局缩放坏**；
+            //   ⇒ 真正坏的是**面板内部的尺寸/缩放**，也就是"某个小元素被撑成了全屏，
+            //     把同级卡片挤出去"或"卡片容器塌成 0"。
+            //
+            // 而布局算坏**既不抛异常也不 emit**（跟 §11 的 `disableRender()` 一样静默），
+            // 所以只能直接量：把"撑破屏幕"的节点按渲染面积排序输出，**带完整父链路径**
+            // —— FairyGUI 满树都是 `Image`/`GImage`，没有路径就定位不到任何东西。
+            var layout = { renderNodes: geo.length };
+            try {
+                var frame = null, design = null, vis = null;
+                try { frame = cc.view.getFrameSize(); } catch (ignoredF) {}
+                try { vis = cc.view.getVisibleSize(); } catch (ignoredV) {}
+                try { design = cc.view.getDesignResolutionSize(); } catch (ignoredD) {}
+                layout.frame = frame ? [Math.round(frame.width), Math.round(frame.height)] : null;
+                layout.visible = vis ? [Math.round(vis.width), Math.round(vis.height)] : null;
+                layout.design = design ? [Math.round(design.width), Math.round(design.height)] : null;
+                var refSpan = vis ? Math.max(vis.width, vis.height) : 0;
+                // GRoot 的尺寸/缩放是"整页适配"的源头：它一旦错，(0,0) 就是坏的。
+                try {
+                    var fgRoot = (window.fgui || window.fairygui);
+                    var gr = fgRoot && fgRoot.GRoot && fgRoot.GRoot.inst;
+                    if (gr) {
+                        layout.groot = { w: Math.round(gr.width), h: Math.round(gr.height),
+                                         sx: gr.scaleX, sy: gr.scaleY };
+                    }
+                } catch (ignoredG) {}
+                // 场景的直接子级：看清最外层（Canvas / GRoot 那一层）有没有塌。
+                var roots = [];
+                var rootKids = scene._children || [];
+                for (var r = 0; r < rootKids.length && r < 10; r++) {
+                    var rk = rootKids[r];
+                    var rw = 0, rh = 0;
+                    try { rw = Math.round(rk.width); rh = Math.round(rk.height); } catch (ignoredR) {}
+                    roots.push(rk.name + ':' + rw + 'x' + rh);
+                }
+                layout.roots = roots;
+                // GRoot 的直接子级 = 「现在开着哪些页面、各自多大」。
+                //
+                // 为什么必须单独列：这个项目**已经有过实测** —— 群控的归一化坐标
+                // （`clientX / window.innerWidth`）在不同窗口会落到**不同的按钮**上，
+                // 于是同一次点击「5 个窗口进了 A、2 个进了 B」。
+                // 所以"某个窗口画面不对"的第一嫌疑人**不是渲染，而是它开的根本是另一个界面**。
+                // 这一列就是判"是不是同一个页面"的唯一读数 —— 比猜渲染靠谱得多。
+                try {
+                    var fgAny = window.fgui || window.fairygui;
+                    var grObj = fgAny && fgAny.GRoot && fgAny.GRoot.inst;
+                    var grNode2 = grObj && (grObj.node || grObj._node);
+                    var gkids = (grNode2 && grNode2._children) || [];
+                    var panels = [];
+                    for (var p = 0; p < gkids.length && p < 14; p++) {
+                        var pk = gkids[p];
+                        var pw = 0, ph = 0;
+                        try { pw = Math.round(pk.width); ph = Math.round(pk.height); } catch (ignoredP) {}
+                        panels.push(pk.name + ':' + pw + 'x' + ph +
+                                    (pk.activeInHierarchy === false ? ':off' : ''));
+                    }
+                    layout.topPanels = panels;
+                } catch (ignoredP2) {}
+                var oversized = [];
+                var collapsed = 0, badScale = 0, maxSpan = 0;
+                for (var q = 0; q < geo.length; q++) {
+                    var t = geo[q];
+                    var spx = Math.abs(t.w * t.sx), spy = Math.abs(t.h * t.sy);
+                    var sp = Math.max(spx, spy);
+                    if (isFinite(sp) && sp > maxSpan) maxSpan = sp;
+                    var ax = Math.abs(t.sx), ay = Math.abs(t.sy);
+                    // scale 为 0 / NaN / 大于 3 都是异常（FGUI 正常布局里不会出现）。
+                    if (!isFinite(ax) || !isFinite(ay) || ax === 0 || ay === 0 || ax > 3 || ay > 3) badScale++;
+                    // "有渲染构件却尺寸塌成 0" —— 崩坏的容器最典型的样子。
+                    if (!(t.w > 0) || !(t.h > 0)) collapsed++;
+                    if (refSpan > 0 && (spx > refSpan * 1.2 || spy > refSpan * 1.2)) {
+                        oversized.push({ path: nodePath(t.node, 5),
+                                         w: Math.round(t.w), h: Math.round(t.h),
+                                         s: Math.round(t.sx * 100) / 100,
+                                         px: Math.round(spx), py: Math.round(spy) });
+                    }
+                }
+                // 按渲染面积降序：最大的那个几乎一定是"糊满屏幕的那货"。
+                oversized.sort(function (a, b) { return (b.px * b.py) - (a.px * a.py); });
+                layout.maxSpan = Math.round(maxSpan);
+                layout.oversizedTotal = oversized.length;
+                layout.oversized = oversized.slice(0, 6);
+                layout.collapsed = collapsed;
+                layout.badScale = badScale;
+            } catch (ignoredLayout) {
+                layout.error = String(ignoredLayout && ignoredLayout.message);
+            }
+            out.layout = layout;
         } catch (error) {
             out.ok = false;
             out.reason = 'error:' + (error && error.message);
         }
         return out;
     };
+
+    /// 页面侧内存 / 对象规模采样。
+    ///
+    /// 为什么必须补：原生侧**早就接好了**接收端（`PageEvent.memory(reason:assets:nodes:)`
+    /// → `GameViewportInstance` 的 `case .memory`），但**页面侧一次都没发过**
+    /// —— 这条通道一直是空的，所以日志里永远没有内存信息，只能靠活动监视器肉眼盯。
+    ///
+    /// 为什么关心：实测单窗口 `allNodes ≈ 3.1 万`，其中 **`hiddenNodes ≈ 3.1 万`**
+    /// —— FairyGUI 把**打开过的每个面板**都留在树上、只设 `visible = false`，从不卸载
+    /// （前 12 个隐藏面板就有 11063 节点 / 5493 渲染构件）。逛得越多越大、**只增不减**，
+    /// 与"内存到 1.3G 后容易出问题"高度吻合 —— 而这条曲线以前根本没人量。
+    function collectMemorySample() {
+        var sample = { nodes: 0, assets: '?', bundles: '?', packages: '?', heapMB: '?',
+                       maxSpan: 0, big: 0 };
+        try {
+            var scene = window.cc && cc.director && cc.director.getScene && cc.director.getScene();
+            if (scene) {
+                // 顺带采一个「布局有没有被撑破」的读数。
+                //
+                // 为什么和内存一起采：**同一个遍历**，成本几乎为零，而且它给出的是**时间序列**
+                // —— 内存那条只有"涨没涨"的信息，布局这条能看出"哪一刻坏的"。
+                // 背景（2026-09-23 截图）：超级03 打开「副本」后整页只剩背景 + 一个占满屏幕的
+                // 大元素，四张功能卡片全没了，而底栏/HUD 正常 ⇒ 背景渲染了 ⇒ 面板**是可见的**，
+                // 坏的是**内部尺寸/缩放**。而尺寸算坏**不抛异常、不打日志**，只能直接量。
+                // 口径：span = max(|width·scaleX|, |height·scaleY|)，ref = 可见区最长边。
+                // `big` = span > 2·ref 的节点数。**注意 `big` 是趋势量不是绝对值**：
+                // 滚动列表的内容节点本来就比可见区大（正常），所以只看**跳变**，不看数值本身。
+                var ref = 0;
+                try {
+                    var vs = cc.view.getVisibleSize();
+                    ref = Math.max(vs.width, vs.height);
+                } catch (ignoredRef) {}
+                var stack = [scene];
+                var count = 0;
+                while (stack.length) {
+                    var node = stack.pop();
+                    if (!node) continue;
+                    count++;
+                    try {
+                        var span = Math.max(Math.abs(node.width * node.scaleX),
+                                            Math.abs(node.height * node.scaleY));
+                        if (isFinite(span)) {
+                            if (span > sample.maxSpan) sample.maxSpan = span;
+                            if (ref > 0 && span > ref * 2) sample.big++;
+                        }
+                    } catch (ignoredSpan) {}
+                    var kids = node._children || [];
+                    for (var i = 0; i < kids.length; i++) stack.push(kids[i]);
+                }
+                sample.nodes = count;
+                sample.maxSpan = Math.round(sample.maxSpan);
+                sample.refSpan = Math.round(ref);
+            }
+        } catch (ignored) {}
+        try {
+            var am = window.cc && cc.assetManager;
+            if (am) {
+                if (am.bundles && typeof am.bundles.getBundleNames === 'function') {
+                    sample.bundles = am.bundles.getBundleNames().length;
+                }
+                var cache = am.assets;
+                if (cache) {
+                    var map = cache._map || cache._assets || null;
+                    if (map && typeof map.size === 'number') sample.assets = map.size;
+                    else if (typeof cache.count === 'number') sample.assets = cache.count;
+                }
+            }
+        } catch (ignored) {}
+        try {
+            var fgui = window.fgui;
+            if (fgui && fgui.UIPackage && fgui.UIPackage._packageInstById) {
+                sample.packages = Object.keys(fgui.UIPackage._packageInstById).length;
+            }
+        } catch (ignored) {}
+        try {
+            var pm = window.performance && performance.memory;
+            if (pm && pm.usedJSHeapSize) sample.heapMB = Math.round(pm.usedJSHeapSize / 1048576);
+        } catch (ignored) {}
+        // localStorage 的体量：**宿主每 20s 会把它全量镜像一次**（`startStorageSync`），
+        // 那是一次跨进程的整串序列化。如果它很大（游戏存了几 MB），7 个实例 × 每 20s
+        // 就是一条实打实的宿主侧开销 —— 这是"内存压力"里**我们能改的那一部分**，
+        // 所以要量出来。（字符数≈字节数，UTF-16 下非 ASCII 会偏小，够判断量级。）
+        try {
+            var ls = window.localStorage;
+            if (ls && typeof ls.length === 'number') {
+                var bytes = 0;
+                for (var k = 0; k < ls.length; k++) {
+                    var key = ls.key(k);
+                    if (key) bytes += key.length;
+                    var value = ls.getItem(key);
+                    if (value) bytes += value.length;
+                }
+                sample.localStorageKB = Math.round(bytes / 1024);
+            }
+        } catch (ignored) {}
+        return sample;
+    }
+
+    function reportMemorySample(reason) {
+        var sample = collectMemorySample();
+        var handlers = window.webkit && window.webkit.messageHandlers;
+        var handler = handlers && handlers.ios2Game;
+        if (!handler || typeof handler.postMessage !== 'function') return sample;
+        try {
+            handler.postMessage({
+                type: 'memory',
+                instance: window.__IOS2_GAME_INSTANCE__ && window.__IOS2_GAME_INSTANCE__.id,
+                reason: reason,
+                assets: 'assets=' + sample.assets + ' bundles=' + sample.bundles +
+                        ' packages=' + sample.packages + ' heapMB=' + sample.heapMB +
+                        ' lsKB=' + (sample.localStorageKB === undefined ? '?' : sample.localStorageKB) +
+                        ' span=' + (sample.maxSpan === undefined ? '?' : sample.maxSpan) +
+                        '/ref' + (sample.refSpan === undefined ? '?' : sample.refSpan) +
+                        ' big=' + (sample.big === undefined ? '?' : sample.big),
+                nodes: String(sample.nodes)
+            });
+        } catch (ignored) {}
+        return sample;
+    }
+    window.__ios2MemorySample = reportMemorySample;
 
     /// 上报本窗口的「视口指纹」。
     ///
@@ -2885,6 +3162,13 @@
                     // 设计分辨率 / 适配策略设完之后再采——那才是实际生效的值。
                     reportViewportFingerprint('engine-init');
                     window.setTimeout(function () { reportViewportFingerprint('settled'); }, 8000);
+                    // 内存采样：+20s 首采（等启动那波资源落定），此后每 60s 一条。
+                    // 间隔取 60s 是有意的：7 个实例 × 每分钟 1 条已经足够画出增长曲线，
+                    // 再密会把别的证据挤掉。
+                    window.setTimeout(function () {
+                        reportMemorySample('startup');
+                        window.setInterval(function () { reportMemorySample('timer'); }, 60000);
+                    }, 20000);
                     // 兜底：自检看门狗正常由启动沉降（sendReady）接手。万一沉降
                     // 因故没上报（页面卡在加载中等），这里 20s 后也必须把它拉起来，
                     // 否则「元素不全」又回到无人观测的状态。
